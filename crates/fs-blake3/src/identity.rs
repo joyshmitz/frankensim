@@ -90,6 +90,8 @@
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
 
 use crate::{Blake3, ContentHash, DomainHasher, derive_key_hasher, hash_bytes};
 
@@ -3280,9 +3282,10 @@ mod authority_state_sealed {
 /// sites (bead sj31i.52.9): generic [`AuthorityVerifier`]/
 /// [`AuthorityAdmitter`] capabilities produce a POLICY-RELATIVE
 /// admission only — "the injected capabilities accepted this binding"
-/// — which is NOT promotion authority. Promotion-capable admission is
-/// exclusively [`PromotionTrustRoot::admit_for_promotion`], whose
-/// witness foreign code cannot mint.
+/// — which is NOT promotion authority. Promotion-capable admission requires
+/// [`PromotionTrustRoot::configure_owner_executed`] followed by
+/// [`PromotionTrustRoot::decide_for_promotion`], and consumption requires the
+/// resulting witness to be rebound through [`PromotionTrustRoot::bind_witness`].
 pub type PolicyRelativeAdmitted = Admitted;
 
 impl AuthorityState for Presented {
@@ -3500,11 +3503,297 @@ where
     fn admit(&self, verified: &AuthorityRef<I, V, P, Verified>) -> Result<(), Self::Error>;
 }
 
+/// Descriptive identity of one executable promotion capability.
+///
+/// The implementation observation names the exact retained code artifact;
+/// the configuration observation names its immutable policy/configuration
+/// bytes; and `protocol_version` names the decision ABI. These values are
+/// bound into the root charter and every decision transcript, but remain
+/// SELF-ASSERTED metadata. They do not authenticate which code ran. That
+/// stronger fact comes from the non-copyable root owning and invoking the
+/// capability and from binding the resulting witness back to that same live
+/// root instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PromotionCapabilityDescriptor {
+    implementation: ByteObservation,
+    configuration: ByteObservation,
+    protocol_version: u32,
+}
+
+impl PromotionCapabilityDescriptor {
+    /// Declare the retained implementation/configuration observations and
+    /// decision-protocol version exposed by a capability object.
+    #[must_use]
+    pub const fn new(
+        implementation: ByteObservation,
+        configuration: ByteObservation,
+        protocol_version: u32,
+    ) -> Self {
+        Self {
+            implementation,
+            configuration,
+            protocol_version,
+        }
+    }
+
+    /// Exact retained code-artifact observation (descriptive, not an
+    /// authenticity proof).
+    #[must_use]
+    pub const fn implementation(self) -> ByteObservation {
+        self.implementation
+    }
+
+    /// Exact retained immutable-configuration observation.
+    #[must_use]
+    pub const fn configuration(self) -> ByteObservation {
+        self.configuration
+    }
+
+    /// Version of the capability's decision protocol.
+    #[must_use]
+    pub const fn protocol_version(self) -> u32 {
+        self.protocol_version
+    }
+}
+
+/// Executable stage that refused, cancelled, or faulted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PromotionCapabilityStage {
+    /// Owner-held verification capability.
+    Verification,
+    /// Owner-held admission capability.
+    Admission,
+}
+
+impl PromotionCapabilityStage {
+    const fn tag(self) -> u8 {
+        match self {
+            Self::Verification => 1,
+            Self::Admission => 2,
+        }
+    }
+}
+
+/// Result returned by an owner-held executable capability.
+///
+/// The attached fixed-size content ID names a retained statement/reason. The
+/// root folds it into a stage-specific transcript after the capability
+/// returns. This leaf does not retain or bound the referenced payload bytes. A
+/// capability cannot return or construct the root's transcript or witness
+/// directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromotionCapabilityVerdict {
+    /// Approve this exact stage and bind the retained decision statement.
+    Approve { statement: ContentId },
+    /// Refuse this exact stage and bind the retained refusal reason.
+    Refuse { reason: ContentId },
+    /// Cancellation was observed before the stage committed.
+    Cancelled { reason: ContentId },
+}
+
+/// Final disposition committed by a published promotion decision.
+///
+/// This slice publishes evidence only for completed approval. Refusal,
+/// cancellation, and fault remain non-publishing typed outcomes until a
+/// separately versioned negative-outcome receipt is implemented.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PromotionDecisionDisposition {
+    /// Both owner-held stages approved and the root committed the witness.
+    Approved,
+}
+
+impl PromotionDecisionDisposition {
+    const fn tag(self) -> u8 {
+        match self {
+            Self::Approved => 1,
+        }
+    }
+}
+
+macro_rules! promotion_decision_id {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name(ContentHash);
+
+        impl $name {
+            /// Exact domain-separated digest bytes.
+            #[must_use]
+            pub fn as_bytes(&self) -> &[u8; 32] {
+                self.0.as_bytes()
+            }
+
+            /// Lowercase hexadecimal rendering.
+            #[must_use]
+            pub fn to_hex(self) -> String {
+                self.0.to_hex()
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::Display::fmt(&self.0, f)
+            }
+        }
+    };
+}
+
+promotion_decision_id!(
+    /// Canonical identity of one exact owner-executed promotion request.
+    PromotionRequestId
+);
+promotion_decision_id!(
+    /// Canonical identity of the owner verifier's exact decision.
+    PromotionVerificationDecisionId
+);
+promotion_decision_id!(
+    /// Canonical identity of the owner admission capability's exact decision.
+    PromotionAdmissionDecisionId
+);
+promotion_decision_id!(
+    /// Canonical identity of a fully committed owner-executed decision.
+    PromotionDecisionId
+);
+
+// Owner-local constructors and byte accessors keep the four durable decision
+// encoders' exact wrapper dependencies visible to the source-level identity
+// registry. The public accessors are emitted by `promotion_decision_id!`,
+// whose expansion is not a separately addressable schema-function item.
+const fn promotion_request_id_from_digest(digest: ContentHash) -> PromotionRequestId {
+    PromotionRequestId(digest)
+}
+
+const fn promotion_verification_decision_id_from_digest(
+    digest: ContentHash,
+) -> PromotionVerificationDecisionId {
+    PromotionVerificationDecisionId(digest)
+}
+
+const fn promotion_admission_decision_id_from_digest(
+    digest: ContentHash,
+) -> PromotionAdmissionDecisionId {
+    PromotionAdmissionDecisionId(digest)
+}
+
+const fn promotion_decision_id_from_digest(digest: ContentHash) -> PromotionDecisionId {
+    PromotionDecisionId(digest)
+}
+
+fn promotion_request_id_bytes(id: &PromotionRequestId) -> &[u8; 32] {
+    id.0.as_bytes()
+}
+
+fn promotion_verification_decision_id_bytes(id: &PromotionVerificationDecisionId) -> &[u8; 32] {
+    id.0.as_bytes()
+}
+
+fn promotion_admission_decision_id_bytes(id: &PromotionAdmissionDecisionId) -> &[u8; 32] {
+    id.0.as_bytes()
+}
+
+fn promotion_decision_id_bytes(id: &PromotionDecisionId) -> &[u8; 32] {
+    id.0.as_bytes()
+}
+
+/// Replay and request-correlation scope for one owner-executed promotion
+/// attempt.
+///
+/// `epoch` must equal the root's configured owner-policy epoch and `sequence`
+/// must strictly increase within that live root. Attempted sequences are
+/// burned before invoking owner code, including refusals, cancellation, and
+/// panic, so a partially executed decision cannot be replayed. `predecessor`
+/// is absent for an ordinary decision and names the source decision for an
+/// explicit owner-adjudicated root crosswalk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PromotionDecisionScope {
+    attempt: ContentId,
+    decision_context: ContentId,
+    epoch: u64,
+    sequence: u64,
+    predecessor: Option<PromotionDecisionId>,
+}
+
+impl PromotionDecisionScope {
+    /// Construct a fresh ordinary owner-decision scope.
+    #[must_use]
+    pub const fn fresh(
+        attempt: ContentId,
+        decision_context: ContentId,
+        epoch: u64,
+        sequence: u64,
+    ) -> Self {
+        Self {
+            attempt,
+            decision_context,
+            epoch,
+            sequence,
+            predecessor: None,
+        }
+    }
+
+    /// Construct an explicit crosswalk scope bound to the source decision.
+    #[must_use]
+    pub const fn crosswalk(
+        attempt: ContentId,
+        decision_context: ContentId,
+        epoch: u64,
+        sequence: u64,
+        predecessor: PromotionDecisionId,
+    ) -> Self {
+        Self {
+            attempt,
+            decision_context,
+            epoch,
+            sequence,
+            predecessor: Some(predecessor),
+        }
+    }
+
+    /// Attempt-correlation identity supplied by the owner orchestration lane.
+    /// The monotonically increasing sequence, not this value, is the live
+    /// root's bounded replay guard.
+    #[must_use]
+    pub const fn attempt(self) -> ContentId {
+        self.attempt
+    }
+
+    /// Exact purpose/environment context for this decision.
+    #[must_use]
+    pub const fn decision_context(self) -> ContentId {
+        self.decision_context
+    }
+
+    /// Owner-policy epoch expected by the root.
+    #[must_use]
+    pub const fn epoch(self) -> u64 {
+        self.epoch
+    }
+
+    /// Strictly increasing live-root sequence.
+    #[must_use]
+    pub const fn sequence(self) -> u64 {
+        self.sequence
+    }
+
+    /// Source decision for an explicit crosswalk, if any.
+    #[must_use]
+    pub const fn predecessor(self) -> Option<PromotionDecisionId> {
+        self.predecessor
+    }
+}
+
 /// Typed refusal from promotion-capable admission (bead sj31i.52.9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromotionRefusal {
     /// The trust root was configured with an empty context.
     EmptyContext,
+    /// The root context exceeds the bounded transcript/audit envelope.
+    ContextTooLong {
+        /// Maximum admitted UTF-8 byte length.
+        maximum_bytes: usize,
+        /// Presented UTF-8 byte length.
+        presented_bytes: usize,
+    },
     /// A verifier/key-policy schema reaches beyond the depth where
     /// [`SchemaId`] remains a complete descriptor rather than a poison-tagged
     /// over-depth name.
@@ -3536,12 +3825,79 @@ pub enum PromotionRefusal {
         /// The presented observation.
         presented: ByteObservation,
     },
+    /// The compatibility/configuration-only root has no executable owner
+    /// capabilities and can never mint promotion authority.
+    OwnerCapabilitiesUnavailable,
+    /// The historical unscoped minting API is intentionally fail-closed.
+    /// Owner execution requires a replay-bounded [`PromotionDecisionScope`].
+    UnscopedPromotionForbidden,
+    /// Owner-executed roots require nonzero capability protocol versions.
+    InvalidCapabilityProtocolVersion {
+        /// Capability stage whose descriptor was invalid.
+        stage: PromotionCapabilityStage,
+    },
+    /// Owner-executed roots require a nonzero policy epoch.
+    InvalidDecisionEpoch,
+    /// The attempt targets a different owner-policy epoch.
+    WrongDecisionEpoch {
+        /// Epoch retained by the root.
+        configured: u64,
+        /// Epoch presented by the attempt.
+        presented: u64,
+    },
+    /// This sequence was already attempted or is older than a burned
+    /// sequence. Refused/cancelled/faulted attempts are intentionally burned.
+    StaleOrReplayedDecision {
+        /// Greatest sequence already attempted by this root.
+        last_attempted: u64,
+        /// Sequence presented by this attempt.
+        presented: u64,
+    },
+    /// A prior owner capability panicked and permanently poisoned this root
+    /// instance; no later decision may be minted from ambiguous state.
+    RootPoisoned,
+    /// Re-entrant/concurrent execution was attempted on one mutable root.
+    DecisionAlreadyInFlight,
+    /// An owner capability refused the exact request.
+    CapabilityRefused {
+        /// Stage that refused.
+        stage: PromotionCapabilityStage,
+        /// Fixed-size ID of the retained reason artifact.
+        reason: ContentId,
+    },
+    /// An owner capability observed cancellation before its stage committed.
+    CapabilityCancelled {
+        /// Stage that cancelled.
+        stage: PromotionCapabilityStage,
+        /// Fixed-size ID of the retained cancellation-reason artifact.
+        reason: ContentId,
+    },
+    /// An owner capability panicked. The root is poisoned before this refusal
+    /// is returned, and no witness was published.
+    CapabilityPanicked {
+        /// Stage that panicked.
+        stage: PromotionCapabilityStage,
+    },
+    /// A raw witness came from another live root instance. Matching public
+    /// charters are insufficient for authority.
+    ForeignRootInstance,
+    /// Private/canonical witness fields did not recompute under this root.
+    WitnessBindingMismatch,
+    /// An explicit crosswalk scope did not name the source bound decision.
+    CrosswalkPredecessorMismatch,
 }
 
 impl fmt::Display for PromotionRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyContext => f.write_str("promotion trust root context is empty"),
+            Self::ContextTooLong {
+                maximum_bytes,
+                presented_bytes,
+            } => write!(
+                f,
+                "promotion trust root context has {presented_bytes} bytes, exceeding the {maximum_bytes}-byte limit"
+            ),
             Self::SchemaNestingExceedsCharter {
                 role,
                 maximum_depth,
@@ -3563,6 +3919,56 @@ impl fmt::Display for PromotionRefusal {
                 "key-policy ID matches but its canonical-byte observation does not; \
                  same-ID/different-bytes is refused, never adjudicated first-wins",
             ),
+            Self::OwnerCapabilitiesUnavailable => f.write_str(
+                "configuration-only promotion root has no executable owner capabilities",
+            ),
+            Self::UnscopedPromotionForbidden => {
+                f.write_str("unscoped policy-relative admission cannot mint promotion authority")
+            }
+            Self::InvalidCapabilityProtocolVersion { stage } => {
+                write!(f, "{stage:?} capability protocol version must be nonzero")
+            }
+            Self::InvalidDecisionEpoch => {
+                f.write_str("owner-executed promotion epoch must be nonzero")
+            }
+            Self::WrongDecisionEpoch {
+                configured,
+                presented,
+            } => write!(
+                f,
+                "promotion decision epoch {presented} does not match configured epoch {configured}"
+            ),
+            Self::StaleOrReplayedDecision {
+                last_attempted,
+                presented,
+            } => write!(
+                f,
+                "promotion decision sequence {presented} is stale or replayed after {last_attempted}"
+            ),
+            Self::RootPoisoned => {
+                f.write_str("promotion root is poisoned by a prior capability fault")
+            }
+            Self::DecisionAlreadyInFlight => {
+                f.write_str("a promotion decision is already in flight on this root")
+            }
+            Self::CapabilityRefused { stage, .. } => {
+                write!(f, "owner {stage:?} capability refused promotion")
+            }
+            Self::CapabilityCancelled { stage, .. } => {
+                write!(f, "owner {stage:?} capability cancelled promotion")
+            }
+            Self::CapabilityPanicked { stage } => {
+                write!(f, "owner {stage:?} capability panicked; root poisoned")
+            }
+            Self::ForeignRootInstance => {
+                f.write_str("promotion witness was minted by another live root instance")
+            }
+            Self::WitnessBindingMismatch => {
+                f.write_str("promotion witness does not recompute under this root")
+            }
+            Self::CrosswalkPredecessorMismatch => {
+                f.write_str("crosswalk scope does not name the source bound decision")
+            }
         }
     }
 }
@@ -3570,9 +3976,20 @@ impl fmt::Display for PromotionRefusal {
 impl core::error::Error for PromotionRefusal {}
 
 /// Current semantic version of [`PromotionRootCharter`] identity.
-pub const PROMOTION_ROOT_CHARTER_IDENTITY_VERSION: u32 = 2;
+pub const PROMOTION_ROOT_CHARTER_IDENTITY_VERSION: u32 = 3;
+/// Maximum UTF-8 bytes admitted into one root context and every request/audit
+/// receipt that retains it.
+pub const MAX_PROMOTION_CONTEXT_BYTES: usize = 4096;
 /// Hash domain for current [`PromotionRootCharter`] preimages.
 pub const PROMOTION_ROOT_CHARTER_DOMAIN: &str =
+    "org.frankensim.fs-blake3.promotion-root-charter.v3";
+/// Historical v2 charter domain, retained for typed replay only.
+///
+/// V2 bound verifier/policy schemas and byte observations but described only
+/// public configuration. It did not bind executable capability descriptors,
+/// a decision epoch, or a live root instance, so it cannot authorize current
+/// promotion.
+pub const LEGACY_PROMOTION_ROOT_CHARTER_V2_DOMAIN: &str =
     "org.frankensim.fs-blake3.promotion-root-charter.v2";
 /// Historical v1 charter domain, retained for typed replay only.
 ///
@@ -3590,65 +4007,60 @@ pub const PROMOTION_ROOT_CHARTER_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
     "frankensim-identity-schema-v1",
     "id=fs-blake3:promotion-root-charter",
     "version_const=PROMOTION_ROOT_CHARTER_IDENTITY_VERSION",
-    "version=2",
-    "domain=org.frankensim.fs-blake3.promotion-root-charter.v2",
+    "version=3",
+    "domain=org.frankensim.fs-blake3.promotion-root-charter.v3",
     "domain_const=PROMOTION_ROOT_CHARTER_DOMAIN",
     "encoder=derive_promotion_root_charter",
-    "encoder_helpers=update_charter_field",
-    "schema_constants=PROMOTION_ROOT_CHARTER_IDENTITY_VERSION,PROMOTION_ROOT_CHARTER_DOMAIN,MAX_SCHEMA_CHILD_DEPTH",
-    "schema_functions=derive_promotion_root_charter,promotion_root_charter_identity_source,update_charter_field,promotion_charter_schema_depth_is_admissible,PromotionTrustRoot::configure,PromotionTrustRoot::charter,SchemaId::for_schema,SchemaId::as_bytes,IdentityRole::tag,FieldSpec::child_spec,ChildSpec::fields,ObservedIdentity::id,ObservedIdentity::bytes,ByteObservation::content_id,ByteObservation::length,ContentId::as_bytes,as_bytes,crates/fs-blake3/src/lib.rs#ContentHash::as_bytes,crates/fs-blake3/src/lib.rs#DomainHasher::new,crates/fs-blake3/src/lib.rs#DomainHasher::update,crates/fs-blake3/src/lib.rs#DomainHasher::finalize",
+    "encoder_helpers=update_charter_field,update_capability_descriptor",
+    "schema_constants=PROMOTION_ROOT_CHARTER_IDENTITY_VERSION,PROMOTION_ROOT_CHARTER_DOMAIN,MAX_SCHEMA_CHILD_DEPTH,MAX_PROMOTION_CONTEXT_BYTES",
+    "schema_functions=derive_promotion_root_charter,promotion_root_charter_identity_source,update_charter_field,update_capability_descriptor,promotion_charter_schema_depth_is_admissible,validate_legacy_promotion_root_configuration,validate_promotion_root_configuration,PromotionTrustRoot::configure,PromotionTrustRoot::configure_owner_executed,PromotionRootMode::tag,PromotionCapabilityDescriptor::implementation,PromotionCapabilityDescriptor::configuration,PromotionCapabilityDescriptor::protocol_version,SchemaId::for_schema,SchemaId::as_bytes,IdentityRole::tag,FieldSpec::child_spec,ChildSpec::fields,ObservedIdentity::id,ObservedIdentity::bytes,ByteObservation::content_id,ByteObservation::length,ContentId::as_bytes,crates/fs-blake3/src/lib.rs#ContentHash::as_bytes,crates/fs-blake3/src/lib.rs#DomainHasher::new,crates/fs-blake3/src/lib.rs#DomainHasher::update,crates/fs-blake3/src/lib.rs#DomainHasher::finalize",
     "schema_dependencies=fs-blake3:schema-id",
     "digest=fs-blake3",
     "encoding=typed-binary",
     "sources=PromotionRootCharterIdentitySource",
-    "source_fields=PromotionRootCharterIdentitySource.verifier_role:semantic,PromotionRootCharterIdentitySource.verifier_domain:semantic,PromotionRootCharterIdentitySource.verifier_schema:semantic,PromotionRootCharterIdentitySource.verifier:semantic,PromotionRootCharterIdentitySource.key_policy_role:semantic,PromotionRootCharterIdentitySource.key_policy_domain:semantic,PromotionRootCharterIdentitySource.key_policy_schema:semantic,PromotionRootCharterIdentitySource.key_policy:semantic,PromotionRootCharterIdentitySource.context:semantic",
-    "source_bindings=PromotionRootCharterIdentitySource.verifier_role>verifier-role,PromotionRootCharterIdentitySource.verifier_domain>verifier-domain,PromotionRootCharterIdentitySource.verifier_schema>verifier-schema-id,PromotionRootCharterIdentitySource.verifier>verifier-id+verifier-observation-root+verifier-observation-length,PromotionRootCharterIdentitySource.key_policy_role>key-policy-role,PromotionRootCharterIdentitySource.key_policy_domain>key-policy-domain,PromotionRootCharterIdentitySource.key_policy_schema>key-policy-schema-id,PromotionRootCharterIdentitySource.key_policy>key-policy-id+key-policy-observation-root+key-policy-observation-length,PromotionRootCharterIdentitySource.context>context",
+    "source_fields=PromotionRootCharterIdentitySource.verifier_role:semantic,PromotionRootCharterIdentitySource.verifier_domain:semantic,PromotionRootCharterIdentitySource.verifier_schema:semantic,PromotionRootCharterIdentitySource.verifier:semantic,PromotionRootCharterIdentitySource.key_policy_role:semantic,PromotionRootCharterIdentitySource.key_policy_domain:semantic,PromotionRootCharterIdentitySource.key_policy_schema:semantic,PromotionRootCharterIdentitySource.key_policy:semantic,PromotionRootCharterIdentitySource.mode:semantic,PromotionRootCharterIdentitySource.decision_epoch:semantic,PromotionRootCharterIdentitySource.verifier_capability:semantic,PromotionRootCharterIdentitySource.admission_capability:semantic,PromotionRootCharterIdentitySource.context:semantic",
+    "source_bindings=PromotionRootCharterIdentitySource.verifier_role>verifier-role,PromotionRootCharterIdentitySource.verifier_domain>verifier-domain,PromotionRootCharterIdentitySource.verifier_schema>verifier-schema-id,PromotionRootCharterIdentitySource.verifier>verifier-id+verifier-observation-root+verifier-observation-length,PromotionRootCharterIdentitySource.key_policy_role>key-policy-role,PromotionRootCharterIdentitySource.key_policy_domain>key-policy-domain,PromotionRootCharterIdentitySource.key_policy_schema>key-policy-schema-id,PromotionRootCharterIdentitySource.key_policy>key-policy-id+key-policy-observation-root+key-policy-observation-length,PromotionRootCharterIdentitySource.mode>capability-mode,PromotionRootCharterIdentitySource.decision_epoch>decision-epoch,PromotionRootCharterIdentitySource.verifier_capability>verifier-capability-presence+verifier-capability-implementation-root+verifier-capability-implementation-length+verifier-capability-configuration-root+verifier-capability-configuration-length+verifier-capability-protocol-version,PromotionRootCharterIdentitySource.admission_capability>admission-capability-presence+admission-capability-implementation-root+admission-capability-implementation-length+admission-capability-configuration-root+admission-capability-configuration-length+admission-capability-protocol-version,PromotionRootCharterIdentitySource.context>context",
     "external_semantic_fields=identity-version,digest-domain,length-frame",
-    "semantic_fields=identity-version,digest-domain,length-frame,verifier-role,verifier-domain,verifier-schema-id,verifier-id,verifier-observation-root,verifier-observation-length,key-policy-role,key-policy-domain,key-policy-schema-id,key-policy-id,key-policy-observation-root,key-policy-observation-length,context",
-    "excluded_fields=none",
-    "consumers=PromotionTrustRoot::charter,PromotionTrustRoot::admit_for_promotion,PromotionWitness::root_charter",
-    "mutations=identity-version:crates/fs-blake3/tests/authority_promotion.rs#charter_v2_matches_independent_reference_and_existing_axes_move,digest-domain:crates/fs-blake3/tests/authority_promotion.rs#charter_v2_matches_independent_reference_and_existing_axes_move,length-frame:crates/fs-blake3/tests/authority_promotion.rs#charter_v2_matches_independent_reference_and_existing_axes_move,verifier-role:crates/fs-blake3/tests/authority_promotion.rs#charter_v2_matches_independent_reference_and_existing_axes_move,verifier-domain:crates/fs-blake3/tests/authority_promotion.rs#charter_v2_matches_independent_reference_and_existing_axes_move,verifier-schema-id:crates/fs-blake3/tests/authority_promotion.rs#schema_descriptor_axes_move_current_charter_under_reused_domains,verifier-id:crates/fs-blake3/tests/authority_promotion.rs#charter_v2_matches_independent_reference_and_existing_axes_move,verifier-observation-root:crates/fs-blake3/tests/authority_promotion.rs#charter_v2_matches_independent_reference_and_existing_axes_move,verifier-observation-length:crates/fs-blake3/tests/authority_promotion.rs#charter_v2_matches_independent_reference_and_existing_axes_move,key-policy-role:crates/fs-blake3/tests/authority_promotion.rs#charter_v2_matches_independent_reference_and_existing_axes_move,key-policy-domain:crates/fs-blake3/tests/authority_promotion.rs#charter_v2_matches_independent_reference_and_existing_axes_move,key-policy-schema-id:crates/fs-blake3/tests/authority_promotion.rs#schema_descriptor_axes_move_current_charter_under_reused_domains,key-policy-id:crates/fs-blake3/tests/authority_promotion.rs#charter_v2_matches_independent_reference_and_existing_axes_move,key-policy-observation-root:crates/fs-blake3/tests/authority_promotion.rs#charter_v2_matches_independent_reference_and_existing_axes_move,key-policy-observation-length:crates/fs-blake3/tests/authority_promotion.rs#charter_v2_matches_independent_reference_and_existing_axes_move,context:crates/fs-blake3/tests/authority_promotion.rs#charter_v2_matches_independent_reference_and_existing_axes_move",
-    "nonsemantic_mutations=none",
+    "semantic_fields=identity-version,digest-domain,length-frame,verifier-role,verifier-domain,verifier-schema-id,verifier-id,verifier-observation-root,verifier-observation-length,key-policy-role,key-policy-domain,key-policy-schema-id,key-policy-id,key-policy-observation-root,key-policy-observation-length,capability-mode,decision-epoch,verifier-capability-presence,verifier-capability-implementation-root,verifier-capability-implementation-length,verifier-capability-configuration-root,verifier-capability-configuration-length,verifier-capability-protocol-version,admission-capability-presence,admission-capability-implementation-root,admission-capability-implementation-length,admission-capability-configuration-root,admission-capability-configuration-length,admission-capability-protocol-version,context",
+    "excluded_fields=live-root-instance-seal:runtime-capability-only,owner-capability-values:represented-only-by-self-asserted-descriptors-and-live-instance-binding,execution-state:runtime-transaction-state-only,last-attempted-sequence:runtime-replay-state-only",
+    "consumers=PromotionTrustRoot::charter,PromotionTrustRoot::decide_for_promotion,PromotionTrustRoot::bind_witness,PromotionWitness::root_charter",
+    "mutations=identity-version:crates/fs-blake3/tests/authority_promotion.rs#charter_v3_matches_independent_reference_and_configuration_axes_move,digest-domain:crates/fs-blake3/tests/authority_promotion.rs#charter_v3_matches_independent_reference_and_configuration_axes_move,length-frame:crates/fs-blake3/tests/authority_promotion.rs#charter_v3_matches_independent_reference_and_configuration_axes_move,verifier-role:crates/fs-blake3/tests/authority_promotion.rs#charter_v3_matches_independent_reference_and_configuration_axes_move,verifier-domain:crates/fs-blake3/tests/authority_promotion.rs#charter_v3_matches_independent_reference_and_configuration_axes_move,verifier-schema-id:crates/fs-blake3/tests/authority_promotion.rs#schema_descriptor_axes_move_current_charter_under_reused_domains,verifier-id:crates/fs-blake3/tests/authority_promotion.rs#charter_v3_matches_independent_reference_and_configuration_axes_move,verifier-observation-root:crates/fs-blake3/tests/authority_promotion.rs#charter_v3_matches_independent_reference_and_configuration_axes_move,verifier-observation-length:crates/fs-blake3/tests/authority_promotion.rs#charter_v3_matches_independent_reference_and_configuration_axes_move,key-policy-role:crates/fs-blake3/tests/authority_promotion.rs#charter_v3_matches_independent_reference_and_configuration_axes_move,key-policy-domain:crates/fs-blake3/tests/authority_promotion.rs#charter_v3_matches_independent_reference_and_configuration_axes_move,key-policy-schema-id:crates/fs-blake3/tests/authority_promotion.rs#schema_descriptor_axes_move_current_charter_under_reused_domains,key-policy-id:crates/fs-blake3/tests/authority_promotion.rs#charter_v3_matches_independent_reference_and_configuration_axes_move,key-policy-observation-root:crates/fs-blake3/tests/authority_promotion.rs#charter_v3_matches_independent_reference_and_configuration_axes_move,key-policy-observation-length:crates/fs-blake3/tests/authority_promotion.rs#charter_v3_matches_independent_reference_and_configuration_axes_move,capability-mode:crates/fs-blake3/tests/authority_promotion.rs#owner_capability_descriptors_epoch_and_mode_move_v3_charter,decision-epoch:crates/fs-blake3/tests/authority_promotion.rs#owner_capability_descriptors_epoch_and_mode_move_v3_charter,verifier-capability-presence:crates/fs-blake3/tests/authority_promotion.rs#owner_capability_descriptors_epoch_and_mode_move_v3_charter,verifier-capability-implementation-root:crates/fs-blake3/tests/authority_promotion.rs#owner_capability_descriptors_epoch_and_mode_move_v3_charter,verifier-capability-implementation-length:crates/fs-blake3/tests/authority_promotion.rs#owner_capability_descriptors_epoch_and_mode_move_v3_charter,verifier-capability-configuration-root:crates/fs-blake3/tests/authority_promotion.rs#owner_capability_descriptors_epoch_and_mode_move_v3_charter,verifier-capability-configuration-length:crates/fs-blake3/tests/authority_promotion.rs#owner_capability_descriptors_epoch_and_mode_move_v3_charter,verifier-capability-protocol-version:crates/fs-blake3/tests/authority_promotion.rs#owner_capability_descriptors_epoch_and_mode_move_v3_charter,admission-capability-presence:crates/fs-blake3/tests/authority_promotion.rs#owner_capability_descriptors_epoch_and_mode_move_v3_charter,admission-capability-implementation-root:crates/fs-blake3/tests/authority_promotion.rs#owner_capability_descriptors_epoch_and_mode_move_v3_charter,admission-capability-implementation-length:crates/fs-blake3/tests/authority_promotion.rs#owner_capability_descriptors_epoch_and_mode_move_v3_charter,admission-capability-configuration-root:crates/fs-blake3/tests/authority_promotion.rs#owner_capability_descriptors_epoch_and_mode_move_v3_charter,admission-capability-configuration-length:crates/fs-blake3/tests/authority_promotion.rs#owner_capability_descriptors_epoch_and_mode_move_v3_charter,admission-capability-protocol-version:crates/fs-blake3/tests/authority_promotion.rs#owner_capability_descriptors_epoch_and_mode_move_v3_charter,context:crates/fs-blake3/tests/authority_promotion.rs#charter_v3_matches_independent_reference_and_configuration_axes_move",
+    "nonsemantic_mutations=live-root-instance-seal:crates/fs-blake3/tests/authority_promotion.rs#equivalent_reconstruction_requires_an_owner_executed_crosswalk,owner-capability-values:crates/fs-blake3/tests/authority_promotion.rs#same_public_charter_with_foreign_code_cannot_bind_to_the_owner_root,execution-state:crates/fs-blake3/tests/authority_promotion.rs#verifier_and_admission_panics_poison_without_partial_witnesses,last-attempted-sequence:crates/fs-blake3/tests/authority_promotion.rs#stale_replay_and_cancelled_attempts_are_burned_before_capability_calls",
     "field_guard=classify_promotion_root_charter_identity_fields",
-    "transport_guard=PromotionTrustRoot::charter",
-    "version_guard=crates/fs-blake3/tests/authority_promotion.rs#legacy_v1_replay_is_exact_and_nominally_quarantined",
+    "transport_guard=PromotionRootCharter::as_bytes",
+    "version_guard=crates/fs-blake3/tests/authority_promotion.rs#legacy_v1_and_v2_replay_are_exact_and_nominally_quarantined",
     "coupling_surface=fs-blake3:promotion-root-charter",
 ];
 
-/// The exact-configuration fingerprint of a [`PromotionTrustRoot`]
-/// (bead sj31i.52.9, root-provenance closure).
+/// Portable v3 fingerprint of a [`PromotionTrustRoot`] configuration.
 ///
-/// The charter is a domain-separated digest over EVERY axis that shapes
-/// the root's promotion decisions: the explicit verifier/key-policy roles,
-/// both complete recursive [`SchemaId`] values, both schema domains, the
-/// verifier and key-policy identity digests, their canonical-byte observations
-/// (root digest AND exact length), and the context string — all length-framed.
-/// [`PromotionTrustRoot::configure`] rejects over-depth schemas before a root
-/// exists, so every charter-bearing schema ID is a complete descriptor rather
-/// than the deliberate over-depth poison name.
-/// Every [`PromotionWitness`] carries the charter of the root that minted
-/// it, so a consumption boundary that PINS its domain owner's charter
-/// rejects witnesses minted by any differently-configured root: a foreign
-/// crate can still call [`PromotionTrustRoot::configure`], but a root
-/// configured for a permit-everything verifier (or any other foreign
-/// binding) mints witnesses whose charter cannot match the pin.
+/// V3 binds the explicit verifier/key-policy roles and complete schemas,
+/// their IDs and byte observations, capability mode, owner-policy epoch, both
+/// executable capability descriptors (implementation/configuration roots,
+/// lengths, and protocol versions), and context. Configuration-only and
+/// owner-executed roots therefore have different charters.
 ///
-/// Two roots with byte-identical configuration share a charter BY DESIGN:
-/// provenance here is configuration-relative, not instance-relative —
-/// pure data cannot carry instance identity across fork/replay in a
-/// deterministic workspace, and two roots that make identical decisions
-/// are the same policy. The no-claim boundary: fs-blake3 cannot vouch WHO
-/// holds a charter; it guarantees that a witness's charter equals the
-/// exact configuration of the root that minted it.
+/// A charter remains DESCRIPTIVE, not a bearer token. Two independently
+/// reconstructed owner roots with identical public inputs share a charter but
+/// have different private live-instance seals. A raw witness becomes
+/// consumption authority only through [`PromotionTrustRoot::bind_witness`]
+/// against the exact live root, or after an explicit owner-executed crosswalk.
+/// This is the distinction v2 lacked.
 ///
-/// Historical v1 roots are nominally quarantined and cannot be passed where a
-/// current charter is required:
+/// Historical v1/v2 roots are nominally quarantined and cannot be passed where
+/// a current charter is required:
 ///
 /// ```compile_fail
-/// use fs_blake3::identity::{PromotionRootCharter, legacy::PromotionRootCharterV1};
+/// use fs_blake3::identity::{
+///     PromotionRootCharter,
+///     legacy::{PromotionRootCharterV1, PromotionRootCharterV2},
+/// };
 ///
 /// fn consume_current(_: PromotionRootCharter) {}
 /// fn cannot_promote_legacy(old: PromotionRootCharterV1) {
+///     consume_current(old);
+/// }
+/// fn cannot_promote_v2(old: PromotionRootCharterV2) {
 ///     consume_current(old);
 /// }
 /// ```
@@ -3675,12 +4087,240 @@ impl fmt::Display for PromotionRootCharter {
     }
 }
 
+/// Fully materialized, bounded request shown to the root-owned verifier.
+///
+/// This type deliberately erases the subject's Rust generic parameters while
+/// retaining their role and complete schema ID, so executable capabilities
+/// can be stored as ordinary owner values without trusting caller-provided
+/// textual IDs. All getters expose immutable exact decision inputs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromotionDecisionRequest {
+    request_id: PromotionRequestId,
+    subject_role: IdentityRole,
+    subject_schema: [u8; 32],
+    subject_id: [u8; 32],
+    subject_preimage: ContentId,
+    subject_bytes: u64,
+    anchor: ContentId,
+    verifier_role: IdentityRole,
+    verifier_schema: [u8; 32],
+    verifier_id: [u8; 32],
+    verifier_observation: ByteObservation,
+    key_policy_role: IdentityRole,
+    key_policy_schema: [u8; 32],
+    key_policy_id: [u8; 32],
+    key_policy_observation: ByteObservation,
+    root_charter: PromotionRootCharter,
+    root_context: &'static str,
+    scope: PromotionDecisionScope,
+}
+
+impl PromotionDecisionRequest {
+    /// Canonical identity of every field in this request.
+    #[must_use]
+    pub const fn request_id(&self) -> PromotionRequestId {
+        self.request_id
+    }
+
+    /// Nominal role of the exact subject identity.
+    #[must_use]
+    pub const fn subject_role(&self) -> IdentityRole {
+        self.subject_role
+    }
+
+    /// Complete schema-identity bytes for the subject.
+    #[must_use]
+    pub const fn subject_schema(&self) -> [u8; 32] {
+        self.subject_schema
+    }
+
+    /// Exact typed subject digest bytes.
+    #[must_use]
+    pub const fn subject_id(&self) -> [u8; 32] {
+        self.subject_id
+    }
+
+    /// Plain root of the subject's complete canonical frame.
+    #[must_use]
+    pub const fn subject_preimage(&self) -> ContentId {
+        self.subject_preimage
+    }
+
+    /// Exact length of the subject's complete canonical frame.
+    #[must_use]
+    pub const fn subject_bytes(&self) -> u64 {
+        self.subject_bytes
+    }
+
+    /// Exact externally anchored object presented for this subject.
+    #[must_use]
+    pub const fn anchor(&self) -> ContentId {
+        self.anchor
+    }
+
+    /// Nominal role of the configured verifier identity.
+    #[must_use]
+    pub const fn verifier_role(&self) -> IdentityRole {
+        self.verifier_role
+    }
+
+    /// Complete configured verifier schema-identity bytes.
+    #[must_use]
+    pub const fn verifier_schema(&self) -> [u8; 32] {
+        self.verifier_schema
+    }
+
+    /// Exact configured verifier identity bytes.
+    #[must_use]
+    pub const fn verifier_id(&self) -> [u8; 32] {
+        self.verifier_id
+    }
+
+    /// Exact configured verifier byte observation.
+    #[must_use]
+    pub const fn verifier_observation(&self) -> ByteObservation {
+        self.verifier_observation
+    }
+
+    /// Nominal role of the configured admission-policy identity.
+    #[must_use]
+    pub const fn key_policy_role(&self) -> IdentityRole {
+        self.key_policy_role
+    }
+
+    /// Complete configured admission-policy schema-identity bytes.
+    #[must_use]
+    pub const fn key_policy_schema(&self) -> [u8; 32] {
+        self.key_policy_schema
+    }
+
+    /// Exact configured admission-policy identity bytes.
+    #[must_use]
+    pub const fn key_policy_id(&self) -> [u8; 32] {
+        self.key_policy_id
+    }
+
+    /// Exact configured admission-policy byte observation.
+    #[must_use]
+    pub const fn key_policy_observation(&self) -> ByteObservation {
+        self.key_policy_observation
+    }
+
+    /// V3 charter binding configuration plus executable descriptors/epoch.
+    #[must_use]
+    pub const fn root_charter(&self) -> PromotionRootCharter {
+        self.root_charter
+    }
+
+    /// Immutable root purpose/context.
+    #[must_use]
+    pub const fn root_context(&self) -> &'static str {
+        self.root_context
+    }
+
+    /// Replay/correlation/crosswalk scope.
+    #[must_use]
+    pub const fn scope(&self) -> PromotionDecisionScope {
+        self.scope
+    }
+}
+
+/// Exact request shown to the root-owned admission capability after a
+/// successful owner verification decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromotionAdmissionRequest {
+    decision: PromotionDecisionRequest,
+    verification_capability: PromotionCapabilityDescriptor,
+    verification_statement: ContentId,
+    verification_decision: PromotionVerificationDecisionId,
+}
+
+impl PromotionAdmissionRequest {
+    /// Exact base request already checked by the owner verifier.
+    #[must_use]
+    pub const fn decision(&self) -> &PromotionDecisionRequest {
+        &self.decision
+    }
+
+    /// Descriptor captured from the verifier capability physically stored by
+    /// the root.
+    #[must_use]
+    pub const fn verification_capability(&self) -> PromotionCapabilityDescriptor {
+        self.verification_capability
+    }
+
+    /// Exact retained statement ID returned by the owner verifier.
+    #[must_use]
+    pub const fn verification_statement(&self) -> ContentId {
+        self.verification_statement
+    }
+
+    /// Root-generated transcript identity of the verifier decision.
+    #[must_use]
+    pub const fn verification_decision(&self) -> PromotionVerificationDecisionId {
+        self.verification_decision
+    }
+}
+
+/// Executable verifier physically owned by a promotion root.
+///
+/// This is intentionally distinct from [`AuthorityVerifier`]. The generic
+/// trait can produce policy-relative `Verified`; implementing it never grants
+/// a path into this owner-executed lane. The root stores an instance of this
+/// trait and invokes it itself. This dependency-free leaf bounds the call
+/// count, not work performed inside the call; implementations remain
+/// responsible for their admitted execution budget.
+pub trait OwnerPromotionVerifier: Send + Sync + 'static {
+    /// Self-declared implementation/configuration descriptor. It is bound into
+    /// transcripts but is not an authenticity proof by itself.
+    fn descriptor(&self) -> PromotionCapabilityDescriptor;
+
+    /// Decide the exact immutable request. Panics are caught by the root and
+    /// permanently poison that root instance.
+    fn verify(&self, request: &PromotionDecisionRequest) -> PromotionCapabilityVerdict;
+}
+
+/// Executable admission policy physically owned by a promotion root.
+///
+/// This is intentionally distinct from [`AuthorityAdmitter`]. It receives the
+/// root-generated verification transcript, not merely caller-presented IDs.
+/// Internal work/cancellation enforcement remains the implementation's
+/// admitted-budget responsibility.
+pub trait OwnerPromotionAdmitter: Send + Sync + 'static {
+    /// Self-declared implementation/configuration descriptor. It is bound into
+    /// transcripts but is not an authenticity proof by itself.
+    fn descriptor(&self) -> PromotionCapabilityDescriptor;
+
+    /// Decide whether the exact verified request may become a promotion
+    /// witness. Panics are caught and poison the root before publication.
+    fn admit(&self, request: &PromotionAdmissionRequest) -> PromotionCapabilityVerdict;
+}
+
 /// Stream one length-framed charter field (u64 LE length, then bytes).
 fn update_charter_field(hasher: &mut DomainHasher, _field: &'static str, bytes: &[u8]) {
     let length = u64::try_from(bytes.len())
         .expect("compile-time target guard proves every usize fits u64 charter framing");
     hasher.update(&length.to_le_bytes());
     hasher.update(bytes);
+}
+
+/// Whether a root is descriptive configuration only or owns executable
+/// verifier/admitter capabilities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PromotionRootMode {
+    /// Retained policy configuration with no promotion-minting authority.
+    ConfigurationOnly,
+    /// Non-copyable root that owns and invokes both decision capabilities.
+    OwnerExecuted,
+}
+
+impl PromotionRootMode {
+    const fn tag(self) -> u8 {
+        match self {
+            Self::ConfigurationOnly => 0,
+            Self::OwnerExecuted => 1,
+        }
+    }
 }
 
 struct PromotionRootCharterIdentitySource<V, P>
@@ -3696,12 +4336,20 @@ where
     key_policy_domain: &'static str,
     key_policy_schema: SchemaId<P>,
     key_policy: ObservedIdentity<KeyPolicyId<P>>,
+    mode: PromotionRootMode,
+    decision_epoch: u64,
+    verifier_capability: Option<PromotionCapabilityDescriptor>,
+    admission_capability: Option<PromotionCapabilityDescriptor>,
     context: &'static str,
 }
 
 fn promotion_root_charter_identity_source<V, P>(
     verifier: ObservedIdentity<VerifierId<V>>,
     key_policy: ObservedIdentity<KeyPolicyId<P>>,
+    mode: PromotionRootMode,
+    decision_epoch: u64,
+    verifier_capability: Option<PromotionCapabilityDescriptor>,
+    admission_capability: Option<PromotionCapabilityDescriptor>,
     context: &'static str,
 ) -> PromotionRootCharterIdentitySource<V, P>
 where
@@ -3717,6 +4365,10 @@ where
         key_policy_domain: P::DOMAIN,
         key_policy_schema: SchemaId::<P>::for_schema(),
         key_policy,
+        mode,
+        decision_epoch,
+        verifier_capability,
+        admission_capability,
         context,
     }
 }
@@ -3737,6 +4389,10 @@ fn classify_promotion_root_charter_identity_fields<V, P>(
         key_policy_domain: _,
         key_policy_schema: _,
         key_policy: _,
+        mode: _,
+        decision_epoch: _,
+        verifier_capability: _,
+        admission_capability: _,
         context: _,
     } = source;
 }
@@ -3806,8 +4462,135 @@ where
         "key-policy-observation-length",
         &source.key_policy.bytes().length().to_le_bytes(),
     );
+    update_charter_field(&mut hasher, "capability-mode", &[source.mode.tag()]);
+    update_charter_field(
+        &mut hasher,
+        "decision-epoch",
+        &source.decision_epoch.to_le_bytes(),
+    );
+    update_capability_descriptor(
+        &mut hasher,
+        "verifier-capability",
+        source.verifier_capability,
+    );
+    update_capability_descriptor(
+        &mut hasher,
+        "admission-capability",
+        source.admission_capability,
+    );
     update_charter_field(&mut hasher, "context", source.context.as_bytes());
     PromotionRootCharter(hasher.finalize())
+}
+
+fn update_capability_descriptor(
+    hasher: &mut DomainHasher,
+    field: &'static str,
+    descriptor: Option<PromotionCapabilityDescriptor>,
+) {
+    match descriptor {
+        None => update_charter_field(hasher, field, &[0]),
+        Some(descriptor) => {
+            update_charter_field(hasher, field, &[1]);
+            update_charter_field(
+                hasher,
+                field,
+                descriptor.implementation().content_id().as_bytes(),
+            );
+            update_charter_field(
+                hasher,
+                field,
+                &descriptor.implementation().length().to_le_bytes(),
+            );
+            update_charter_field(
+                hasher,
+                field,
+                descriptor.configuration().content_id().as_bytes(),
+            );
+            update_charter_field(
+                hasher,
+                field,
+                &descriptor.configuration().length().to_le_bytes(),
+            );
+            update_charter_field(hasher, field, &descriptor.protocol_version().to_le_bytes());
+        }
+    }
+}
+
+fn derive_legacy_promotion_root_charter_v2<V, P>(
+    source: &PromotionRootCharterIdentitySource<V, P>,
+) -> legacy::PromotionRootCharterV2
+where
+    V: CanonicalSchema,
+    P: CanonicalSchema,
+{
+    let mut hasher = DomainHasher::new(LEGACY_PROMOTION_ROOT_CHARTER_V2_DOMAIN);
+    update_charter_field(
+        &mut hasher,
+        "legacy-v2-identity-version",
+        &2u32.to_le_bytes(),
+    );
+    update_charter_field(
+        &mut hasher,
+        "legacy-v2-verifier-role",
+        &[source.verifier_role.tag()],
+    );
+    update_charter_field(
+        &mut hasher,
+        "legacy-v2-verifier-domain",
+        source.verifier_domain.as_bytes(),
+    );
+    update_charter_field(
+        &mut hasher,
+        "legacy-v2-verifier-schema-id",
+        source.verifier_schema.as_bytes(),
+    );
+    update_charter_field(
+        &mut hasher,
+        "legacy-v2-verifier-id",
+        source.verifier.id().as_bytes(),
+    );
+    update_charter_field(
+        &mut hasher,
+        "legacy-v2-verifier-observation-root",
+        source.verifier.bytes().content_id().as_bytes(),
+    );
+    update_charter_field(
+        &mut hasher,
+        "legacy-v2-verifier-observation-length",
+        &source.verifier.bytes().length().to_le_bytes(),
+    );
+    update_charter_field(
+        &mut hasher,
+        "legacy-v2-key-policy-role",
+        &[source.key_policy_role.tag()],
+    );
+    update_charter_field(
+        &mut hasher,
+        "legacy-v2-key-policy-domain",
+        source.key_policy_domain.as_bytes(),
+    );
+    update_charter_field(
+        &mut hasher,
+        "legacy-v2-key-policy-schema-id",
+        source.key_policy_schema.as_bytes(),
+    );
+    update_charter_field(
+        &mut hasher,
+        "legacy-v2-key-policy-id",
+        source.key_policy.id().as_bytes(),
+    );
+    update_charter_field(
+        &mut hasher,
+        "legacy-v2-key-policy-observation-root",
+        source.key_policy.bytes().content_id().as_bytes(),
+    );
+    update_charter_field(
+        &mut hasher,
+        "legacy-v2-key-policy-observation-length",
+        &source.key_policy.bytes().length().to_le_bytes(),
+    );
+    update_charter_field(&mut hasher, "legacy-v2-context", source.context.as_bytes());
+    legacy::PromotionRootCharterV2::from_digest(hasher.finalize())
 }
 
 fn derive_legacy_promotion_root_charter_v1<V, P>(
@@ -3862,30 +4645,572 @@ where
     legacy::PromotionRootCharterV1::from_digest(hasher.finalize())
 }
 
-/// The domain owner's independently configured promotion trust root
-/// (bead sj31i.52.9).
+/// Semantic version of the canonical promotion-request identity.
+pub const PROMOTION_REQUEST_IDENTITY_VERSION: u32 = 1;
+/// Domain for the canonical promotion-request identity.
+pub const PROMOTION_REQUEST_IDENTITY_DOMAIN: &str = "org.frankensim.fs-blake3.promotion-request.v1";
+/// Semantic version of the canonical verification-decision identity.
+pub const PROMOTION_VERIFICATION_DECISION_IDENTITY_VERSION: u32 = 1;
+/// Domain for the canonical verification-decision identity.
+pub const PROMOTION_VERIFICATION_DECISION_IDENTITY_DOMAIN: &str =
+    "org.frankensim.fs-blake3.promotion-verification-decision.v1";
+/// Semantic version of the canonical admission-decision identity.
+pub const PROMOTION_ADMISSION_DECISION_IDENTITY_VERSION: u32 = 1;
+/// Domain for the canonical admission-decision identity.
+pub const PROMOTION_ADMISSION_DECISION_IDENTITY_DOMAIN: &str =
+    "org.frankensim.fs-blake3.promotion-admission-decision.v1";
+/// Semantic version of the canonical committed promotion-decision identity.
+pub const PROMOTION_DECISION_IDENTITY_VERSION: u32 = 1;
+/// Domain for the canonical committed promotion-decision identity.
+pub const PROMOTION_DECISION_IDENTITY_DOMAIN: &str =
+    "org.frankensim.fs-blake3.promotion-decision.v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PromotionRequestIdentitySource {
+    subject_role: IdentityRole,
+    subject_schema: [u8; 32],
+    subject_id: [u8; 32],
+    subject_preimage: ContentId,
+    subject_bytes: u64,
+    anchor: ContentId,
+    verifier_role: IdentityRole,
+    verifier_schema: [u8; 32],
+    verifier_id: [u8; 32],
+    verifier_observation: ByteObservation,
+    key_policy_role: IdentityRole,
+    key_policy_schema: [u8; 32],
+    key_policy_id: [u8; 32],
+    key_policy_observation: ByteObservation,
+    root_charter: PromotionRootCharter,
+    root_context: &'static str,
+    scope: PromotionDecisionScope,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PromotionVerificationDecisionSource {
+    request: PromotionRequestId,
+    descriptor: PromotionCapabilityDescriptor,
+    statement: ContentId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PromotionAdmissionDecisionSource {
+    request: PromotionRequestId,
+    verification: PromotionVerificationDecisionId,
+    descriptor: PromotionCapabilityDescriptor,
+    statement: ContentId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PromotionCommittedDecisionSource {
+    request: PromotionRequestId,
+    verification: PromotionVerificationDecisionId,
+    admission: PromotionAdmissionDecisionId,
+    disposition: PromotionDecisionDisposition,
+}
+
+#[allow(dead_code)]
+fn classify_promotion_request_identity_fields(source: &PromotionRequestIdentitySource) {
+    let PromotionRequestIdentitySource {
+        subject_role: _,
+        subject_schema: _,
+        subject_id: _,
+        subject_preimage: _,
+        subject_bytes: _,
+        anchor: _,
+        verifier_role: _,
+        verifier_schema: _,
+        verifier_id: _,
+        verifier_observation: _,
+        key_policy_role: _,
+        key_policy_schema: _,
+        key_policy_id: _,
+        key_policy_observation: _,
+        root_charter: _,
+        root_context: _,
+        scope: _,
+    } = source;
+}
+
+#[allow(dead_code)]
+fn classify_promotion_verification_decision_identity_fields(
+    source: &PromotionVerificationDecisionSource,
+) {
+    let PromotionVerificationDecisionSource {
+        request: _,
+        descriptor: _,
+        statement: _,
+    } = source;
+}
+
+#[allow(dead_code)]
+fn classify_promotion_admission_decision_identity_fields(
+    source: &PromotionAdmissionDecisionSource,
+) {
+    let PromotionAdmissionDecisionSource {
+        request: _,
+        verification: _,
+        descriptor: _,
+        statement: _,
+    } = source;
+}
+
+#[allow(dead_code)]
+fn classify_promotion_committed_decision_identity_fields(
+    source: &PromotionCommittedDecisionSource,
+) {
+    let PromotionCommittedDecisionSource {
+        request: _,
+        verification: _,
+        admission: _,
+        disposition: _,
+    } = source;
+}
+
+/// Owner-local promotion-request declaration consumed by
+/// `xtask check-identities`.
+pub const PROMOTION_REQUEST_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-blake3:promotion-request",
+    "version_const=PROMOTION_REQUEST_IDENTITY_VERSION",
+    "version=1",
+    "domain=org.frankensim.fs-blake3.promotion-request.v1",
+    "domain_const=PROMOTION_REQUEST_IDENTITY_DOMAIN",
+    "encoder=derive_promotion_request",
+    "encoder_helpers=none",
+    "schema_constants=PROMOTION_REQUEST_IDENTITY_VERSION,PROMOTION_REQUEST_IDENTITY_DOMAIN",
+    "schema_functions=update_charter_field,promotion_request_id_from_digest,promotion_decision_id_bytes,PromotionDecisionScope::attempt,PromotionDecisionScope::decision_context,PromotionDecisionScope::epoch,PromotionDecisionScope::sequence,PromotionDecisionScope::predecessor,IdentityReceipt::id,IdentityReceipt::canonical_preimage,IdentityReceipt::canonical_bytes,ExternalAnchorRef::content_id,SchemaId::for_schema,SchemaId::as_bytes,IdentityRole::tag,ObservedIdentity::id,ObservedIdentity::bytes,ByteObservation::content_id,ByteObservation::length,ContentId::as_bytes,PromotionRootCharter::as_bytes,crates/fs-blake3/src/lib.rs#ContentHash::as_bytes,crates/fs-blake3/src/lib.rs#DomainHasher::new,crates/fs-blake3/src/lib.rs#DomainHasher::update,crates/fs-blake3/src/lib.rs#DomainHasher::finalize",
+    "schema_dependencies=fs-blake3:schema-id,fs-blake3:promotion-root-charter",
+    "digest=fs-blake3",
+    "encoding=typed-binary",
+    "sources=PromotionRequestIdentitySource",
+    "source_fields=PromotionRequestIdentitySource.subject_role:semantic,PromotionRequestIdentitySource.subject_schema:semantic,PromotionRequestIdentitySource.subject_id:semantic,PromotionRequestIdentitySource.subject_preimage:semantic,PromotionRequestIdentitySource.subject_bytes:semantic,PromotionRequestIdentitySource.anchor:semantic,PromotionRequestIdentitySource.verifier_role:semantic,PromotionRequestIdentitySource.verifier_schema:semantic,PromotionRequestIdentitySource.verifier_id:semantic,PromotionRequestIdentitySource.verifier_observation:semantic,PromotionRequestIdentitySource.key_policy_role:semantic,PromotionRequestIdentitySource.key_policy_schema:semantic,PromotionRequestIdentitySource.key_policy_id:semantic,PromotionRequestIdentitySource.key_policy_observation:semantic,PromotionRequestIdentitySource.root_charter:semantic,PromotionRequestIdentitySource.root_context:semantic,PromotionRequestIdentitySource.scope:semantic",
+    "source_bindings=PromotionRequestIdentitySource.subject_role>subject-role,PromotionRequestIdentitySource.subject_schema>subject-schema,PromotionRequestIdentitySource.subject_id>subject-id,PromotionRequestIdentitySource.subject_preimage>subject-preimage,PromotionRequestIdentitySource.subject_bytes>subject-bytes,PromotionRequestIdentitySource.anchor>anchor,PromotionRequestIdentitySource.verifier_role>verifier-role,PromotionRequestIdentitySource.verifier_schema>verifier-schema,PromotionRequestIdentitySource.verifier_id>verifier-id,PromotionRequestIdentitySource.verifier_observation>verifier-observation-root+verifier-observation-length,PromotionRequestIdentitySource.key_policy_role>key-policy-role,PromotionRequestIdentitySource.key_policy_schema>key-policy-schema,PromotionRequestIdentitySource.key_policy_id>key-policy-id,PromotionRequestIdentitySource.key_policy_observation>key-policy-observation-root+key-policy-observation-length,PromotionRequestIdentitySource.root_charter>root-charter,PromotionRequestIdentitySource.root_context>root-context,PromotionRequestIdentitySource.scope>attempt+decision-context+epoch+sequence+predecessor-presence+predecessor-id",
+    "external_semantic_fields=request-version,digest-domain,length-frame",
+    "semantic_fields=request-version,digest-domain,length-frame,subject-role,subject-schema,subject-id,subject-preimage,subject-bytes,anchor,verifier-role,verifier-schema,verifier-id,verifier-observation-root,verifier-observation-length,key-policy-role,key-policy-schema,key-policy-id,key-policy-observation-root,key-policy-observation-length,root-charter,root-context,attempt,decision-context,epoch,sequence,predecessor-presence,predecessor-id",
+    "excluded_fields=none",
+    "consumers=OwnerPromotionVerifier::verify,PromotionAdmissionRequest::decision,PromotionWitness::request_id,PromotionAuditRecord.request_id",
+    "mutations=request-version:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,digest-domain:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,length-frame:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,subject-role:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,subject-schema:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,subject-id:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,subject-preimage:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,subject-bytes:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,anchor:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,verifier-role:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,verifier-schema:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,verifier-id:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,verifier-observation-root:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,verifier-observation-length:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,key-policy-role:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,key-policy-schema:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,key-policy-id:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,key-policy-observation-root:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,key-policy-observation-length:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,root-charter:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,root-context:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,attempt:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,decision-context:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,epoch:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,sequence:crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis,predecessor-presence:crates/fs-blake3/tests/authority_promotion.rs#equivalent_reconstruction_requires_an_owner_executed_crosswalk,predecessor-id:crates/fs-blake3/tests/authority_promotion.rs#equivalent_reconstruction_requires_an_owner_executed_crosswalk",
+    "nonsemantic_mutations=none",
+    "field_guard=classify_promotion_request_identity_fields",
+    "transport_guard=PromotionWitness::request_id",
+    "version_guard=crates/fs-blake3/tests/authority_promotion.rs#decision_identity_binds_every_request_scope_axis",
+    "coupling_surface=fs-blake3:promotion-request",
+];
+
+/// Owner-local verifier-decision declaration consumed by
+/// `xtask check-identities`.
+pub const PROMOTION_VERIFICATION_DECISION_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-blake3:promotion-verification-decision",
+    "version_const=PROMOTION_VERIFICATION_DECISION_IDENTITY_VERSION",
+    "version=1",
+    "domain=org.frankensim.fs-blake3.promotion-verification-decision.v1",
+    "domain_const=PROMOTION_VERIFICATION_DECISION_IDENTITY_DOMAIN",
+    "encoder=derive_verification_decision",
+    "encoder_helpers=update_decision_descriptor",
+    "schema_constants=PROMOTION_VERIFICATION_DECISION_IDENTITY_VERSION,PROMOTION_VERIFICATION_DECISION_IDENTITY_DOMAIN",
+    "schema_functions=update_charter_field,promotion_verification_decision_id_from_digest,promotion_request_id_bytes,PromotionDecisionRequest::request_id,PromotionCapabilityStage::tag,PromotionCapabilityDescriptor::implementation,PromotionCapabilityDescriptor::configuration,PromotionCapabilityDescriptor::protocol_version,ByteObservation::content_id,ByteObservation::length,ContentId::as_bytes,crates/fs-blake3/src/lib.rs#ContentHash::as_bytes,crates/fs-blake3/src/lib.rs#DomainHasher::new,crates/fs-blake3/src/lib.rs#DomainHasher::update,crates/fs-blake3/src/lib.rs#DomainHasher::finalize",
+    "schema_dependencies=fs-blake3:promotion-request",
+    "digest=fs-blake3",
+    "encoding=typed-binary",
+    "sources=PromotionVerificationDecisionSource",
+    "source_fields=PromotionVerificationDecisionSource.request:semantic,PromotionVerificationDecisionSource.descriptor:semantic,PromotionVerificationDecisionSource.statement:semantic",
+    "source_bindings=PromotionVerificationDecisionSource.request>request,PromotionVerificationDecisionSource.descriptor>implementation-root+implementation-length+configuration-root+configuration-length+protocol-version,PromotionVerificationDecisionSource.statement>statement",
+    "external_semantic_fields=decision-version,digest-domain,length-frame,stage-tag",
+    "semantic_fields=decision-version,digest-domain,length-frame,stage-tag,request,implementation-root,implementation-length,configuration-root,configuration-length,protocol-version,statement",
+    "excluded_fields=none",
+    "consumers=PromotionAdmissionRequest::verification_decision,PromotionWitness::verification_decision,PromotionAuditRecord.verification_decision",
+    "mutations=decision-version:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,digest-domain:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,length-frame:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,stage-tag:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,request:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,implementation-root:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,implementation-length:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,configuration-root:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,configuration-length:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,protocol-version:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,statement:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars",
+    "nonsemantic_mutations=none",
+    "field_guard=classify_promotion_verification_decision_identity_fields",
+    "transport_guard=PromotionWitness::verification_decision",
+    "version_guard=crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars",
+    "coupling_surface=fs-blake3:promotion-verification-decision",
+];
+
+/// Owner-local admission-decision declaration consumed by
+/// `xtask check-identities`.
+pub const PROMOTION_ADMISSION_DECISION_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-blake3:promotion-admission-decision",
+    "version_const=PROMOTION_ADMISSION_DECISION_IDENTITY_VERSION",
+    "version=1",
+    "domain=org.frankensim.fs-blake3.promotion-admission-decision.v1",
+    "domain_const=PROMOTION_ADMISSION_DECISION_IDENTITY_DOMAIN",
+    "encoder=derive_admission_decision",
+    "encoder_helpers=none",
+    "schema_constants=PROMOTION_ADMISSION_DECISION_IDENTITY_VERSION,PROMOTION_ADMISSION_DECISION_IDENTITY_DOMAIN",
+    "schema_functions=update_charter_field,update_decision_descriptor,promotion_admission_decision_id_from_digest,promotion_request_id_bytes,promotion_verification_decision_id_bytes,PromotionAdmissionRequest::decision,PromotionAdmissionRequest::verification_decision,PromotionDecisionRequest::request_id,PromotionCapabilityStage::tag,PromotionCapabilityDescriptor::implementation,PromotionCapabilityDescriptor::configuration,PromotionCapabilityDescriptor::protocol_version,ByteObservation::content_id,ByteObservation::length,ContentId::as_bytes,crates/fs-blake3/src/lib.rs#ContentHash::as_bytes,crates/fs-blake3/src/lib.rs#DomainHasher::new,crates/fs-blake3/src/lib.rs#DomainHasher::update,crates/fs-blake3/src/lib.rs#DomainHasher::finalize",
+    "schema_dependencies=fs-blake3:promotion-request,fs-blake3:promotion-verification-decision",
+    "digest=fs-blake3",
+    "encoding=typed-binary",
+    "sources=PromotionAdmissionDecisionSource",
+    "source_fields=PromotionAdmissionDecisionSource.request:semantic,PromotionAdmissionDecisionSource.verification:semantic,PromotionAdmissionDecisionSource.descriptor:semantic,PromotionAdmissionDecisionSource.statement:semantic",
+    "source_bindings=PromotionAdmissionDecisionSource.request>request,PromotionAdmissionDecisionSource.verification>verification-decision,PromotionAdmissionDecisionSource.descriptor>implementation-root+implementation-length+configuration-root+configuration-length+protocol-version,PromotionAdmissionDecisionSource.statement>statement",
+    "external_semantic_fields=decision-version,digest-domain,length-frame,stage-tag",
+    "semantic_fields=decision-version,digest-domain,length-frame,stage-tag,request,verification-decision,implementation-root,implementation-length,configuration-root,configuration-length,protocol-version,statement",
+    "excluded_fields=none",
+    "consumers=PromotionWitness::admission_decision,PromotionAuditRecord.admission_decision",
+    "mutations=decision-version:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,digest-domain:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,length-frame:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,stage-tag:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,request:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,verification-decision:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,implementation-root:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,implementation-length:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,configuration-root:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,configuration-length:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,protocol-version:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars,statement:crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars",
+    "nonsemantic_mutations=none",
+    "field_guard=classify_promotion_admission_decision_identity_fields",
+    "transport_guard=PromotionWitness::admission_decision",
+    "version_guard=crates/fs-blake3/tests/authority_promotion.rs#stage_decision_identities_match_independent_complete_grammars",
+    "coupling_surface=fs-blake3:promotion-admission-decision",
+];
+
+/// Owner-local committed-decision declaration consumed by
+/// `xtask check-identities`.
+pub const PROMOTION_DECISION_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
+    "frankensim-identity-schema-v1",
+    "id=fs-blake3:promotion-decision",
+    "version_const=PROMOTION_DECISION_IDENTITY_VERSION",
+    "version=1",
+    "domain=org.frankensim.fs-blake3.promotion-decision.v1",
+    "domain_const=PROMOTION_DECISION_IDENTITY_DOMAIN",
+    "encoder=derive_promotion_decision",
+    "encoder_helpers=none",
+    "schema_constants=PROMOTION_DECISION_IDENTITY_VERSION,PROMOTION_DECISION_IDENTITY_DOMAIN",
+    "schema_functions=update_charter_field,promotion_decision_id_from_digest,promotion_request_id_bytes,promotion_verification_decision_id_bytes,promotion_admission_decision_id_bytes,PromotionDecisionRequest::request_id,PromotionDecisionDisposition::tag,crates/fs-blake3/src/lib.rs#ContentHash::as_bytes,crates/fs-blake3/src/lib.rs#DomainHasher::new,crates/fs-blake3/src/lib.rs#DomainHasher::update,crates/fs-blake3/src/lib.rs#DomainHasher::finalize",
+    "schema_dependencies=fs-blake3:promotion-request,fs-blake3:promotion-verification-decision,fs-blake3:promotion-admission-decision",
+    "digest=fs-blake3",
+    "encoding=typed-binary",
+    "sources=PromotionCommittedDecisionSource",
+    "source_fields=PromotionCommittedDecisionSource.request:semantic,PromotionCommittedDecisionSource.verification:semantic,PromotionCommittedDecisionSource.admission:semantic,PromotionCommittedDecisionSource.disposition:semantic",
+    "source_bindings=PromotionCommittedDecisionSource.request>request,PromotionCommittedDecisionSource.verification>verification,PromotionCommittedDecisionSource.admission>admission,PromotionCommittedDecisionSource.disposition>disposition",
+    "external_semantic_fields=decision-version,digest-domain,length-frame",
+    "semantic_fields=decision-version,digest-domain,length-frame,request,verification,admission,disposition",
+    "excluded_fields=none",
+    "consumers=PromotionWitness::decision_id,OwnerBoundPromotion::decision_id,PromotionAuditRecord.decision_id,PromotionDecisionScope::crosswalk",
+    "mutations=decision-version:crates/fs-blake3/tests/authority_promotion.rs#final_decision_identity_matches_independent_disposition_grammar,digest-domain:crates/fs-blake3/tests/authority_promotion.rs#final_decision_identity_matches_independent_disposition_grammar,length-frame:crates/fs-blake3/tests/authority_promotion.rs#final_decision_identity_matches_independent_disposition_grammar,request:crates/fs-blake3/tests/authority_promotion.rs#final_decision_identity_matches_independent_disposition_grammar,verification:crates/fs-blake3/tests/authority_promotion.rs#final_decision_identity_matches_independent_disposition_grammar,admission:crates/fs-blake3/tests/authority_promotion.rs#final_decision_identity_matches_independent_disposition_grammar,disposition:crates/fs-blake3/tests/authority_promotion.rs#final_decision_identity_matches_independent_disposition_grammar",
+    "nonsemantic_mutations=none",
+    "field_guard=classify_promotion_committed_decision_identity_fields",
+    "transport_guard=PromotionWitness::decision_id",
+    "version_guard=crates/fs-blake3/tests/authority_promotion.rs#final_decision_identity_matches_independent_disposition_grammar",
+    "coupling_surface=fs-blake3:promotion-decision",
+];
+
+fn derive_promotion_request<I, V, P>(
+    receipt: IdentityReceipt<I>,
+    anchor: ExternalAnchorRef,
+    verifier: ObservedIdentity<VerifierId<V>>,
+    key_policy: ObservedIdentity<KeyPolicyId<P>>,
+    root_charter: PromotionRootCharter,
+    root_context: &'static str,
+    scope: PromotionDecisionScope,
+) -> PromotionDecisionRequest
+where
+    I: StrongIdentity,
+    V: CanonicalSchema,
+    P: CanonicalSchema,
+{
+    let subject_schema = SchemaId::<I::Schema>::for_schema();
+    let verifier_schema = SchemaId::<V>::for_schema();
+    let key_policy_schema = SchemaId::<P>::for_schema();
+    let source = PromotionRequestIdentitySource {
+        subject_role: I::ROLE,
+        subject_schema: *subject_schema.as_bytes(),
+        subject_id: *receipt.id().as_bytes(),
+        subject_preimage: receipt.canonical_preimage(),
+        subject_bytes: receipt.canonical_bytes(),
+        anchor: anchor.content_id(),
+        verifier_role: <VerifierId<V> as StrongIdentity>::ROLE,
+        verifier_schema: *verifier_schema.as_bytes(),
+        verifier_id: *verifier.id().as_bytes(),
+        verifier_observation: verifier.bytes(),
+        key_policy_role: <KeyPolicyId<P> as StrongIdentity>::ROLE,
+        key_policy_schema: *key_policy_schema.as_bytes(),
+        key_policy_id: *key_policy.id().as_bytes(),
+        key_policy_observation: key_policy.bytes(),
+        root_charter,
+        root_context,
+        scope,
+    };
+    let mut hasher = DomainHasher::new(PROMOTION_REQUEST_IDENTITY_DOMAIN);
+    update_charter_field(
+        &mut hasher,
+        "request-version",
+        &PROMOTION_REQUEST_IDENTITY_VERSION.to_le_bytes(),
+    );
+    update_charter_field(&mut hasher, "subject-role", &[source.subject_role.tag()]);
+    update_charter_field(&mut hasher, "subject-schema", &source.subject_schema);
+    update_charter_field(&mut hasher, "subject-id", &source.subject_id);
+    update_charter_field(
+        &mut hasher,
+        "subject-preimage",
+        source.subject_preimage.as_bytes(),
+    );
+    update_charter_field(
+        &mut hasher,
+        "subject-bytes",
+        &source.subject_bytes.to_le_bytes(),
+    );
+    update_charter_field(&mut hasher, "anchor", source.anchor.as_bytes());
+    update_charter_field(&mut hasher, "verifier-role", &[source.verifier_role.tag()]);
+    update_charter_field(&mut hasher, "verifier-schema", &source.verifier_schema);
+    update_charter_field(&mut hasher, "verifier-id", &source.verifier_id);
+    update_charter_field(
+        &mut hasher,
+        "verifier-observation-root",
+        source.verifier_observation.content_id().as_bytes(),
+    );
+    update_charter_field(
+        &mut hasher,
+        "verifier-observation-length",
+        &source.verifier_observation.length().to_le_bytes(),
+    );
+    update_charter_field(
+        &mut hasher,
+        "key-policy-role",
+        &[source.key_policy_role.tag()],
+    );
+    update_charter_field(&mut hasher, "key-policy-schema", &source.key_policy_schema);
+    update_charter_field(&mut hasher, "key-policy-id", &source.key_policy_id);
+    update_charter_field(
+        &mut hasher,
+        "key-policy-observation-root",
+        source.key_policy_observation.content_id().as_bytes(),
+    );
+    update_charter_field(
+        &mut hasher,
+        "key-policy-observation-length",
+        &source.key_policy_observation.length().to_le_bytes(),
+    );
+    update_charter_field(&mut hasher, "root-charter", source.root_charter.as_bytes());
+    update_charter_field(&mut hasher, "root-context", source.root_context.as_bytes());
+    update_charter_field(&mut hasher, "attempt", source.scope.attempt().as_bytes());
+    update_charter_field(
+        &mut hasher,
+        "decision-context",
+        source.scope.decision_context().as_bytes(),
+    );
+    update_charter_field(&mut hasher, "epoch", &source.scope.epoch().to_le_bytes());
+    update_charter_field(
+        &mut hasher,
+        "sequence",
+        &source.scope.sequence().to_le_bytes(),
+    );
+    match source.scope.predecessor() {
+        None => update_charter_field(&mut hasher, "predecessor", &[0]),
+        Some(predecessor) => {
+            update_charter_field(&mut hasher, "predecessor", &[1]);
+            update_charter_field(
+                &mut hasher,
+                "predecessor",
+                promotion_decision_id_bytes(&predecessor),
+            );
+        }
+    }
+    let request_id = promotion_request_id_from_digest(hasher.finalize());
+    PromotionDecisionRequest {
+        request_id,
+        subject_role: source.subject_role,
+        subject_schema: source.subject_schema,
+        subject_id: source.subject_id,
+        subject_preimage: source.subject_preimage,
+        subject_bytes: source.subject_bytes,
+        anchor: source.anchor,
+        verifier_role: source.verifier_role,
+        verifier_schema: source.verifier_schema,
+        verifier_id: source.verifier_id,
+        verifier_observation: source.verifier_observation,
+        key_policy_role: source.key_policy_role,
+        key_policy_schema: source.key_policy_schema,
+        key_policy_id: source.key_policy_id,
+        key_policy_observation: source.key_policy_observation,
+        root_charter: source.root_charter,
+        root_context: source.root_context,
+        scope: source.scope,
+    }
+}
+
+fn update_decision_descriptor(
+    hasher: &mut DomainHasher,
+    descriptor: PromotionCapabilityDescriptor,
+) {
+    update_charter_field(
+        hasher,
+        "implementation-root",
+        descriptor.implementation().content_id().as_bytes(),
+    );
+    update_charter_field(
+        hasher,
+        "implementation-length",
+        &descriptor.implementation().length().to_le_bytes(),
+    );
+    update_charter_field(
+        hasher,
+        "configuration-root",
+        descriptor.configuration().content_id().as_bytes(),
+    );
+    update_charter_field(
+        hasher,
+        "configuration-length",
+        &descriptor.configuration().length().to_le_bytes(),
+    );
+    update_charter_field(
+        hasher,
+        "protocol-version",
+        &descriptor.protocol_version().to_le_bytes(),
+    );
+}
+
+fn derive_verification_decision(
+    request: &PromotionDecisionRequest,
+    descriptor: PromotionCapabilityDescriptor,
+    statement: ContentId,
+) -> PromotionVerificationDecisionId {
+    let source = PromotionVerificationDecisionSource {
+        request: request.request_id(),
+        descriptor,
+        statement,
+    };
+    let mut hasher = DomainHasher::new(PROMOTION_VERIFICATION_DECISION_IDENTITY_DOMAIN);
+    update_charter_field(
+        &mut hasher,
+        "decision-version",
+        &PROMOTION_VERIFICATION_DECISION_IDENTITY_VERSION.to_le_bytes(),
+    );
+    update_charter_field(
+        &mut hasher,
+        "stage",
+        &[PromotionCapabilityStage::Verification.tag()],
+    );
+    update_charter_field(
+        &mut hasher,
+        "request",
+        promotion_request_id_bytes(&source.request),
+    );
+    update_decision_descriptor(&mut hasher, source.descriptor);
+    update_charter_field(&mut hasher, "statement", source.statement.as_bytes());
+    promotion_verification_decision_id_from_digest(hasher.finalize())
+}
+
+fn derive_admission_decision(
+    request: &PromotionAdmissionRequest,
+    descriptor: PromotionCapabilityDescriptor,
+    statement: ContentId,
+) -> PromotionAdmissionDecisionId {
+    let source = PromotionAdmissionDecisionSource {
+        request: request.decision().request_id(),
+        verification: request.verification_decision(),
+        descriptor,
+        statement,
+    };
+    let mut hasher = DomainHasher::new(PROMOTION_ADMISSION_DECISION_IDENTITY_DOMAIN);
+    update_charter_field(
+        &mut hasher,
+        "decision-version",
+        &PROMOTION_ADMISSION_DECISION_IDENTITY_VERSION.to_le_bytes(),
+    );
+    update_charter_field(
+        &mut hasher,
+        "stage",
+        &[PromotionCapabilityStage::Admission.tag()],
+    );
+    update_charter_field(
+        &mut hasher,
+        "request",
+        promotion_request_id_bytes(&source.request),
+    );
+    update_charter_field(
+        &mut hasher,
+        "verification-decision",
+        promotion_verification_decision_id_bytes(&source.verification),
+    );
+    update_decision_descriptor(&mut hasher, source.descriptor);
+    update_charter_field(&mut hasher, "statement", source.statement.as_bytes());
+    promotion_admission_decision_id_from_digest(hasher.finalize())
+}
+
+fn derive_promotion_decision(
+    request: &PromotionDecisionRequest,
+    verification: PromotionVerificationDecisionId,
+    admission: PromotionAdmissionDecisionId,
+    disposition: PromotionDecisionDisposition,
+) -> PromotionDecisionId {
+    let source = PromotionCommittedDecisionSource {
+        request: request.request_id(),
+        verification,
+        admission,
+        disposition,
+    };
+    let mut hasher = DomainHasher::new(PROMOTION_DECISION_IDENTITY_DOMAIN);
+    update_charter_field(
+        &mut hasher,
+        "decision-version",
+        &PROMOTION_DECISION_IDENTITY_VERSION.to_le_bytes(),
+    );
+    update_charter_field(
+        &mut hasher,
+        "request",
+        promotion_request_id_bytes(&source.request),
+    );
+    update_charter_field(
+        &mut hasher,
+        "verification",
+        promotion_verification_decision_id_bytes(&source.verification),
+    );
+    update_charter_field(
+        &mut hasher,
+        "admission",
+        promotion_admission_decision_id_bytes(&source.admission),
+    );
+    update_charter_field(&mut hasher, "disposition", &[source.disposition.tag()]);
+    promotion_decision_id_from_digest(hasher.finalize())
+}
+
+/// Compatibility/configuration-only promotion state.
 ///
-/// Configuration names the EXACT verifier and key-policy identities —
-/// with their canonical-byte observations — that the owning domain
-/// trusts for promotion. Generic [`AuthorityVerifier`]/
-/// [`AuthorityAdmitter`] capabilities (including a foreign
-/// permit-everything implementation) can still drive
-/// `Presented → Verified → Admitted`, but that admission stays
-/// policy-relative: the ONLY path to a [`PromotionWitness`] runs
-/// through [`Self::admit_for_promotion`], which re-adjudicates the
-/// presented binding against this root's own retained observations.
+/// Roots in this state remain `Copy` so existing policy-description and
+/// historical-replay code can migrate incrementally. They have no executable
+/// capability and every minting attempt fails closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConfigurationOnlyPromotion;
+
+struct PromotionRootInstanceSeal {
+    _private: (),
+}
+
+/// Owner-held executable capability bundle.
 ///
-/// Root-instance provenance: [`Self::charter`] fingerprints this exact
-/// configuration and every minted witness carries it
-/// ([`PromotionWitness::root_charter`]), so consumers that pin their
-/// domain owner's charter reject witnesses from cloned-then-reconfigured
-/// or self-configured roots (see [`PromotionRootCharter`]).
+/// Fields are private and this type is not `Copy` or `Clone`: reconstructing
+/// the same public configuration creates a distinct live instance. The
+/// verifier/admitter values cannot be swapped or replaced after construction.
+pub struct OwnerPromotionCapabilities<RV, RA>
+where
+    RV: OwnerPromotionVerifier,
+    RA: OwnerPromotionAdmitter,
+{
+    verifier: RV,
+    admitter: RA,
+    verifier_descriptor: PromotionCapabilityDescriptor,
+    admission_descriptor: PromotionCapabilityDescriptor,
+    epoch: u64,
+    instance: Arc<PromotionRootInstanceSeal>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromotionRootExecutionState {
+    Ready,
+    InFlight,
+    Poisoned,
+}
+
+/// A promotion root parameterized by its capability state (bead
+/// `sj31i.52.9.1`).
 ///
-/// No-claim boundary: the root's guarantees are relative to its
-/// configuration authority — fs-blake3 makes forgery of the witness
-/// type impossible and binding drift refusable; it cannot vouch that
-/// the domain owner configured a meaningful verifier.
-pub struct PromotionTrustRoot<V, P>
+/// `PromotionTrustRoot<V, P>` is deliberately configuration-only. The only
+/// promotion-capable form is returned by
+/// [`PromotionTrustRoot::configure_owner_executed`]; it physically owns the
+/// verifier and admission capability objects, burns replay state before each
+/// call, and is nominally non-copyable. A raw [`PromotionWitness`] is replay
+/// evidence rather than consumption authority: an owner consumer must obtain
+/// [`OwnerBoundPromotion`] by binding it back to the exact live root instance,
+/// or obtain a new target-root witness through the explicit owner-executed
+/// crosswalk.
+pub struct PromotionTrustRoot<V, P, C = ConfigurationOnlyPromotion>
 where
     V: CanonicalSchema,
     P: CanonicalSchema,
@@ -3893,9 +5218,12 @@ where
     verifier: ObservedIdentity<VerifierId<V>>,
     key_policy: ObservedIdentity<KeyPolicyId<P>>,
     context: &'static str,
+    capabilities: C,
+    execution_state: PromotionRootExecutionState,
+    last_attempted_sequence: Option<u64>,
 }
 
-impl<V, P> Clone for PromotionTrustRoot<V, P>
+impl<V, P> Clone for PromotionTrustRoot<V, P, ConfigurationOnlyPromotion>
 where
     V: CanonicalSchema,
     P: CanonicalSchema,
@@ -3905,20 +5233,21 @@ where
     }
 }
 
-impl<V, P> Copy for PromotionTrustRoot<V, P>
+impl<V, P> Copy for PromotionTrustRoot<V, P, ConfigurationOnlyPromotion>
 where
     V: CanonicalSchema,
     P: CanonicalSchema,
 {
 }
 
-impl<V, P> fmt::Debug for PromotionTrustRoot<V, P>
+impl<V, P> fmt::Debug for PromotionTrustRoot<V, P, ConfigurationOnlyPromotion>
 where
     V: CanonicalSchema,
     P: CanonicalSchema,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PromotionTrustRoot")
+            .field("mode", &PromotionRootMode::ConfigurationOnly)
             .field("verifier_domain", &V::DOMAIN)
             .field("key_policy_domain", &P::DOMAIN)
             .field("context", &self.context)
@@ -3926,87 +5255,225 @@ where
     }
 }
 
-impl<V, P> PromotionTrustRoot<V, P>
+impl<V, P, RV, RA> fmt::Debug for PromotionTrustRoot<V, P, OwnerPromotionCapabilities<RV, RA>>
+where
+    V: CanonicalSchema,
+    P: CanonicalSchema,
+    RV: OwnerPromotionVerifier,
+    RA: OwnerPromotionAdmitter,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PromotionTrustRoot")
+            .field("mode", &PromotionRootMode::OwnerExecuted)
+            .field("verifier_domain", &V::DOMAIN)
+            .field("key_policy_domain", &P::DOMAIN)
+            .field("context", &self.context)
+            .field("decision_epoch", &self.capabilities.epoch)
+            .field("execution_state", &self.execution_state)
+            .field("last_attempted_sequence", &self.last_attempted_sequence)
+            .finish_non_exhaustive()
+    }
+}
+
+const fn validate_legacy_promotion_root_configuration<V, P>(
+    context: &'static str,
+) -> Result<(), PromotionRefusal>
 where
     V: CanonicalSchema,
     P: CanonicalSchema,
 {
-    /// Configure the root from independently retained verifier and
-    /// key-policy observations.
+    if context.is_empty() {
+        return Err(PromotionRefusal::EmptyContext);
+    }
+    if !promotion_charter_schema_depth_is_admissible(V::FIELDS, 0) {
+        return Err(PromotionRefusal::SchemaNestingExceedsCharter {
+            role: <VerifierId<V> as StrongIdentity>::ROLE,
+            maximum_depth: MAX_SCHEMA_CHILD_DEPTH,
+        });
+    }
+    if !promotion_charter_schema_depth_is_admissible(P::FIELDS, 0) {
+        return Err(PromotionRefusal::SchemaNestingExceedsCharter {
+            role: <KeyPolicyId<P> as StrongIdentity>::ROLE,
+            maximum_depth: MAX_SCHEMA_CHILD_DEPTH,
+        });
+    }
+    Ok(())
+}
+
+const fn validate_promotion_root_configuration<V, P>(
+    context: &'static str,
+) -> Result<(), PromotionRefusal>
+where
+    V: CanonicalSchema,
+    P: CanonicalSchema,
+{
+    match validate_legacy_promotion_root_configuration::<V, P>(context) {
+        Ok(()) => {}
+        Err(refusal) => return Err(refusal),
+    }
+    if context.len() > MAX_PROMOTION_CONTEXT_BYTES {
+        return Err(PromotionRefusal::ContextTooLong {
+            maximum_bytes: MAX_PROMOTION_CONTEXT_BYTES,
+            presented_bytes: context.len(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_promotion_binding<I, V, P>(
+    verifier: ObservedIdentity<VerifierId<V>>,
+    key_policy: ObservedIdentity<KeyPolicyId<P>>,
+    admitted: &AuthorityRef<I, V, P, Admitted>,
+    verifier_observation: ByteObservation,
+    key_policy_observation: ByteObservation,
+) -> Result<(), PromotionRefusal>
+where
+    I: StrongIdentity,
+    V: CanonicalSchema,
+    P: CanonicalSchema,
+{
+    match adjudicate(
+        verifier,
+        ObservedIdentity::presented(admitted.verifier(), verifier_observation),
+    ) {
+        IdentityAdjudication::SameObservation => {}
+        IdentityAdjudication::DistinctIds => return Err(PromotionRefusal::ForeignVerifier),
+        IdentityAdjudication::Refused(refusal) => {
+            return Err(PromotionRefusal::VerifierObservationMismatch {
+                configured: refusal.first(),
+                presented: refusal.second(),
+            });
+        }
+    }
+    match adjudicate(
+        key_policy,
+        ObservedIdentity::presented(admitted.key_policy(), key_policy_observation),
+    ) {
+        IdentityAdjudication::SameObservation => {}
+        IdentityAdjudication::DistinctIds => return Err(PromotionRefusal::ForeignKeyPolicy),
+        IdentityAdjudication::Refused(refusal) => {
+            return Err(PromotionRefusal::KeyPolicyObservationMismatch {
+                configured: refusal.first(),
+                presented: refusal.second(),
+            });
+        }
+    }
+    Ok(())
+}
+
+impl<V, P> PromotionTrustRoot<V, P, ConfigurationOnlyPromotion>
+where
+    V: CanonicalSchema,
+    P: CanonicalSchema,
+{
+    /// Retain a configuration-only root for diagnostics and historical replay.
     ///
-    /// # Errors
-    /// Refuses an empty context string or either schema when a child binding
-    /// exceeds the depth at which [`SchemaId`] remains a complete descriptor.
+    /// This compatibility constructor deliberately does NOT install owner
+    /// capabilities. Its result can derive a v3 configuration charter but can
+    /// never mint a promotion witness.
     pub const fn configure(
         verifier: ObservedIdentity<VerifierId<V>>,
         key_policy: ObservedIdentity<KeyPolicyId<P>>,
         context: &'static str,
     ) -> Result<Self, PromotionRefusal> {
-        if context.is_empty() {
-            return Err(PromotionRefusal::EmptyContext);
-        }
-        if !promotion_charter_schema_depth_is_admissible(V::FIELDS, 0) {
-            return Err(PromotionRefusal::SchemaNestingExceedsCharter {
-                role: <VerifierId<V> as StrongIdentity>::ROLE,
-                maximum_depth: MAX_SCHEMA_CHILD_DEPTH,
-            });
-        }
-        if !promotion_charter_schema_depth_is_admissible(P::FIELDS, 0) {
-            return Err(PromotionRefusal::SchemaNestingExceedsCharter {
-                role: <KeyPolicyId<P> as StrongIdentity>::ROLE,
-                maximum_depth: MAX_SCHEMA_CHILD_DEPTH,
-            });
+        match validate_promotion_root_configuration::<V, P>(context) {
+            Ok(()) => {}
+            Err(refusal) => return Err(refusal),
         }
         Ok(Self {
             verifier,
             key_policy,
             context,
+            capabilities: ConfigurationOnlyPromotion,
+            execution_state: PromotionRootExecutionState::Ready,
+            last_attempted_sequence: None,
         })
     }
 
-    /// This root's exact-configuration fingerprint (bead sj31i.52.9).
+    /// Construct a non-copyable root that physically owns both executable
+    /// capability objects.
     ///
-    /// Derived without allocation after binding both explicit roles, both
-    /// complete recursive schema identities, both schema domains, the
-    /// verifier and key-policy identity digests, their canonical-byte
-    /// observations (content root and exact length), and the context string,
-    /// all length-framed under [`PROMOTION_ROOT_CHARTER_DOMAIN`]. Domain
-    /// owners publish/pin this value; consumers compare it against
-    /// [`PromotionWitness::root_charter`].
+    /// # Errors
+    /// Refuses invalid schemas/context, a zero owner-policy epoch, or a zero
+    /// decision-protocol version. Capability descriptors are read from the
+    /// actual stored objects rather than accepted as separate caller values.
+    pub fn configure_owner_executed<RV, RA>(
+        verifier: ObservedIdentity<VerifierId<V>>,
+        key_policy: ObservedIdentity<KeyPolicyId<P>>,
+        context: &'static str,
+        decision_epoch: u64,
+        verifier_capability: RV,
+        admission_capability: RA,
+    ) -> Result<PromotionTrustRoot<V, P, OwnerPromotionCapabilities<RV, RA>>, PromotionRefusal>
+    where
+        RV: OwnerPromotionVerifier,
+        RA: OwnerPromotionAdmitter,
+    {
+        validate_promotion_root_configuration::<V, P>(context)?;
+        if decision_epoch == 0 {
+            return Err(PromotionRefusal::InvalidDecisionEpoch);
+        }
+        let verifier_descriptor = verifier_capability.descriptor();
+        if verifier_descriptor.protocol_version() == 0 {
+            return Err(PromotionRefusal::InvalidCapabilityProtocolVersion {
+                stage: PromotionCapabilityStage::Verification,
+            });
+        }
+        let admission_descriptor = admission_capability.descriptor();
+        if admission_descriptor.protocol_version() == 0 {
+            return Err(PromotionRefusal::InvalidCapabilityProtocolVersion {
+                stage: PromotionCapabilityStage::Admission,
+            });
+        }
+        Ok(PromotionTrustRoot {
+            verifier,
+            key_policy,
+            context,
+            capabilities: OwnerPromotionCapabilities {
+                verifier: verifier_capability,
+                admitter: admission_capability,
+                verifier_descriptor,
+                admission_descriptor,
+                epoch: decision_epoch,
+                instance: Arc::new(PromotionRootInstanceSeal { _private: () }),
+            },
+            execution_state: PromotionRootExecutionState::Ready,
+            last_attempted_sequence: None,
+        })
+    }
+
+    /// V3 fingerprint of this non-authoritative configuration profile.
     #[must_use]
     pub fn charter(&self) -> PromotionRootCharter {
         derive_promotion_root_charter(&self.charter_identity_source())
     }
 
-    /// Reconstruct the historical v1 charter for typed replay/crosswalk use.
-    ///
-    /// The result is nominally quarantined as
-    /// [`legacy::PromotionRootCharterV1`]; no current promotion or witness API
-    /// accepts it. This deliberately preserves the old incomplete grammar so
-    /// historical pins remain explainable without regaining authority.
+    /// Reconstruct the quarantined v2 configuration charter.
+    #[must_use]
+    pub fn legacy_v2_charter_for_replay(&self) -> legacy::PromotionRootCharterV2 {
+        derive_legacy_promotion_root_charter_v2(&self.charter_identity_source())
+    }
+
+    /// Reconstruct the quarantined v1 configuration charter.
     #[must_use]
     pub fn legacy_v1_charter_for_replay(&self) -> legacy::PromotionRootCharterV1 {
         derive_legacy_promotion_root_charter_v1(&self.charter_identity_source())
     }
 
     fn charter_identity_source(&self) -> PromotionRootCharterIdentitySource<V, P> {
-        promotion_root_charter_identity_source(self.verifier, self.key_policy, self.context)
+        promotion_root_charter_identity_source(
+            self.verifier,
+            self.key_policy,
+            PromotionRootMode::ConfigurationOnly,
+            0,
+            None,
+            None,
+            self.context,
+        )
     }
 
-    /// The opaque domain-owner decision: admit a policy-relative
-    /// admission for PROMOTION by re-adjudicating its exact verifier
-    /// and key-policy bindings against this root's independently
-    /// retained observations.
-    ///
-    /// The caller supplies the observations it retained for the
-    /// presented verifier/key-policy canonical bytes; a digest-only
-    /// presentation cannot skip the observation check.
-    ///
-    /// # Errors
-    /// [`PromotionRefusal::ForeignVerifier`]/[`PromotionRefusal::ForeignKeyPolicy`]
-    /// when the identities differ, and the observation-mismatch
-    /// variants (both observations retained) when an identity matches
-    /// over different canonical bytes.
+    /// Compatibility surface: re-adjudicate the public binding, then refuse
+    /// because configuration-only state has no executable owner capability.
     pub fn admit_for_promotion<I>(
         &self,
         admitted: &AuthorityRef<I, V, P, Admitted>,
@@ -4016,49 +5483,377 @@ where
     where
         I: StrongIdentity,
     {
-        match adjudicate(
+        validate_promotion_binding(
             self.verifier,
-            ObservedIdentity::presented(admitted.verifier(), verifier_observation),
-        ) {
-            IdentityAdjudication::SameObservation => {}
-            IdentityAdjudication::DistinctIds => return Err(PromotionRefusal::ForeignVerifier),
-            IdentityAdjudication::Refused(refusal) => {
-                return Err(PromotionRefusal::VerifierObservationMismatch {
-                    configured: refusal.first(),
-                    presented: refusal.second(),
-                });
-            }
-        }
-        match adjudicate(
             self.key_policy,
-            ObservedIdentity::presented(admitted.key_policy(), key_policy_observation),
-        ) {
-            IdentityAdjudication::SameObservation => {}
-            IdentityAdjudication::DistinctIds => return Err(PromotionRefusal::ForeignKeyPolicy),
-            IdentityAdjudication::Refused(refusal) => {
-                return Err(PromotionRefusal::KeyPolicyObservationMismatch {
-                    configured: refusal.first(),
-                    presented: refusal.second(),
-                });
+            admitted,
+            verifier_observation,
+            key_policy_observation,
+        )?;
+        Err(PromotionRefusal::OwnerCapabilitiesUnavailable)
+    }
+}
+
+impl<V, P, RV, RA> PromotionTrustRoot<V, P, OwnerPromotionCapabilities<RV, RA>>
+where
+    V: CanonicalSchema,
+    P: CanonicalSchema,
+    RV: OwnerPromotionVerifier,
+    RA: OwnerPromotionAdmitter,
+{
+    /// V3 fingerprint binding configuration, exact capability descriptors,
+    /// owner-executed mode, and the decision epoch. The live root-instance
+    /// seal is intentionally not a portable hash input; authority consumption
+    /// additionally performs private instance binding.
+    #[must_use]
+    pub fn charter(&self) -> PromotionRootCharter {
+        derive_promotion_root_charter(&self.charter_identity_source())
+    }
+
+    /// Reconstruct the exact historical v2 configuration-only charter.
+    #[must_use]
+    pub fn legacy_v2_charter_for_replay(&self) -> legacy::PromotionRootCharterV2 {
+        derive_legacy_promotion_root_charter_v2(&self.charter_identity_source())
+    }
+
+    /// Reconstruct the exact historical v1 configuration-only charter.
+    #[must_use]
+    pub fn legacy_v1_charter_for_replay(&self) -> legacy::PromotionRootCharterV1 {
+        derive_legacy_promotion_root_charter_v1(&self.charter_identity_source())
+    }
+
+    fn charter_identity_source(&self) -> PromotionRootCharterIdentitySource<V, P> {
+        promotion_root_charter_identity_source(
+            self.verifier,
+            self.key_policy,
+            PromotionRootMode::OwnerExecuted,
+            self.capabilities.epoch,
+            Some(self.capabilities.verifier_descriptor),
+            Some(self.capabilities.admission_descriptor),
+            self.context,
+        )
+    }
+
+    /// Historical unscoped minting is forbidden even on an owner root.
+    pub fn admit_for_promotion<I>(
+        &self,
+        admitted: &AuthorityRef<I, V, P, Admitted>,
+        verifier_observation: ByteObservation,
+        key_policy_observation: ByteObservation,
+    ) -> Result<PromotionWitness<I, V, P>, PromotionRefusal>
+    where
+        I: StrongIdentity,
+    {
+        validate_promotion_binding(
+            self.verifier,
+            self.key_policy,
+            admitted,
+            verifier_observation,
+            key_policy_observation,
+        )?;
+        Err(PromotionRefusal::UnscopedPromotionForbidden)
+    }
+
+    /// Execute the root-owned verifier and admission capabilities for one
+    /// exact replay-bounded scope, then atomically publish a raw witness.
+    ///
+    /// The sequence is burned and the root marked in-flight BEFORE owner code
+    /// is invoked. Refusal/cancellation returns the root to ready but does not
+    /// unburn the sequence. A panic is caught, publishes no witness, and
+    /// permanently poisons the root. The root invokes each stage at most once;
+    /// this leaf does not impose a deadline or internal-work budget on the
+    /// capability implementation.
+    pub fn decide_for_promotion<I>(
+        &mut self,
+        admitted: &AuthorityRef<I, V, P, Admitted>,
+        verifier_observation: ByteObservation,
+        key_policy_observation: ByteObservation,
+        scope: PromotionDecisionScope,
+    ) -> Result<PromotionWitness<I, V, P>, PromotionRefusal>
+    where
+        I: StrongIdentity,
+    {
+        if scope.predecessor().is_some() {
+            return Err(PromotionRefusal::CrosswalkPredecessorMismatch);
+        }
+        self.execute_promotion_decision(
+            admitted,
+            verifier_observation,
+            key_policy_observation,
+            scope,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn execute_promotion_decision<I>(
+        &mut self,
+        admitted: &AuthorityRef<I, V, P, Admitted>,
+        verifier_observation: ByteObservation,
+        key_policy_observation: ByteObservation,
+        scope: PromotionDecisionScope,
+        crosswalk_predecessor_admitted: bool,
+    ) -> Result<PromotionWitness<I, V, P>, PromotionRefusal>
+    where
+        I: StrongIdentity,
+    {
+        if scope.predecessor().is_some() != crosswalk_predecessor_admitted {
+            return Err(PromotionRefusal::CrosswalkPredecessorMismatch);
+        }
+        validate_promotion_binding(
+            self.verifier,
+            self.key_policy,
+            admitted,
+            verifier_observation,
+            key_policy_observation,
+        )?;
+        match self.execution_state {
+            PromotionRootExecutionState::Ready => {}
+            PromotionRootExecutionState::InFlight => {
+                return Err(PromotionRefusal::DecisionAlreadyInFlight);
+            }
+            PromotionRootExecutionState::Poisoned => {
+                return Err(PromotionRefusal::RootPoisoned);
             }
         }
-        Ok(PromotionWitness {
+        if scope.epoch() != self.capabilities.epoch {
+            return Err(PromotionRefusal::WrongDecisionEpoch {
+                configured: self.capabilities.epoch,
+                presented: scope.epoch(),
+            });
+        }
+        if let Some(last_attempted) = self.last_attempted_sequence
+            && scope.sequence() <= last_attempted
+        {
+            return Err(PromotionRefusal::StaleOrReplayedDecision {
+                last_attempted,
+                presented: scope.sequence(),
+            });
+        }
+
+        let root_charter = self.charter();
+        let request = derive_promotion_request(
+            admitted.receipt(),
+            admitted.anchor(),
+            self.verifier,
+            self.key_policy,
+            root_charter,
+            self.context,
+            scope,
+        );
+
+        // Transaction boundary: burn-before-call. No error below restores the
+        // previous sequence.
+        self.last_attempted_sequence = Some(scope.sequence());
+        self.execution_state = PromotionRootExecutionState::InFlight;
+
+        let verifier_verdict = catch_unwind(AssertUnwindSafe(|| {
+            self.capabilities.verifier.verify(&request)
+        }));
+        let verification_statement = match verifier_verdict {
+            Err(_) => {
+                self.execution_state = PromotionRootExecutionState::Poisoned;
+                return Err(PromotionRefusal::CapabilityPanicked {
+                    stage: PromotionCapabilityStage::Verification,
+                });
+            }
+            Ok(PromotionCapabilityVerdict::Approve { statement }) => statement,
+            Ok(PromotionCapabilityVerdict::Refuse { reason }) => {
+                self.execution_state = PromotionRootExecutionState::Ready;
+                return Err(PromotionRefusal::CapabilityRefused {
+                    stage: PromotionCapabilityStage::Verification,
+                    reason,
+                });
+            }
+            Ok(PromotionCapabilityVerdict::Cancelled { reason }) => {
+                self.execution_state = PromotionRootExecutionState::Ready;
+                return Err(PromotionRefusal::CapabilityCancelled {
+                    stage: PromotionCapabilityStage::Verification,
+                    reason,
+                });
+            }
+        };
+        let verification_decision = derive_verification_decision(
+            &request,
+            self.capabilities.verifier_descriptor,
+            verification_statement,
+        );
+        let admission_request = PromotionAdmissionRequest {
+            decision: request,
+            verification_capability: self.capabilities.verifier_descriptor,
+            verification_statement,
+            verification_decision,
+        };
+        let admission_verdict = catch_unwind(AssertUnwindSafe(|| {
+            self.capabilities.admitter.admit(&admission_request)
+        }));
+        let admission_statement = match admission_verdict {
+            Err(_) => {
+                self.execution_state = PromotionRootExecutionState::Poisoned;
+                return Err(PromotionRefusal::CapabilityPanicked {
+                    stage: PromotionCapabilityStage::Admission,
+                });
+            }
+            Ok(PromotionCapabilityVerdict::Approve { statement }) => statement,
+            Ok(PromotionCapabilityVerdict::Refuse { reason }) => {
+                self.execution_state = PromotionRootExecutionState::Ready;
+                return Err(PromotionRefusal::CapabilityRefused {
+                    stage: PromotionCapabilityStage::Admission,
+                    reason,
+                });
+            }
+            Ok(PromotionCapabilityVerdict::Cancelled { reason }) => {
+                self.execution_state = PromotionRootExecutionState::Ready;
+                return Err(PromotionRefusal::CapabilityCancelled {
+                    stage: PromotionCapabilityStage::Admission,
+                    reason,
+                });
+            }
+        };
+        let admission_decision = derive_admission_decision(
+            &admission_request,
+            self.capabilities.admission_descriptor,
+            admission_statement,
+        );
+        let disposition = PromotionDecisionDisposition::Approved;
+        let decision_id = derive_promotion_decision(
+            admission_request.decision(),
+            verification_decision,
+            admission_decision,
+            disposition,
+        );
+        let witness = PromotionWitness {
             subject: admitted.receipt(),
             anchor: admitted.anchor(),
             verifier: self.verifier,
             key_policy: self.key_policy,
             context: self.context,
-            root_charter: self.charter(),
+            root_charter,
+            scope,
+            verifier_capability: self.capabilities.verifier_descriptor,
+            admission_capability: self.capabilities.admission_descriptor,
+            verification_statement,
+            admission_statement,
+            disposition,
+            request_id: admission_request.decision().request_id(),
+            verification_decision,
+            admission_decision,
+            decision_id,
+            root_instance: Arc::clone(&self.capabilities.instance),
+        };
+        self.execution_state = PromotionRootExecutionState::Ready;
+        Ok(witness)
+    }
+
+    /// Bind raw replay evidence back to this exact live root and nominal
+    /// capability pair. Matching public IDs, descriptors, and v3 charter are
+    /// insufficient if the private root-instance seal differs. Binding is a
+    /// reusable proof check, not a one-shot consumption ledger; callers that
+    /// require single use must retain/adjudicate the returned decision ID.
+    pub fn bind_witness<'a, I>(
+        &'a self,
+        witness: &'a PromotionWitness<I, V, P>,
+    ) -> Result<OwnerBoundPromotion<'a, I, V, P, RV, RA>, PromotionRefusal>
+    where
+        I: StrongIdentity,
+    {
+        if !Arc::ptr_eq(&self.capabilities.instance, &witness.root_instance) {
+            return Err(PromotionRefusal::ForeignRootInstance);
+        }
+        let request = derive_promotion_request(
+            witness.subject,
+            witness.anchor,
+            self.verifier,
+            self.key_policy,
+            self.charter(),
+            self.context,
+            witness.scope,
+        );
+        let verification = derive_verification_decision(
+            &request,
+            self.capabilities.verifier_descriptor,
+            witness.verification_statement,
+        );
+        let admission_request = PromotionAdmissionRequest {
+            decision: request,
+            verification_capability: self.capabilities.verifier_descriptor,
+            verification_statement: witness.verification_statement,
+            verification_decision: verification,
+        };
+        let admission = derive_admission_decision(
+            &admission_request,
+            self.capabilities.admission_descriptor,
+            witness.admission_statement,
+        );
+        let decision = derive_promotion_decision(
+            admission_request.decision(),
+            verification,
+            admission,
+            witness.disposition,
+        );
+        if witness.verifier != self.verifier
+            || witness.key_policy != self.key_policy
+            || witness.context != self.context
+            || witness.root_charter != self.charter()
+            || witness.scope.epoch() != self.capabilities.epoch
+            || witness.verifier_capability != self.capabilities.verifier_descriptor
+            || witness.admission_capability != self.capabilities.admission_descriptor
+            || witness.disposition != PromotionDecisionDisposition::Approved
+            || witness.request_id != admission_request.decision().request_id()
+            || witness.verification_decision != verification
+            || witness.admission_decision != admission
+            || witness.decision_id != decision
+        {
+            return Err(PromotionRefusal::WitnessBindingMismatch);
+        }
+        Ok(OwnerBoundPromotion {
+            witness,
+            capability_types: PhantomData,
         })
+    }
+
+    /// Re-adjudicate a witness bound to another live owner root and mint an
+    /// equivalent witness for this root only through an explicit predecessor-
+    /// bound owner decision. This is the sole in-process reconstruction path;
+    /// portable/offline reconstruction still requires an authenticated
+    /// external crosswalk not supplied by this leaf crate.
+    pub fn crosswalk_witness<I, SRV, SRA>(
+        &mut self,
+        source: &OwnerBoundPromotion<'_, I, V, P, SRV, SRA>,
+        scope: PromotionDecisionScope,
+    ) -> Result<PromotionWitness<I, V, P>, PromotionRefusal>
+    where
+        I: StrongIdentity,
+        SRV: OwnerPromotionVerifier,
+        SRA: OwnerPromotionAdmitter,
+    {
+        if scope.predecessor() != Some(source.decision_id()) {
+            return Err(PromotionRefusal::CrosswalkPredecessorMismatch);
+        }
+        let admitted: AuthorityRef<I, V, P, Admitted> = AuthorityRef {
+            receipt: source.subject(),
+            anchor: source.anchor(),
+            verifier: self.verifier.id(),
+            key_policy: self.key_policy.id(),
+            state: PhantomData,
+        };
+        self.execute_promotion_decision(
+            &admitted,
+            self.verifier.bytes(),
+            self.key_policy.bytes(),
+            scope,
+            true,
+        )
     }
 }
 
-/// A non-forgeable promotion-capable admission (bead sj31i.52.9).
+/// Raw replay evidence from one completed owner-executed promotion decision.
 ///
-/// All fields are private and there is NO public constructor: the only
-/// producer is [`PromotionTrustRoot::admit_for_promotion`]. Foreign
-/// permit-everything capabilities can mint a policy-relative
-/// [`Admitted`] authority, never this witness.
+/// All fields are private and there is NO public constructor. The only
+/// producer is [`PromotionTrustRoot::decide_for_promotion`] on a root that
+/// physically owns executable capabilities. This raw witness is deliberately
+/// not itself consumption authority; [`PromotionTrustRoot::bind_witness`]
+/// must bind it to the exact live root and capability types first.
 ///
 /// ```compile_fail,E0451
 /// // Foreign code cannot mint a promotion witness: the fields are
@@ -4110,6 +5905,17 @@ where
     key_policy: ObservedIdentity<KeyPolicyId<P>>,
     context: &'static str,
     root_charter: PromotionRootCharter,
+    scope: PromotionDecisionScope,
+    verifier_capability: PromotionCapabilityDescriptor,
+    admission_capability: PromotionCapabilityDescriptor,
+    verification_statement: ContentId,
+    admission_statement: ContentId,
+    disposition: PromotionDecisionDisposition,
+    request_id: PromotionRequestId,
+    verification_decision: PromotionVerificationDecisionId,
+    admission_decision: PromotionAdmissionDecisionId,
+    decision_id: PromotionDecisionId,
+    root_instance: Arc<PromotionRootInstanceSeal>,
 }
 
 impl<I, V, P> Clone for PromotionWitness<I, V, P>
@@ -4119,16 +5925,26 @@ where
     P: CanonicalSchema,
 {
     fn clone(&self) -> Self {
-        *self
+        Self {
+            subject: self.subject,
+            anchor: self.anchor,
+            verifier: self.verifier,
+            key_policy: self.key_policy,
+            context: self.context,
+            root_charter: self.root_charter,
+            scope: self.scope,
+            verifier_capability: self.verifier_capability,
+            admission_capability: self.admission_capability,
+            verification_statement: self.verification_statement,
+            admission_statement: self.admission_statement,
+            disposition: self.disposition,
+            request_id: self.request_id,
+            verification_decision: self.verification_decision,
+            admission_decision: self.admission_decision,
+            decision_id: self.decision_id,
+            root_instance: Arc::clone(&self.root_instance),
+        }
     }
-}
-
-impl<I, V, P> Copy for PromotionWitness<I, V, P>
-where
-    I: StrongIdentity,
-    V: CanonicalSchema,
-    P: CanonicalSchema,
-{
 }
 
 impl<I, V, P> fmt::Debug for PromotionWitness<I, V, P>
@@ -4142,6 +5958,8 @@ where
             .field("verifier_domain", &V::DOMAIN)
             .field("key_policy_domain", &P::DOMAIN)
             .field("context", &self.context)
+            .field("scope", &self.scope)
+            .field("decision_id", &self.decision_id)
             .finish_non_exhaustive()
     }
 }
@@ -4176,9 +5994,9 @@ where
         self.key_policy
     }
 
-    /// The exact-configuration charter of the root that minted this
-    /// witness (bead sj31i.52.9). Consumption boundaries pin their
-    /// domain owner's [`PromotionTrustRoot::charter`] against this.
+    /// V3 charter of the root that executed this decision. Matching this
+    /// portable fingerprint is necessary but not sufficient for authority;
+    /// live consumers also bind the private root-instance seal.
     #[must_use]
     pub const fn root_charter(&self) -> PromotionRootCharter {
         self.root_charter
@@ -4190,35 +6008,241 @@ where
         self.context
     }
 
-    /// Bounded audit record: verifier/key-policy namespaces plus exact
-    /// observation roots and lengths survive logging without dumping
-    /// preimage bytes.
+    /// Replay/correlation/crosswalk scope consumed by this decision.
+    #[must_use]
+    pub const fn scope(&self) -> PromotionDecisionScope {
+        self.scope
+    }
+
+    /// Descriptor captured from the actually stored verifier capability.
+    #[must_use]
+    pub const fn verifier_capability(&self) -> PromotionCapabilityDescriptor {
+        self.verifier_capability
+    }
+
+    /// Descriptor captured from the actually stored admission capability.
+    #[must_use]
+    pub const fn admission_capability(&self) -> PromotionCapabilityDescriptor {
+        self.admission_capability
+    }
+
+    /// Retained statement root returned by the owner verifier.
+    #[must_use]
+    pub const fn verification_statement(&self) -> ContentId {
+        self.verification_statement
+    }
+
+    /// Retained statement root returned by the owner admission capability.
+    #[must_use]
+    pub const fn admission_statement(&self) -> ContentId {
+        self.admission_statement
+    }
+
+    /// Final disposition committed by this published decision.
+    #[must_use]
+    pub const fn disposition(&self) -> PromotionDecisionDisposition {
+        self.disposition
+    }
+
+    /// Canonical identity of the exact request shown to owner code.
+    #[must_use]
+    pub const fn request_id(&self) -> PromotionRequestId {
+        self.request_id
+    }
+
+    /// Canonical identity of the owner verifier decision.
+    #[must_use]
+    pub const fn verification_decision(&self) -> PromotionVerificationDecisionId {
+        self.verification_decision
+    }
+
+    /// Canonical identity of the owner admission decision.
+    #[must_use]
+    pub const fn admission_decision(&self) -> PromotionAdmissionDecisionId {
+        self.admission_decision
+    }
+
+    /// Canonical identity of the fully committed decision.
+    #[must_use]
+    pub const fn decision_id(&self) -> PromotionDecisionId {
+        self.decision_id
+    }
+
+    /// Complete bounded decision receipt: request axes, statement roots,
+    /// disposition, and transcripts survive logging without dumping payload
+    /// bytes or granting bearer authority.
     #[must_use]
     pub fn audit(&self) -> PromotionAuditRecord {
         PromotionAuditRecord {
+            subject_role: I::ROLE,
+            subject_schema: *SchemaId::<I::Schema>::for_schema().as_bytes(),
+            subject_id: *self.subject.id().as_bytes(),
+            subject_preimage: self.subject.canonical_preimage(),
+            subject_bytes: self.subject.canonical_bytes(),
+            anchor: self.anchor.content_id(),
             verifier_domain: V::DOMAIN,
+            verifier_role: <VerifierId<V> as StrongIdentity>::ROLE,
+            verifier_schema: *SchemaId::<V>::for_schema().as_bytes(),
+            verifier_id: *self.verifier.id().as_bytes(),
             verifier_observation: self.verifier.bytes(),
             key_policy_domain: P::DOMAIN,
+            key_policy_role: <KeyPolicyId<P> as StrongIdentity>::ROLE,
+            key_policy_schema: *SchemaId::<P>::for_schema().as_bytes(),
+            key_policy_id: *self.key_policy.id().as_bytes(),
             key_policy_observation: self.key_policy.bytes(),
             context: self.context,
+            root_charter: self.root_charter,
+            scope: self.scope,
+            verifier_capability: self.verifier_capability,
+            admission_capability: self.admission_capability,
+            verification_statement: self.verification_statement,
+            admission_statement: self.admission_statement,
+            disposition: self.disposition,
+            request_id: self.request_id,
+            verification_decision: self.verification_decision,
+            admission_decision: self.admission_decision,
+            decision_id: self.decision_id,
         }
     }
 }
 
-/// Bounded promotion audit metadata (bead sj31i.52.9): namespaces and
-/// observation roots/lengths only — never unbounded preimage bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Promotion authority bound to one exact live root and nominal capability
+/// pair. Foreign capability types produce a different Rust type; an
+/// equivalent reconstruction with the same types still needs the private live
+/// instance seal or an explicit owner-executed crosswalk.
+pub struct OwnerBoundPromotion<'a, I, V, P, RV, RA>
+where
+    I: StrongIdentity,
+    V: CanonicalSchema,
+    P: CanonicalSchema,
+    RV: OwnerPromotionVerifier,
+    RA: OwnerPromotionAdmitter,
+{
+    witness: &'a PromotionWitness<I, V, P>,
+    capability_types: PhantomData<fn() -> (RV, RA)>,
+}
+
+impl<I, V, P, RV, RA> fmt::Debug for OwnerBoundPromotion<'_, I, V, P, RV, RA>
+where
+    I: StrongIdentity,
+    V: CanonicalSchema,
+    P: CanonicalSchema,
+    RV: OwnerPromotionVerifier,
+    RA: OwnerPromotionAdmitter,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OwnerBoundPromotion")
+            .field("decision_id", &self.witness.decision_id)
+            .field("root_charter", &self.witness.root_charter)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<I, V, P, RV, RA> OwnerBoundPromotion<'_, I, V, P, RV, RA>
+where
+    I: StrongIdentity,
+    V: CanonicalSchema,
+    P: CanonicalSchema,
+    RV: OwnerPromotionVerifier,
+    RA: OwnerPromotionAdmitter,
+{
+    /// Exact subject receipt authorized by this bound decision.
+    #[must_use]
+    pub const fn subject(&self) -> IdentityReceipt<I> {
+        self.witness.subject
+    }
+
+    /// Exact anchor authorized by this bound decision.
+    #[must_use]
+    pub const fn anchor(&self) -> ExternalAnchorRef {
+        self.witness.anchor
+    }
+
+    /// Canonical committed decision identity.
+    #[must_use]
+    pub const fn decision_id(&self) -> PromotionDecisionId {
+        self.witness.decision_id
+    }
+
+    /// V3 root charter retained by the raw decision evidence.
+    #[must_use]
+    pub const fn root_charter(&self) -> PromotionRootCharter {
+        self.witness.root_charter
+    }
+
+    /// Complete bounded replay/audit receipt retained by this live-bound
+    /// decision. The returned record does not carry the private instance seal;
+    /// callers must require this `OwnerBoundPromotion` at the authority
+    /// boundary before persisting or hashing the record.
+    #[must_use]
+    pub fn audit(&self) -> PromotionAuditRecord {
+        self.witness.audit()
+    }
+}
+
+/// Fixed-size, payload-free promotion decision receipt (bead sj31i.52.9).
+///
+/// It contains every bounded input needed by a separately versioned
+/// transcript checker, but no private root-instance seal; it is replay/audit
+/// evidence, never in-process bearer authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromotionAuditRecord {
+    /// Nominal subject identity role.
+    pub subject_role: IdentityRole,
+    /// Complete subject schema-identity bytes.
+    pub subject_schema: [u8; 32],
+    /// Exact typed subject identity bytes.
+    pub subject_id: [u8; 32],
+    /// Plain root of the subject's canonical frame.
+    pub subject_preimage: ContentId,
+    /// Exact length of the subject's canonical frame.
+    pub subject_bytes: u64,
+    /// Exact external anchor bound to the subject.
+    pub anchor: ContentId,
     /// Verifier schema domain.
     pub verifier_domain: &'static str,
+    /// Nominal verifier identity role.
+    pub verifier_role: IdentityRole,
+    /// Complete verifier schema-identity bytes.
+    pub verifier_schema: [u8; 32],
+    /// Exact configured verifier identity bytes.
+    pub verifier_id: [u8; 32],
     /// Verifier canonical-byte observation (root + exact length).
     pub verifier_observation: ByteObservation,
     /// Key-policy schema domain.
     pub key_policy_domain: &'static str,
+    /// Nominal key-policy identity role.
+    pub key_policy_role: IdentityRole,
+    /// Complete key-policy schema-identity bytes.
+    pub key_policy_schema: [u8; 32],
+    /// Exact configured key-policy identity bytes.
+    pub key_policy_id: [u8; 32],
     /// Key-policy canonical-byte observation (root + exact length).
     pub key_policy_observation: ByteObservation,
     /// The trust root's configured context.
     pub context: &'static str,
+    /// Portable v3 root/capability configuration fingerprint.
+    pub root_charter: PromotionRootCharter,
+    /// Replay/correlation/crosswalk scope.
+    pub scope: PromotionDecisionScope,
+    /// Stored verifier descriptor.
+    pub verifier_capability: PromotionCapabilityDescriptor,
+    /// Stored admission descriptor.
+    pub admission_capability: PromotionCapabilityDescriptor,
+    /// Retained statement root returned by the owner verifier.
+    pub verification_statement: ContentId,
+    /// Retained statement root returned by the admission capability.
+    pub admission_statement: ContentId,
+    /// Final disposition committed into the decision identity.
+    pub disposition: PromotionDecisionDisposition,
+    /// Exact request identity.
+    pub request_id: PromotionRequestId,
+    /// Exact owner verification-decision identity.
+    pub verification_decision: PromotionVerificationDecisionId,
+    /// Exact owner admission-decision identity.
+    pub admission_decision: PromotionAdmissionDecisionId,
+    /// Exact committed decision identity.
+    pub decision_id: PromotionDecisionId,
 }
 
 /// Quarantined legacy identity types. They deliberately have no conversion,
@@ -4229,7 +6253,7 @@ pub mod legacy {
     /// Reconstruct an exact historical promotion-root charter v1 without
     /// granting it current authority.
     ///
-    /// This replay path intentionally does not apply the current v2 schema
+    /// This replay path intentionally does not apply the current v3 schema
     /// depth admission rule: historical v1 never bound schema descriptors, so
     /// even an over-depth historical configuration must remain reproducible.
     /// The nominal result has no conversion or acceptance path into current
@@ -4249,8 +6273,79 @@ pub mod legacy {
         if context.is_empty() {
             return Err(super::PromotionRefusal::EmptyContext);
         }
-        let source = super::promotion_root_charter_identity_source(verifier, key_policy, context);
+        let source = super::promotion_root_charter_identity_source(
+            verifier,
+            key_policy,
+            super::PromotionRootMode::ConfigurationOnly,
+            0,
+            None,
+            None,
+            context,
+        );
         Ok(super::derive_legacy_promotion_root_charter_v1(&source))
+    }
+
+    /// Reconstruct an exact historical v2 configuration charter without
+    /// granting it current authority.
+    ///
+    /// V2 bound complete schemas and public observations, but not executable
+    /// capability descriptors, decision transcripts, policy epoch, or a live
+    /// root instance. The result is nominal replay evidence only.
+    ///
+    /// # Errors
+    /// Refuses the invalid context or over-depth schemas rejected by the
+    /// historical v2 constructor.
+    pub fn promotion_root_charter_v2_for_replay<V, P>(
+        verifier: super::ObservedIdentity<super::VerifierId<V>>,
+        key_policy: super::ObservedIdentity<super::KeyPolicyId<P>>,
+        context: &'static str,
+    ) -> Result<PromotionRootCharterV2, super::PromotionRefusal>
+    where
+        V: super::CanonicalSchema,
+        P: super::CanonicalSchema,
+    {
+        super::validate_legacy_promotion_root_configuration::<V, P>(context)?;
+        let source = super::promotion_root_charter_identity_source(
+            verifier,
+            key_policy,
+            super::PromotionRootMode::ConfigurationOnly,
+            0,
+            None,
+            None,
+            context,
+        );
+        Ok(super::derive_legacy_promotion_root_charter_v2(&source))
+    }
+
+    /// Historical promotion-root charter v2 retained for replay only.
+    ///
+    /// It has no parser, current-authority conversion, equality bridge, or
+    /// identity implementation.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    pub struct PromotionRootCharterV2(ContentHash);
+
+    impl PromotionRootCharterV2 {
+        pub(super) fn from_digest(digest: ContentHash) -> Self {
+            Self(digest)
+        }
+
+        /// Exact historical digest bytes for replay/crosswalk lookup only.
+        #[must_use]
+        pub fn as_bytes(&self) -> &[u8; 32] {
+            self.0.as_bytes()
+        }
+
+        /// Lowercase historical hexadecimal rendering.
+        #[must_use]
+        pub fn to_hex(self) -> String {
+            self.0.to_hex()
+        }
+    }
+
+    impl core::fmt::Display for PromotionRootCharterV2 {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            core::fmt::Display::fmt(&self.0, f)
+        }
     }
 
     /// Historical promotion-root charter v1 retained for replay only.
