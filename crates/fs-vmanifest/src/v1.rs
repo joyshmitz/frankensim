@@ -13,8 +13,10 @@
 //!
 //! [`ClaimRelationReceipt`] types the admitted claim-graph edges
 //! (implication, refinement, restriction, counterexample, certified
-//! equivalence) with direction, checker/TCB, quantifier variance, and
-//! policy version. Promotion transfers ONLY across admitted relations;
+//! equivalence) with checker/TCB, quantifier variance, and policy version.
+//! Directed kinds preserve their endpoint orientation; certified equivalence
+//! normalizes its bidirectional endpoints into revision-id order. Promotion
+//! transfers ONLY across admitted relations;
 //! directed cycles refuse unless every member is joined by certified
 //! equivalence, in which case the strongly connected component
 //! canonicalizes to one representative WITHOUT erasing members.
@@ -395,6 +397,16 @@ const fn relation_name(kind: RelationKind) -> &'static str {
     }
 }
 
+const fn relation_arrow(kind: RelationKind) -> &'static str {
+    match kind {
+        RelationKind::CertifiedEquivalence => "<->",
+        RelationKind::Implication
+        | RelationKind::Refinement
+        | RelationKind::Restriction
+        | RelationKind::Counterexample => "->",
+    }
+}
+
 /// How the quantifier structure varies across a relation edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -424,14 +436,18 @@ const fn variance_name(variance: QuantifierVariance) -> &'static str {
     }
 }
 
-/// One typed, checkable relation edge between exact claim revisions.
+/// One typed relation draft between exact claim revisions. Structural equality
+/// compares the caller-authored draft; it is NOT canonical graph identity.
+/// Admission clones the value and normalizes certified-equivalence endpoints.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimRelationReceipt {
     /// The edge kind.
     pub kind: RelationKind,
-    /// Source revision.
+    /// Source revision. Normalized certified-equivalence receipts expose the
+    /// smaller revision id here; directed kinds preserve the supplied source.
     pub from: ClaimRevisionId,
-    /// Target revision.
+    /// Target revision. Normalized certified-equivalence receipts expose the
+    /// larger revision id here; directed kinds preserve the supplied target.
     pub to: ClaimRevisionId,
     /// The proof/checker identity that certified this edge (1..=4096
     /// UTF-8 bytes at admission).
@@ -453,7 +469,9 @@ impl ClaimRelationReceipt {
     /// Whether PROMOTION may transfer along this edge (fallback/refutation
     /// rules are the mirror image and live with the consuming gate).
     /// Counterexample edges never transfer promotion; strengthened
-    /// quantifiers never transfer promotion.
+    /// quantifiers never transfer promotion. This raw-draft convenience does
+    /// not imply that the receipt will admit; certified equivalence refuses
+    /// unless its variance is [`QuantifierVariance::Preserved`].
     #[must_use]
     pub fn promotion_transfers(&self) -> bool {
         !matches!(self.kind, RelationKind::Counterexample)
@@ -555,12 +573,13 @@ impl NormalizedGraph {
         }
         for (index, edge) in self.edges.iter().enumerate() {
             out.push_str(&format!(
-                "  edge schema_version={} graph_digest={} ordinal={} kind={} from={} -> to={} checker=\"{}\" tcb=\"{}\" variance={} domain_note=\"{}\" policy_version={}\n",
+                "  edge schema_version={} graph_digest={} ordinal={} kind={} from={} {} to={} checker=\"{}\" tcb=\"{}\" variance={} domain_note=\"{}\" policy_version={}\n",
                 MANIFEST_V1_SCHEMA_VERSION,
                 digest,
                 self.revisions.len() + index + 1,
                 relation_name(edge.kind),
                 edge.from.to_hex(),
+                relation_arrow(edge.kind),
                 edge.to.to_hex(),
                 escape_json_string(&edge.checker),
                 escape_json_string(&edge.tcb),
@@ -670,11 +689,18 @@ fn directed(kind: RelationKind) -> bool {
     !matches!(kind, RelationKind::CertifiedEquivalence)
 }
 
+fn canonicalize_equivalence_endpoints(receipt: &mut ClaimRelationReceipt) {
+    if receipt.kind == RelationKind::CertifiedEquivalence && receipt.to < receipt.from {
+        core::mem::swap(&mut receipt.from, &mut receipt.to);
+    }
+}
+
 /// Admit a claim graph: every endpoint must be a known revision and every
-/// semantic text field must satisfy its bound; exact duplicate receipts
-/// refuse. DIRECTED cycles refuse unless every cycle member is joined into
-/// one certified-equivalence component, which canonicalizes to its smallest
-/// member as representative without erasing anyone.
+/// semantic text field must satisfy its bound. Certified-equivalence endpoints
+/// normalize to ascending revision-id order; canonical duplicate receipts
+/// refuse. DIRECTED cycles refuse unless every cycle member is joined into one
+/// certified-equivalence component, which canonicalizes to its smallest member
+/// as representative without erasing anyone.
 pub fn admit_graph(
     revisions: &[ClaimRevision],
     receipts: &[ClaimRelationReceipt],
@@ -690,10 +716,27 @@ pub fn admit_graph(
             .with_fix("content-addressed identity is idempotent: deduplicate the input"));
         }
     }
+
+    // Bound caller-owned text before cloning so hostile oversized drafts
+    // refuse without duplicating their allocation.
     for receipt in receipts {
         bounded_text("checker", &receipt.checker)?;
         bounded_text("tcb", &receipt.tcb)?;
         bounded_text("domain_note", &receipt.domain_note)?;
+    }
+
+    // Equivalence is semantically bidirectional: after the allocation
+    // preflight, normalize a private clone before endpoint-sensitive
+    // validation and every downstream graph operation. This makes even refusal
+    // diagnostics orientation-invariant while leaving caller-owned drafts
+    // untouched. All directed kinds retain their supplied endpoints;
+    // checker/TCB/domain/policy evidence is never altered.
+    let mut edges = receipts.to_vec();
+    for receipt in &mut edges {
+        canonicalize_equivalence_endpoints(receipt);
+    }
+
+    for receipt in &edges {
         for endpoint in [&receipt.from, &receipt.to] {
             if !ids.contains(endpoint) {
                 return Err(V1Error::new(
@@ -713,12 +756,22 @@ pub fn admit_graph(
                 "a revision cannot relate to itself",
             ));
         }
+        if receipt.kind == RelationKind::CertifiedEquivalence
+            && receipt.variance != QuantifierVariance::Preserved
+        {
+            return Err(V1Error::new(
+                "v1-equivalence-variance",
+                "certified equivalence is bidirectional and requires preserved quantifiers",
+            )
+            .with_fix(
+                "use Preserved only with orientation-neutral bidirectional evidence, or choose the directed relation kind matching the variance",
+            ));
+        }
     }
 
-    // The canonical receipt order includes EVERY field later fed to the
-    // graph digest. Exact duplicate receipts refuse rather than silently
-    // changing cardinality or being presentation-order dependent.
-    let mut edges = receipts.to_vec();
+    // The canonical receipt order includes EVERY field later fed to the graph
+    // digest. Canonical duplicate receipts refuse rather than silently changing
+    // cardinality or being presentation-order dependent.
     edges.sort_by(|a, b| {
         relation_code(a.kind)
             .cmp(&relation_code(b.kind))
@@ -733,9 +786,11 @@ pub fn admit_graph(
     if edges.windows(2).any(|pair| pair[0] == pair[1]) {
         return Err(V1Error::new(
             "v1-duplicate-relation",
-            "an exact relation receipt was supplied more than once",
+            "the same canonical relation receipt was supplied more than once",
         )
-        .with_fix("deduplicate the receipt input; repetition grants no additional authority"));
+        .with_fix(
+            "deduplicate the receipt input; reversing certified-equivalence endpoints grants no additional authority",
+        ));
     }
 
     // Union-find over certified-equivalence edges.

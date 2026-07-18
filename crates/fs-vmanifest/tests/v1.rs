@@ -48,6 +48,11 @@ fn edge(
     }
 }
 
+fn reversed(mut receipt: ClaimRelationReceipt) -> ClaimRelationReceipt {
+    core::mem::swap(&mut receipt.from, &mut receipt.to);
+    receipt
+}
+
 #[test]
 fn identical_content_is_idempotent_and_distinct_content_cannot_collide() {
     let a = revision("claim/energy-balance", "energy balances to 1e-12");
@@ -118,6 +123,376 @@ fn normalization_digest_is_stable_under_input_reordering() {
         g2.digest(),
         "equivalent semantic manifests normalize to the same digest"
     );
+}
+
+#[test]
+fn certified_equivalence_normalizes_endpoint_orientation_everywhere() {
+    let a = revision("claim/a", "a holds");
+    let b = revision("claim/b", "b holds");
+    let receipt = edge(
+        RelationKind::CertifiedEquivalence,
+        &a,
+        &b,
+        QuantifierVariance::Preserved,
+    );
+    let reverse = reversed(receipt.clone());
+    let revisions = [a, b];
+    let forward = admit_graph(&revisions, &[receipt]).expect("forward equivalence admits");
+    let backward = admit_graph(&revisions, &[reverse]).expect("reverse equivalence admits");
+    let minimum = revisions[0].revision_id().min(revisions[1].revision_id());
+    let maximum = revisions[0].revision_id().max(revisions[1].revision_id());
+
+    assert_eq!(forward.edges(), backward.edges());
+    assert_eq!(forward.edges()[0].from, minimum);
+    assert_eq!(forward.edges()[0].to, maximum);
+    assert_eq!(forward.representatives(), backward.representatives());
+    assert_eq!(forward.digest(), backward.digest());
+    let human = forward.render_human();
+    assert!(human.contains("<->"), "equivalence has no directed arrow");
+    assert!(human.contains(&format!(
+        "from={} <-> to={}",
+        minimum.to_hex(),
+        maximum.to_hex()
+    )));
+    assert_eq!(human, backward.render_human());
+    let json = forward.render_json_lines();
+    assert!(json.last().expect("edge row").contains(&format!(
+        "\"from\":\"{}\",\"to\":\"{}\"",
+        minimum.to_hex(),
+        maximum.to_hex()
+    )));
+    assert_eq!(json, backward.render_json_lines());
+    let ledger = forward.render_ledger_rows();
+    assert!(ledger.last().expect("edge row").1.contains(&format!(
+        "from={} to={}",
+        minimum.to_hex(),
+        maximum.to_hex()
+    )));
+    assert_eq!(ledger, backward.render_ledger_rows());
+}
+
+#[test]
+fn certified_equivalence_normalizes_before_dangling_endpoint_diagnostics() {
+    let a = revision("claim/a", "a holds");
+    let b = revision("claim/b", "b holds");
+    let receipt = edge(
+        RelationKind::CertifiedEquivalence,
+        &a,
+        &b,
+        QuantifierVariance::Preserved,
+    );
+    let forward = admit_graph(&[], &[receipt.clone()]).expect_err("both endpoints dangle");
+    let backward = admit_graph(&[], &[reversed(receipt)]).expect_err("both endpoints dangle");
+
+    assert_eq!(forward, backward, "orientation cannot leak through refusal");
+    assert_eq!(forward.rule(), "v1-dangling-relation");
+    assert!(
+        forward
+            .detail()
+            .contains(&a.revision_id().min(b.revision_id()).to_hex())
+    );
+}
+
+#[test]
+fn certified_equivalence_refuses_directional_quantifier_variance() {
+    let a = revision("claim/a", "a holds");
+    let b = revision("claim/b", "b holds");
+    for variance in [
+        QuantifierVariance::Weakened,
+        QuantifierVariance::Strengthened,
+    ] {
+        let receipt = edge(RelationKind::CertifiedEquivalence, &a, &b, variance);
+        for input in [receipt.clone(), reversed(receipt)] {
+            let error = admit_graph(&[a.clone(), b.clone()], &[input])
+                .expect_err("directional variance cannot be normalized as equivalence");
+            assert_eq!(error.rule(), "v1-equivalence-variance");
+            assert!(error.detail().contains("requires preserved quantifiers"));
+            assert!(error.ranked_fixes()[0].contains("directed relation kind"));
+        }
+    }
+}
+
+#[test]
+fn reverse_equivalence_duplicates_refuse_after_normalization() {
+    let a = revision("claim/a", "a holds");
+    let b = revision("claim/b", "b holds");
+    let receipt = edge(
+        RelationKind::CertifiedEquivalence,
+        &a,
+        &b,
+        QuantifierVariance::Preserved,
+    );
+    let error = admit_graph(&[a, b], &[receipt.clone(), reversed(receipt)])
+        .expect_err("reverse duplicate must not mint additional authority");
+    assert_eq!(error.rule(), "v1-duplicate-relation");
+    assert!(error.detail().contains("canonical relation receipt"));
+    assert!(error.ranked_fixes()[0].contains("reversing"));
+}
+
+#[test]
+fn parallel_equivalence_evidence_remains_distinct_after_orientation_normalization() {
+    let a = revision("claim/a", "a holds");
+    let b = revision("claim/b", "b holds");
+    let base = edge(
+        RelationKind::CertifiedEquivalence,
+        &a,
+        &b,
+        QuantifierVariance::Preserved,
+    );
+    let mut checker = reversed(base.clone());
+    checker.checker = "fs-checker/relation-v2".to_owned();
+    let mut tcb = base.clone();
+    tcb.tcb = "rustc+fs-blake3+fs-ivl".to_owned();
+    let mut policy = reversed(base.clone());
+    policy.policy_version = 2;
+    let mut domain = reversed(base.clone());
+    domain.domain_note = "same domain certified by alternate partition".to_owned();
+    let graph = admit_graph(&[a, b], &[policy, domain, tcb, checker, base])
+        .expect("independent equivalence evidence remains distinct");
+
+    assert_eq!(graph.edges().len(), 5);
+    let endpoint = (graph.edges()[0].from, graph.edges()[0].to);
+    assert!(
+        graph
+            .edges()
+            .iter()
+            .all(|receipt| (receipt.from, receipt.to) == endpoint)
+    );
+    assert_eq!(
+        graph
+            .edges()
+            .iter()
+            .map(|receipt| receipt.checker.as_str())
+            .collect::<BTreeSet<_>>()
+            .len(),
+        2
+    );
+    assert_eq!(
+        graph
+            .edges()
+            .iter()
+            .map(|receipt| receipt.tcb.as_str())
+            .collect::<BTreeSet<_>>()
+            .len(),
+        2
+    );
+    assert_eq!(
+        graph
+            .edges()
+            .iter()
+            .map(|receipt| receipt.policy_version)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        2
+    );
+    assert_eq!(
+        graph
+            .edges()
+            .iter()
+            .map(|receipt| receipt.domain_note.as_str())
+            .collect::<BTreeSet<_>>()
+            .len(),
+        2
+    );
+    assert!(
+        graph
+            .edges()
+            .iter()
+            .all(|receipt| receipt.variance == QuantifierVariance::Preserved)
+    );
+}
+
+#[test]
+fn directed_relation_kinds_preserve_endpoint_orientation() {
+    let a = revision("claim/a", "a holds");
+    let b = revision("claim/b", "b holds");
+    for kind in [
+        RelationKind::Implication,
+        RelationKind::Refinement,
+        RelationKind::Restriction,
+        RelationKind::Counterexample,
+    ] {
+        let receipt = edge(kind, &a, &b, QuantifierVariance::Preserved);
+        let reverse = reversed(receipt.clone());
+        let forward = admit_graph(&[a.clone(), b.clone()], &[receipt.clone()])
+            .expect("directed relation admits");
+        let backward = admit_graph(&[a.clone(), b.clone()], &[reverse.clone()])
+            .expect("reverse directed relation admits");
+        assert_eq!(forward.edges()[0].from, receipt.from);
+        assert_eq!(forward.edges()[0].to, receipt.to);
+        assert_eq!(backward.edges()[0].from, reverse.from);
+        assert_eq!(backward.edges()[0].to, reverse.to);
+        let forward_pair = format!(
+            "from={} -> to={}",
+            receipt.from.to_hex(),
+            receipt.to.to_hex()
+        );
+        let backward_pair = format!(
+            "from={} -> to={}",
+            reverse.from.to_hex(),
+            reverse.to.to_hex()
+        );
+        assert!(forward.render_human().contains(&forward_pair));
+        assert!(backward.render_human().contains(&backward_pair));
+        assert!(
+            forward
+                .render_json_lines()
+                .last()
+                .expect("edge row")
+                .contains(&format!(
+                    "\"from\":\"{}\",\"to\":\"{}\"",
+                    receipt.from.to_hex(),
+                    receipt.to.to_hex()
+                ))
+        );
+        assert!(
+            backward
+                .render_json_lines()
+                .last()
+                .expect("edge row")
+                .contains(&format!(
+                    "\"from\":\"{}\",\"to\":\"{}\"",
+                    reverse.from.to_hex(),
+                    reverse.to.to_hex()
+                ))
+        );
+        assert!(
+            forward
+                .render_ledger_rows()
+                .last()
+                .expect("edge row")
+                .1
+                .contains(&format!(
+                    "from={} to={}",
+                    receipt.from.to_hex(),
+                    receipt.to.to_hex()
+                ))
+        );
+        assert!(
+            backward
+                .render_ledger_rows()
+                .last()
+                .expect("edge row")
+                .1
+                .contains(&format!(
+                    "from={} to={}",
+                    reverse.from.to_hex(),
+                    reverse.to.to_hex()
+                ))
+        );
+        assert_ne!(
+            forward.digest(),
+            backward.digest(),
+            "{kind:?} orientation remains identity-forming"
+        );
+        assert_ne!(forward.render_human(), backward.render_human());
+        assert_ne!(forward.render_json_lines(), backward.render_json_lines());
+        assert_ne!(forward.render_ledger_rows(), backward.render_ledger_rows());
+    }
+}
+
+#[test]
+fn admission_owns_and_normalizes_mutable_equivalence_drafts() {
+    let a = revision("claim/a", "a holds");
+    let b = revision("claim/b", "b holds");
+    let mut draft = edge(
+        RelationKind::Implication,
+        &a,
+        &b,
+        QuantifierVariance::Preserved,
+    );
+    draft.kind = RelationKind::CertifiedEquivalence;
+    if draft.from < draft.to {
+        core::mem::swap(&mut draft.from, &mut draft.to);
+    }
+    let submitted = draft.clone();
+    let graph = admit_graph(&[a, b], &[draft.clone()]).expect("kind-flipped draft admits");
+    let admitted = graph.edges()[0].clone();
+
+    assert_eq!(draft, submitted, "admission does not mutate caller state");
+    assert!(admitted.from < admitted.to, "admitted endpoints normalize");
+
+    draft.kind = RelationKind::Counterexample;
+    core::mem::swap(&mut draft.from, &mut draft.to);
+    draft.checker = "mutated-after-admission".to_owned();
+    assert_eq!(
+        graph.edges()[0],
+        admitted,
+        "later draft mutation cannot alter the admitted graph"
+    );
+}
+
+#[test]
+fn equivalence_subset_reversal_and_permutation_are_full_projection_invariants() {
+    let a = revision("claim/a", "a holds");
+    let b = revision("claim/b", "b holds");
+    let c = revision("claim/c", "c holds");
+    let receipts = [
+        edge(
+            RelationKind::CertifiedEquivalence,
+            &a,
+            &b,
+            QuantifierVariance::Preserved,
+        ),
+        edge(
+            RelationKind::CertifiedEquivalence,
+            &b,
+            &c,
+            QuantifierVariance::Preserved,
+        ),
+        edge(
+            RelationKind::CertifiedEquivalence,
+            &a,
+            &c,
+            QuantifierVariance::Preserved,
+        ),
+    ];
+    let revisions = [a, b, c];
+    let reference = admit_graph(&revisions, &receipts).expect("reference graph admits");
+    const PERMUTATIONS: [[usize; 3]; 6] = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+
+    for reversed_mask in 0_u8..8 {
+        let oriented: Vec<_> = receipts
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, receipt)| {
+                if reversed_mask & (1 << index) == 0 {
+                    receipt
+                } else {
+                    reversed(receipt)
+                }
+            })
+            .collect();
+        for permutation in PERMUTATIONS {
+            let input: Vec<_> = permutation
+                .iter()
+                .map(|&index| oriented[index].clone())
+                .collect();
+            let graph = admit_graph(
+                &[
+                    revisions[2].clone(),
+                    revisions[0].clone(),
+                    revisions[1].clone(),
+                ],
+                &input,
+            )
+            .expect("reoriented and permuted graph admits");
+            assert_eq!(graph.edges(), reference.edges());
+            assert_eq!(graph.representatives(), reference.representatives());
+            assert_eq!(graph.digest(), reference.digest());
+            assert_eq!(graph.render_human(), reference.render_human());
+            assert_eq!(graph.render_json_lines(), reference.render_json_lines());
+            assert_eq!(graph.render_ledger_rows(), reference.render_ledger_rows());
+        }
+    }
 }
 
 #[test]

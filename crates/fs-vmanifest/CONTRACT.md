@@ -3341,9 +3341,24 @@ case/journey identities. `SourceAuthority` is a total lattice
 FrozenSnapshot); conflicts resolve upward by re-pinning, and
 equal-authority conflicts refuse with ranked fixes. Typed
 `ClaimRelationReceipt`s (implication, refinement, restriction,
-counterexample, certified equivalence) carry direction, nonempty checker/TCB
-and domain-note text capped at 4096 UTF-8 bytes each, quantifier variance, and
-policy version; promotion never
+counterexample, certified equivalence) carry nonempty checker/TCB and
+domain-note text capped at 4096 UTF-8 bytes each, quantifier variance, and
+policy version. Implication/refinement/restriction/counterexample preserve
+their supplied direction. Certified equivalence is bidirectional and
+therefore requires `Preserved` quantifier variance plus orientation-neutral
+bidirectional checker/domain evidence; directional variance refuses with a
+ranked fix. It normalizes endpoints to ascending revision-id order before
+sorting, duplicate detection, digesting, union-find, cycle analysis, or
+projection; reversed copies of the same evidence therefore refuse as canonical
+duplicates, while parallel checker/TCB/domain/policy evidence remains distinct.
+Human projection renders the relation as `<->`; machine `from`/`to` fields are
+canonical wire order, not direction. Raw `ClaimRelationReceipt` structural
+equality and debug output describe the caller-authored draft, not canonical
+graph identity; only admitted `NormalizedGraph` edges/digests carry that
+authority. A pre-fix artifact carrying descending certified-equivalence
+endpoints is noncanonical v1 input and must be re-admitted/reprojected; it does
+not receive a legacy digest alias that would preserve two identities for the
+same graph. Promotion never
 transfers along
 counterexample or quantifier-strengthening edges; directed cycles refuse
 unless certified-equivalent, in which case the SCC canonicalizes to its
@@ -3371,7 +3386,16 @@ migration semantics per field, in data.
   codec lands with the V.1.2 compiler against this registry.
 - Relation soundness is structural (orientation, variance, cycles,
   contradiction); checker/TCB strings are recorded identities, not
-  re-verified proofs.
+  re-verified proofs. Canonicalizing a certified-equivalence receipt records
+  the asserted bidirectional relation without proving its mathematical
+  soundness or strengthening its checker evidence. Minimum-hash endpoint and
+  component-representative choices are serialization/indexing rules, not
+  recency, authority, supersession, or preferred-revision claims. Transitive
+  component closure mints no missing pairwise proof, and parallel receipts do
+  not amplify authority or prove checker independence merely because their
+  metadata differs. Orientation-neutral checker/domain wording is a caller and
+  checker obligation recorded as text, not something v1 admission can infer
+  from free-form strings. Distinct revision identities are never erased.
 
 ## V.1.5 deterministic selection semantics (bead i94v.7.1.5)
 
