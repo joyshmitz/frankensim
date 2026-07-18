@@ -33,10 +33,15 @@
 //! world boundary in [`traceability_fs`], and [`traceability_join`] checks the
 //! deliberately narrow claim that every declared PO owner id is lexically
 //! present in the bound Beads bytes.
+//! Phase 0B's pure, content-addressed support/threat graph and deterministic
+//! allocation-candidate algebra lives in [`evidence_graph`]. It consumes the
+//! descriptive identities from [`evidence_contract`] without authenticating
+//! them or minting runtime authority.
 
 pub mod crates;
 pub mod doctrine;
 pub mod evidence_contract;
+pub mod evidence_graph;
 pub mod lanes;
 pub mod program_risks;
 pub mod proposals;

@@ -18,7 +18,8 @@ survives unmeasured (design principle P8 / Governance Rule 2), and enforces
 the one-active-unproven-mechanism-per-independently-falsifiable-proof-lane
 rule as an atomic, replayable admission ledger. It also owns the pure typed
 source registry and fail-closed generator for the extension charter's B1–B14
-and RQ-* requirement-to-evidence catalog.
+and RQ-* requirement-to-evidence catalog, plus the Phase 0B-C descriptive
+support/threat graph and deterministic allocation-candidate planner.
 
 ## Phase 0B-A evidence-contract algebra (`evidence_contract` module)
 
@@ -188,8 +189,83 @@ shape. Compile-fail documentation prevents descriptive state/assessment values
 from widening into opaque grants/admissions. The central batch must still
 execute those suites and catalog drift checks; this module alone does not
 implement Phase 0B-B wire decoding, durable admission receipts/current-head
-storage, Phase 0B-C graph algorithms, package/checker/ledger adapters,
-signatures, transitive graph recomputation, or production runtime consumption.
+storage, package/checker/ledger adapters, signatures, or production runtime
+consumption. The separate `evidence_graph` module below supplies descriptive
+Phase 0B-C graph/planning candidates without widening this authority boundary.
+
+## Phase 0B-C support/threat planning (`evidence_graph` module)
+
+`evidence_graph` is a pure, bounded planning layer over the exact descriptive
+identities established by `evidence_contract`. It builds one immutable,
+content-addressed graph snapshot before scoring any work. The snapshot keeps
+claim instances, authority-state candidates, assumptions, evidence references,
+checker/falsifier declarations, consumers, support edges, and attack edges
+distinct. Each evidence node retains the exact evidence kind, artifact,
+checker, schema version, claim, and content identity; standalone checker and
+falsifier nodes are descriptive declarations, not authenticated executions.
+Registration binds every authority state to its exact claim and every
+counterexample to its exact target. Every counterexample and support/attack edge
+must also name its exact in-snapshot evidence node bound to the target claim.
+Unknown or mismatched endpoints, duplicate identities, self-support, and support
+cycles refuse before a snapshot can exist. Attack edges may express mutual
+constraints because an attack is not support and is not an adjudicated
+refutation.
+
+Support reachability is evaluated only over the validated support DAG.
+Consequence is the checked sum of explicitly declared downstream authority and
+consumer weights reachable from a claim. Authority history cannot multiply a
+claim: at most the maximum declared authority consequence is counted per exact
+claim, while each consumer content identity is counted once. Consequence is not
+inferred from graph degree or issue priority. An attack on an upstream claim
+propagates once per attack edge to
+every support-dependent claim. Doubt remains a product of named, bounded
+components: calibrated uncertainty, uncovered attack surface, independence
+shortfall, and unresolved assumptions. Because this layer has no authenticated
+adjudication state, any graph-visible unadjudicated attack conservatively raises
+the affected score's doubt to one. No favorable independence, correlation, or
+attack-coverage value is inferred automatically: caller declarations are
+content-bound and selected candidates sharing a declared independence or
+correlation class are excluded, but their scientific adequacy remains
+unauthenticated. Exact duplicate nodes/edges refuse. All arithmetic is checked
+integer/fixed-point arithmetic, so overflow is a structured refusal rather than
+a ranking change.
+
+Allocation candidates bind the exact snapshot, claim, proof lane,
+independence class, work kind, cost, priors/correlations, and a descriptive
+anytime-accounting artifact with a nonzero observation count. Under optional
+stopping, a policy may require that artifact; this crate does not manufacture or
+validate an e-process. The deterministic planner ranks consequence-times-doubt
+while enforcing an explicit no-action reserve, holdout/diversity/independence/
+exploration floors, one selected bet per proof lane and declared independence
+and correlation class, a selection cap, and a bounded work-unit budget.
+Canonical identity ordering is the final tie-break. A bounded exact feasibility
+search prevents greedy lane/correlation choices from falsely declaring a
+feasible floor set impossible; exhausting its explicit search-state cap refuses
+without claiming infeasibility. A successful decision candidate exposes the
+graph/policy roots, utility model, sensitivity artifact, complete ranked rows
+with the four doubt inputs, priors, correlations, and full descriptive anytime
+state, selected reservations, used budget, no-action reserve, unused allocatable
+budget, total unallocated budget, and whether no positive/floor-required action
+was selected. The no-action model in this version is that explicit reserve plus
+an empty-selection result; it is not a separately utility-ranked candidate.
+
+The planner is transactional and synchronous: it validates and computes into
+local candidate data, polls the supplied cancellation boundary at bounded
+passes, and publishes nothing on refusal or cancellation. It does not mutate
+`lanes::PortfolioLedger`; its scalar cost is only the work-unit projection of a
+future reservation. A downstream authenticated adapter must separately admit
+the selected work under the ledger's four-axis `ResourceEnvelope`, mechanism
+cap, and comparison rules, then persist the graph/decision receipts.
+
+Authority boundary: every public graph, anytime-accounting, score, allocation,
+and decision object in Phase 0B-C is descriptive candidate data. BLAKE3 roots
+provide deterministic content identity, not signatures, authorized review,
+statistical validity, scientific truth, calibrated probabilities, durable
+budget reservation, or runtime admission. Phase 0B-B and later checker/ledger
+adapters must authenticate the exact referenced artifacts before any favorable
+authority or capability can be consumed. Cohomological/tropical summaries and
+automatic e-process execution remain future versioned inference-rule work;
+they are not implied by this solid graph core.
 
 ## Proof-lane admission (`lanes` module, bead rjoq.6)
 
@@ -368,6 +444,27 @@ signatures, transitive graph recomputation, or production runtime consumption.
 
 ## Public types and semantics
 
+- `GraphNode` has typed constructors for exact claims, authority-state
+  candidates, assumption sets, evidence, checkers, falsifiers, consumers, and
+  counterexamples. `GraphSnapshot::new` canonicalizes those nodes plus the
+  Phase 0B-A support/attack edges and publishes one root only after endpoint,
+  exact counterexample/edge-evidence, duplicate, and support-DAG validation.
+- `FixedRate` and `DoubtProfile` retain the exact calibrated-uncertainty,
+  attack-coverage, independent-support, and assumption-resolution inputs.
+  `DoubtProfile::combined` conservatively rounds the union of named doubt
+  sources outward on a one-million-part fixed-point lattice.
+- `AnytimeAccountingCandidate` binds a named method/version, observation
+  count (nonzero), state root, and evidence artifact without claiming the method
+  or artifact is valid. `AllocationCandidate::new` additionally requires the
+  exact graph, claim, and validated `LaneCharter`; it refuses a charter that
+  does not mint the claim's proof lane and derives the independence class from
+  that charter rather than a caller-supplied bare class hash.
+- `plan_allocations` and `plan_allocations_with_cancel` return an immutable
+  `AllocationDecisionCandidate` containing the complete deterministic ranking,
+  selected reservation candidates, exact used/reserved/unused/unallocated
+  budget decomposition, explicit no-action result, inspectable
+  doubt/prior/correlation/full-anytime state, policy/model/sensitivity roots,
+  and content identity.
 - `RiskId` (`R1`..`R10`) with `RiskId::ALL` and `code()`.
 - `InstrumentationReceipt::new(subject, dashboard, verifier,
   evidence_artifact, verified_day)` validates mandatory provenance and returns
@@ -433,6 +530,21 @@ artifact checking are deployment policy. Calling a public hash an
   numeric domain, and positive sampling floor.
 - Program assessment is input-order independent and cannot become all-clear by
   omission, duplication, malformed units, invalid numeric domains, or NaN.
+- Graph snapshot identity is input-order invariant and moves when any node or
+  support/attack edge identity moves. Edge evidence must be present and bound to
+  the exact target. Consequence counts at most the maximum authority weight per
+  reachable exact claim and each consumer identity once; support decomposition
+  or authority history cannot multiply it.
+- Attacks propagate through downstream support reachability exactly once per
+  attack edge and cannot reduce the affected consequence-times-doubt score.
+- Allocation rankings are input-order invariant. Selected work contains at
+  most one candidate per exact proof lane, validated independence class, and
+  declared correlation class; selected cost never enters the no-action reserve
+  or exceeds the bounded work-unit budget. The full four-axis portfolio cap is
+  a separate `PortfolioLedger` admission and is not asserted by this planner.
+- Refusal or cancellation returns no partial allocation decision. Fixed-point
+  doubt and consequence/score/budget arithmetic either remain representable or
+  fail with a structured overflow.
 - Every mechanism is admitted only under the lane that minted it; every
   surviving member of a comparison independently keeps its declared
   independence class occupied.
@@ -464,6 +576,15 @@ invalid terminal receipts, idempotency conflicts, and exhausted retained-log
 capacity. Capacity exhaustion never evicts replay authority and never mutates
 governed admission state.
 
+Evidence-graph constructors and planners return `GraphError` for missing or
+oversized inputs, invalid rates/policies, duplicate semantic identities,
+unknown or mismatched endpoints, self/circular support, arithmetic overflow,
+snapshot/lane mismatch, duplicated work, absent required anytime-accounting
+data, infeasible floors, and cancellation. Errors never fall back to an empty
+graph, zero consequence, or partially published decision. A bounded feasibility
+search that reaches its state cap returns an explicit search-limit error rather
+than a false infeasibility verdict.
+
 Traceability generation returns a `TraceabilityAudit` rather than output when
 the source is empty, oversized, duplicated, incomplete, or contains a dangling
 reference. Diagnostics name the exact requirement and field; no missing-field
@@ -475,7 +596,14 @@ Fully deterministic — pure functions over `const` data, no RNG or I/O.
 
 ## Cancellation behavior
 
-None (synchronous pure functions).
+Most modules are synchronous pure functions with no cancellation surface.
+`plan_allocations_with_cancel` is the bounded exception: it polls the supplied
+pure cancellation predicate during input validation, every active floor pass,
+each feasibility-search state, ranking, and both before and after receipt
+construction. Cancellation returns
+`GraphError::Cancelled` and no decision candidate. This is a planning-boundary
+protocol, not an asupersync execution scope or durable request-drain-finalize
+receipt.
 
 ## Unsafe boundary
 
@@ -486,6 +614,15 @@ None. `#![deny(unsafe_code)]` via the workspace lint.
 None.
 
 ## Conformance tests
+
+`tests/evidence_graph.rs` (Phase 0B-C G0/G2/G3/G4): canonical snapshot and
+decision permutation invariance; exact identity mutation; duplicate/unknown/
+mismatched endpoint and circular-support refusals; consequence reachability,
+diamond deduplication and support decomposition; attack accounting; checked
+overflow; fixed-rate doubt laws; score/tie determinism; budget conservation,
+floors, no-action, one-lane/independence/correlation backstops and anytime
+accounting; seeded consequence-times-doubt priority without starvation; prior,
+utility and correlation sensitivity; and cancellation with no partial result.
 
 `tests/register.rs` (Part V, 10 cases): all ten risks present + ordered;
 every risk has a metric/owner/mitigation; owners are real bead ids; lookup;
@@ -553,6 +690,14 @@ identity guard has a test that fails if the guard is removed.
 
 ## No-claim boundaries
 
+- Evidence-graph nodes, edges, anytime-accounting records, doubt inputs,
+  correlation classes, scores, and allocation decisions are descriptive
+  candidates. Their public constructors and BLAKE3 identities do not prove
+  endpoint evidence is authentic, uncertainty is calibrated, correlations are
+  honestly declared, optional-stopping validity holds, a selected reservation
+  is durable, or a claim is true. The planner does not execute `fs-eproc`,
+  mutate `PortfolioLedger`, or widen into the Phase 0B-A private authority
+  types. Those are explicit downstream checker/ledger responsibilities.
 - This crate encodes the risk register as governance DATA; it does not itself
   measure an early-warning metric, fetch an evidence artifact, authenticate a
   verifier, or prove dashboard liveness. A dashboard/CI supplies that evidence
