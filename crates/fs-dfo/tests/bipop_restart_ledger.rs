@@ -1,0 +1,258 @@
+//! G0/G3 coverage for the typed BIPOP restart ledger (7tv.23.1).
+//!
+//! This first production tranche binds each completed CMA restart and makes the
+//! legacy summary fields checked projections of that ordered evidence. It does
+//! not yet claim fallible input admission, zero-budget support, cancellation,
+//! pause/resume, checked seed-overflow refusal, retained objective payloads, or
+//! authentication of the root start/seed/sigma/target/callback semantics, or a
+//! G5 artifact identity.
+
+#![deny(unsafe_code)]
+
+use fs_dfo::{
+    BIPOP_RESTART_SCHEMA_VERSION, BipopLane, BipopReport, BipopRestartRecord, CmaReport,
+    CmaStopReason, bipop_cmaes,
+};
+
+const ROOT_SEED: u64 = 0xB1_90_00_01;
+const RESTART_SEED_STRIDE: u64 = 0x9E37_79B9;
+
+fn sphere(point: &[f64]) -> f64 {
+    point.iter().map(|coordinate| coordinate * coordinate).sum()
+}
+
+fn run_sphere(total_budget: usize, seed: u64) -> BipopReport {
+    let mut objective = |point: &[f64]| sphere(point);
+    bipop_cmaes(&mut objective, &[2.0, -1.0], 0.75, total_budget, -1.0, seed)
+}
+
+fn assert_slice_bits(left: &[f64], right: &[f64]) {
+    assert_eq!(left.len(), right.len());
+    for (left, right) in left.iter().zip(right) {
+        assert_eq!(left.to_bits(), right.to_bits());
+    }
+}
+
+fn assert_report_bits(left: &CmaReport, right: &CmaReport) {
+    assert_slice_bits(&left.x_best, &right.x_best);
+    assert_eq!(left.f_best.to_bits(), right.f_best.to_bits());
+    assert_eq!(left.evals, right.evals);
+    assert_eq!(left.generations, right.generations);
+    assert_eq!(left.converged, right.converged);
+    assert_eq!(left.sigma.to_bits(), right.sigma.to_bits());
+}
+
+fn assert_record_bits(left: &BipopRestartRecord, right: &BipopRestartRecord) {
+    assert_eq!(left.schema_version(), right.schema_version());
+    assert_eq!(left.ordinal(), right.ordinal());
+    assert_eq!(left.lane(), right.lane());
+    assert_eq!(left.lambda(), right.lambda());
+    assert_eq!(left.allocated_budget(), right.allocated_budget());
+    assert_eq!(left.seed(), right.seed());
+    assert_slice_bits(left.start(), right.start());
+    assert_eq!(left.trace_start(), right.trace_start());
+    assert_eq!(left.trace_end(), right.trace_end());
+    assert_eq!(left.stop_reason(), right.stop_reason());
+    assert_report_bits(left.report(), right.report());
+}
+
+/// G0: ordered intervals partition the aggregate evaluation trace, every run
+/// obeys its local cap and population accounting, and the public best report is
+/// a bit-exact projection of the explicitly named restart.
+#[test]
+fn g0_restart_records_partition_the_trace_and_name_the_best_run() {
+    let report = run_sphere(20, ROOT_SEED);
+    report
+        .validate_ledger()
+        .expect("generated ledger validates");
+
+    assert_eq!(report.total_evals, 20);
+    assert_eq!(report.records().len(), 2);
+    assert_eq!(report.schedule, vec![6, 6]);
+
+    let first = &report.records()[0];
+    assert_eq!(first.schema_version(), BIPOP_RESTART_SCHEMA_VERSION);
+    assert_eq!(first.ordinal(), 0);
+    assert_eq!(first.lane(), BipopLane::Large);
+    assert_eq!(first.lambda(), 6);
+    assert_eq!(first.allocated_budget(), 20);
+    assert_eq!(first.seed(), ROOT_SEED);
+    assert_slice_bits(first.start(), &[2.0, -1.0]);
+    assert_eq!((first.trace_start(), first.trace_end()), (0, 19));
+    assert_eq!(first.report().evals, 19);
+    assert_eq!(first.report().generations, 3);
+    assert_eq!(first.stop_reason(), CmaStopReason::BudgetExhausted);
+
+    let second = &report.records()[1];
+    assert_eq!(second.ordinal(), 1);
+    assert_eq!(second.lane(), BipopLane::Small);
+    assert_eq!(second.lambda(), 6);
+    assert_eq!(second.allocated_budget(), 1);
+    assert_eq!(second.seed(), ROOT_SEED.wrapping_add(RESTART_SEED_STRIDE));
+    assert_eq!((second.trace_start(), second.trace_end()), (19, 20));
+    assert_eq!(second.report().evals, 1);
+    assert_eq!(second.report().generations, 0);
+    assert_eq!(second.stop_reason(), CmaStopReason::BudgetExhausted);
+
+    let best = report.best_record().expect("named best restart exists");
+    assert!(report.best_restart() < report.records().len());
+    assert_report_bits(&report.best, best.report());
+}
+
+/// G0: target and stagnation stops are retained causally rather than inferred
+/// from the remaining local budget after the run has returned.
+#[test]
+fn g0_restart_records_retain_causal_terminal_reasons() {
+    let mut at_target = |point: &[f64]| sphere(point);
+    let target_report = bipop_cmaes(&mut at_target, &[0.0, 0.0], 0.5, 20, 0.0, ROOT_SEED);
+    target_report
+        .validate_ledger()
+        .expect("initial-target ledger validates");
+    let target_record = &target_report.records()[0];
+    assert_eq!(target_record.report().evals, 1);
+    assert_eq!(target_record.report().generations, 0);
+    assert!(target_record.report().converged);
+    assert_eq!(target_record.stop_reason(), CmaStopReason::TargetReached);
+
+    let mut constant = |_point: &[f64]| 7.0;
+    let stagnated = bipop_cmaes(&mut constant, &[0.5, -0.25], 0.5, 800, -1.0, ROOT_SEED);
+    stagnated
+        .validate_ledger()
+        .expect("stagnation ledger validates");
+    let first = &stagnated.records()[0];
+    assert_eq!(first.stop_reason(), CmaStopReason::Stagnated);
+    assert!(first.report().evals < first.allocated_budget());
+    assert!(!first.report().converged);
+}
+
+/// G0: exact budget edges admit only complete populations. A final remainder
+/// becomes its own restart record instead of disappearing from aggregate
+/// accounting.
+#[test]
+fn g0_budget_edges_retain_complete_and_partial_restart_records() {
+    for (budget, expected_evals, expected_records) in
+        [(1, vec![1], 1), (7, vec![7], 1), (8, vec![7, 1], 2)]
+    {
+        let report = run_sphere(budget, ROOT_SEED);
+        report
+            .validate_ledger()
+            .expect("budget-edge ledger validates");
+        assert_eq!(report.total_evals, budget);
+        assert_eq!(report.records().len(), expected_records);
+        assert_eq!(
+            report
+                .records()
+                .iter()
+                .map(|record| record.report().evals)
+                .collect::<Vec<_>>(),
+            expected_evals
+        );
+    }
+}
+
+/// G3: exact objective ties select the earliest restart, and mutations to any
+/// still-public compatibility projection are refused by the ledger validator.
+#[test]
+fn g3_earliest_tie_wins_and_projection_mutations_are_refused() {
+    let mut constant = |_point: &[f64]| 7.0;
+    let report = bipop_cmaes(&mut constant, &[0.5, -0.25], 0.5, 14, -1.0, ROOT_SEED);
+    report
+        .validate_ledger()
+        .expect("constant-objective ledger validates");
+    assert_eq!(report.records().len(), 2);
+    assert_eq!(report.best_restart(), 0, "equal totals use earliest wins");
+    assert_eq!(report.best.f_best.to_bits(), 7.0_f64.to_bits());
+
+    // `-0.0 < +0.0` is false under ordinary comparison but is strictly less
+    // under total_cmp. The eighth callback is the one-point final restart.
+    let mut calls = 0usize;
+    let mut signed_zero = |_point: &[f64]| {
+        calls += 1;
+        if calls <= 7 { 0.0 } else { -0.0 }
+    };
+    let signed_zero_report = bipop_cmaes(
+        &mut signed_zero,
+        &[0.5, -0.25],
+        0.5,
+        8,
+        f64::NEG_INFINITY,
+        ROOT_SEED,
+    );
+    signed_zero_report
+        .validate_ledger()
+        .expect("signed-zero ledger validates");
+    assert_eq!(signed_zero_report.records().len(), 2);
+    assert_eq!(signed_zero_report.best_restart(), 1);
+    assert_eq!(
+        signed_zero_report.best.f_best.to_bits(),
+        (-0.0_f64).to_bits()
+    );
+
+    let mut bad_total = report.clone();
+    bad_total.total_evals += 1;
+    let error = bad_total
+        .validate_ledger()
+        .expect_err("total mutation refuses");
+    assert_eq!(error.restart(), None);
+    assert_eq!(error.invariant(), "total-evaluations");
+
+    let mut bad_schedule = report.clone();
+    bad_schedule.schedule[0] += 1;
+    let error = bad_schedule
+        .validate_ledger()
+        .expect_err("schedule mutation refuses");
+    assert_eq!(error.restart(), Some(0));
+    assert_eq!(error.invariant(), "population-schedule");
+
+    let mut bad_best = report.clone();
+    bad_best.best.f_best = f64::from_bits(bad_best.best.f_best.to_bits() ^ 1);
+    let error = bad_best
+        .validate_ledger()
+        .expect_err("best mutation refuses");
+    assert_eq!(error.restart(), None);
+    assert_eq!(error.invariant(), "best-projection");
+}
+
+/// G3: once large and small lanes have spent the same retained evaluation
+/// budget, the next restart returns to the large lane and doubles lambda.
+#[test]
+fn g3_equal_lane_budgets_advance_the_large_population_ladder() {
+    let mut constant = |_point: &[f64]| 7.0;
+    let report = bipop_cmaes(&mut constant, &[0.5, -0.25], 0.5, 1_600, -1.0, ROOT_SEED);
+    report
+        .validate_ledger()
+        .expect("large/small/large ledger validates");
+    assert!(report.records().len() >= 3);
+    let first = &report.records()[0];
+    let second = &report.records()[1];
+    let third = &report.records()[2];
+    assert_eq!((first.lane(), first.lambda()), (BipopLane::Large, 6));
+    assert_eq!((second.lane(), second.lambda()), (BipopLane::Small, 6));
+    assert_eq!((third.lane(), third.lambda()), (BipopLane::Large, 12));
+    assert_eq!(first.report().evals, second.report().evals);
+    assert_eq!(third.ordinal(), 2);
+    assert_eq!(
+        third.seed(),
+        ROOT_SEED.wrapping_add(2 * RESTART_SEED_STRIDE)
+    );
+    assert_eq!(second.trace_end(), third.trace_start());
+}
+
+/// G3/G5 precursor: identical root inputs replay every retained restart field
+/// and both compatibility projections bit for bit.
+#[test]
+fn g3_same_seed_replays_the_complete_restart_ledger() {
+    let first = run_sphere(20, ROOT_SEED);
+    let second = run_sphere(20, ROOT_SEED);
+    first.validate_ledger().expect("first ledger validates");
+    second.validate_ledger().expect("second ledger validates");
+
+    assert_eq!(first.best_restart(), second.best_restart());
+    assert_eq!(first.schedule, second.schedule);
+    assert_eq!(first.total_evals, second.total_evals);
+    assert_report_bits(&first.best, &second.best);
+    assert_eq!(first.records().len(), second.records().len());
+    for (left, right) in first.records().iter().zip(second.records()) {
+        assert_record_bits(left, right);
+    }
+}

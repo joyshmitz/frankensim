@@ -23,7 +23,10 @@ pub mod steer;
 
 pub use fs_robust::{EmpiricalCvarReport, RobustError, empirical_cvar};
 
-pub use cma::{BipopReport, CmaParams, CmaReport, bipop_cmaes, cmaes};
+pub use cma::{
+    BIPOP_RESTART_SCHEMA_VERSION, BipopLane, BipopLedgerError, BipopReport, BipopRestartRecord,
+    CmaParams, CmaReport, CmaStopReason, bipop_cmaes, cmaes,
+};
 pub use dro::{DroReport, wasserstein_worst_case};
 pub use moo::{
     HvArchive, Individual, MoeadParams, NsgaParams, crowding_distance, das_dennis, dominates,

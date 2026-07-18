@@ -17,6 +17,13 @@ use fs_rand::StreamKey;
 /// Kernel id for CMA sampling streams (stable registry).
 const K_CMA: u32 = 0xD1F0;
 
+/// Domain stride used by the legacy wrapping BIPOP seed derivation.
+/// A fallible overflow-refusing entry point remains a follow-up obligation.
+const BIPOP_RESTART_SEED_STRIDE: u64 = 0x9E37_79B9;
+
+/// Schema version for [`BipopRestartRecord`].
+pub const BIPOP_RESTART_SCHEMA_VERSION: u32 = 1;
+
 /// Tunables (defaults follow Hansen's standard settings).
 #[derive(Debug, Clone)]
 pub struct CmaParams {
@@ -47,6 +54,17 @@ impl CmaParams {
     }
 }
 
+/// Why one CMA run stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmaStopReason {
+    /// The requested objective target was reached.
+    TargetReached,
+    /// The local budget could not admit another complete population.
+    BudgetExhausted,
+    /// TolX/TolFun stopped a run.
+    Stagnated,
+}
+
 /// Run evidence.
 #[derive(Debug, Clone)]
 pub struct CmaReport {
@@ -66,13 +84,22 @@ pub struct CmaReport {
 
 /// Full-covariance CMA-ES from `x0`. Deterministic per `seed`.
 #[must_use]
-#[allow(clippy::too_many_lines)] // the algorithm is one coherent loop
 pub fn cmaes<F: FnMut(&[f64]) -> f64>(
     f: &mut F,
     x0: &[f64],
     params: &CmaParams,
     seed: u64,
 ) -> CmaReport {
+    cmaes_with_stop(f, x0, params, seed).0
+}
+
+#[allow(clippy::too_many_lines)] // the algorithm is one coherent loop
+fn cmaes_with_stop<F: FnMut(&[f64]) -> f64>(
+    f: &mut F,
+    x0: &[f64],
+    params: &CmaParams,
+    seed: u64,
+) -> (CmaReport, CmaStopReason) {
     let n = x0.len();
     assert!(n >= 1, "dimension must be positive");
     let lambda = params.lambda.max(4);
@@ -119,6 +146,20 @@ pub fn cmaes<F: FnMut(&[f64]) -> f64>(
     let mut f_best = f(&mean);
     let mut evals = 1usize;
     let mut generations = 0usize;
+    if f_best <= params.f_target {
+        return (
+            CmaReport {
+                x_best,
+                f_best,
+                evals,
+                generations,
+                converged: true,
+                sigma,
+            },
+            CmaStopReason::TargetReached,
+        );
+    }
+    let mut stop_reason = CmaStopReason::BudgetExhausted;
     // TolFun stagnation: generations since a meaningful f_best improvement.
     let mut gens_since_improve = 0usize;
 
@@ -175,14 +216,17 @@ pub fn cmaes<F: FnMut(&[f64]) -> f64>(
         }
         gens_since_improve += 1;
         if f_best <= params.f_target {
-            return CmaReport {
-                x_best,
-                f_best,
-                evals,
-                generations,
-                converged: true,
-                sigma,
-            };
+            return (
+                CmaReport {
+                    x_best,
+                    f_best,
+                    evals,
+                    generations,
+                    converged: true,
+                    sigma,
+                },
+                CmaStopReason::TargetReached,
+            );
         }
         // Rank (total_cmp, lowest index on ties — P2).
         let mut order: Vec<usize> = (0..lambda).collect();
@@ -236,6 +280,7 @@ pub fn cmaes<F: FnMut(&[f64]) -> f64>(
             // per-run budget (measured: a λ=150 local-basin run burned
             // 120k evals with f stalled for hundreds of generations) —
             // the f-stall criterion is what actually frees the budget.
+            stop_reason = CmaStopReason::Stagnated;
             break;
         }
         // Rank-1 path with stall indicator h_σ.
@@ -268,32 +313,377 @@ pub fn cmaes<F: FnMut(&[f64]) -> f64>(
             }
         }
     }
-    CmaReport {
-        x_best,
-        f_best,
-        evals,
-        generations,
-        converged: false,
-        sigma,
+    (
+        CmaReport {
+            x_best,
+            f_best,
+            evals,
+            generations,
+            converged: false,
+            sigma,
+        },
+        stop_reason,
+    )
+}
+
+/// Which BIPOP budget lane launched a restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BipopLane {
+    /// The doubling population ladder.
+    Large,
+    /// The base-population interleave.
+    Small,
+}
+
+/// One immutable, versioned BIPOP restart receipt.
+///
+/// Point and objective values retain their exact `f64` bits. The aggregate
+/// trace interval is half-open and counts objective invocations even though
+/// this first ledger tranche does not retain the objective payloads themselves.
+#[derive(Debug, Clone)]
+pub struct BipopRestartRecord {
+    schema_version: u32,
+    ordinal: u64,
+    lane: BipopLane,
+    lambda: usize,
+    allocated_budget: usize,
+    seed: u64,
+    start: Vec<f64>,
+    trace_start: usize,
+    trace_end: usize,
+    stop_reason: CmaStopReason,
+    report: CmaReport,
+}
+
+impl BipopRestartRecord {
+    /// Restart-record schema version.
+    #[must_use]
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
     }
+
+    /// Zero-based restart ordinal.
+    #[must_use]
+    pub fn ordinal(&self) -> u64 {
+        self.ordinal
+    }
+
+    /// Large or small BIPOP budget lane.
+    #[must_use]
+    pub fn lane(&self) -> BipopLane {
+        self.lane
+    }
+
+    /// Population size used by this restart.
+    #[must_use]
+    pub fn lambda(&self) -> usize {
+        self.lambda
+    }
+
+    /// Local evaluation cap assigned to this restart.
+    #[must_use]
+    pub fn allocated_budget(&self) -> usize {
+        self.allocated_budget
+    }
+
+    /// CMA stream seed derived for this restart.
+    #[must_use]
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
+    /// Exact start point supplied to this restart.
+    #[must_use]
+    pub fn start(&self) -> &[f64] {
+        &self.start
+    }
+
+    /// Start of this restart's half-open aggregate evaluation interval.
+    #[must_use]
+    pub fn trace_start(&self) -> usize {
+        self.trace_start
+    }
+
+    /// End of this restart's half-open aggregate evaluation interval.
+    #[must_use]
+    pub fn trace_end(&self) -> usize {
+        self.trace_end
+    }
+
+    /// Causal terminal classification retained from the CMA run.
+    #[must_use]
+    pub fn stop_reason(&self) -> CmaStopReason {
+        self.stop_reason
+    }
+
+    /// Complete CMA result for this restart.
+    #[must_use]
+    pub fn report(&self) -> &CmaReport {
+        &self.report
+    }
+}
+
+/// Structured refusal from [`BipopReport::validate_ledger`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BipopLedgerError {
+    restart: Option<usize>,
+    invariant: &'static str,
+}
+
+impl BipopLedgerError {
+    fn global(invariant: &'static str) -> Self {
+        Self {
+            restart: None,
+            invariant,
+        }
+    }
+
+    fn at(restart: usize, invariant: &'static str) -> Self {
+        Self {
+            restart: Some(restart),
+            invariant,
+        }
+    }
+
+    /// Restart index associated with the refusal, if it is local.
+    #[must_use]
+    pub fn restart(&self) -> Option<usize> {
+        self.restart
+    }
+
+    /// Stable invariant name suitable for structured diagnostics.
+    #[must_use]
+    pub fn invariant(&self) -> &'static str {
+        self.invariant
+    }
+}
+
+impl core::fmt::Display for BipopLedgerError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.restart {
+            Some(restart) => write!(
+                formatter,
+                "BIPOP restart {restart} violates {}",
+                self.invariant
+            ),
+            None => write!(formatter, "BIPOP ledger violates {}", self.invariant),
+        }
+    }
+}
+
+impl std::error::Error for BipopLedgerError {}
+
+fn cma_reports_match_bits(left: &CmaReport, right: &CmaReport) -> bool {
+    left.f_best.to_bits() == right.f_best.to_bits()
+        && left.evals == right.evals
+        && left.generations == right.generations
+        && left.converged == right.converged
+        && left.sigma.to_bits() == right.sigma.to_bits()
+        && left.x_best.len() == right.x_best.len()
+        && left
+            .x_best
+            .iter()
+            .zip(&right.x_best)
+            .all(|(left, right)| left.to_bits() == right.to_bits())
 }
 
 /// BIPOP restart evidence.
 #[derive(Debug, Clone)]
 pub struct BipopReport {
-    /// The best report across all restarts.
+    /// Compatibility projection of [`Self::best_record`].
     pub best: CmaReport,
-    /// Population size used in each restart (the schedule evidence).
+    /// Compatibility projection of every restart's population size.
     pub schedule: Vec<usize>,
-    /// Total evaluations across restarts.
+    /// Compatibility projection of the terminal aggregate trace offset.
     pub total_evals: usize,
+    records: Vec<BipopRestartRecord>,
+    best_restart: usize,
+}
+
+impl BipopReport {
+    /// Ordered immutable restart ledger.
+    #[must_use]
+    pub fn records(&self) -> &[BipopRestartRecord] {
+        &self.records
+    }
+
+    /// Index of the earliest restart attaining the best objective under
+    /// `f64::total_cmp`.
+    #[must_use]
+    pub fn best_restart(&self) -> usize {
+        self.best_restart
+    }
+
+    /// Named record from which [`Self::best`] is projected.
+    #[must_use]
+    pub fn best_record(&self) -> Option<&BipopRestartRecord> {
+        self.records.get(self.best_restart)
+    }
+
+    /// Recheck the ordered ledger and every compatibility projection.
+    ///
+    /// This is a structural validator over retained evidence. It does not yet
+    /// authenticate the first start, root seed, sigma, target, or callback
+    /// semantics against an external input identity.
+    ///
+    /// # Errors
+    /// Returns a [`BipopLedgerError`] naming the first deterministic invariant
+    /// violation.
+    #[allow(clippy::too_many_lines)] // one ordered pass mirrors the versioned record schema
+    pub fn validate_ledger(&self) -> Result<(), BipopLedgerError> {
+        let first = self
+            .records
+            .first()
+            .ok_or_else(|| BipopLedgerError::global("nonempty"))?;
+        if self.schedule.len() != self.records.len() {
+            return Err(BipopLedgerError::global("schedule-length"));
+        }
+        let base_lambda = first.lambda;
+        let base_seed = first.seed;
+        let point_dim = first.start.len();
+        if point_dim == 0 {
+            return Err(BipopLedgerError::at(0, "positive-point-dimension"));
+        }
+        let expected_base_lambda = 4 + (3.0 * fs_math::det::ln(point_dim as f64)).floor() as usize;
+        if base_lambda != expected_base_lambda {
+            return Err(BipopLedgerError::at(0, "base-population"));
+        }
+        let mut cursor = 0usize;
+        let mut large_budget_used = 0usize;
+        let mut small_budget_used = 0usize;
+        let mut large_runs = 0u32;
+
+        for (index, record) in self.records.iter().enumerate() {
+            if record.schema_version != BIPOP_RESTART_SCHEMA_VERSION {
+                return Err(BipopLedgerError::at(index, "schema-version"));
+            }
+            let expected_ordinal = u64::try_from(index)
+                .map_err(|_| BipopLedgerError::at(index, "ordinal-overflow"))?;
+            if record.ordinal != expected_ordinal {
+                return Err(BipopLedgerError::at(index, "ordinal"));
+            }
+            let expected_seed =
+                base_seed.wrapping_add(expected_ordinal.wrapping_mul(BIPOP_RESTART_SEED_STRIDE));
+            if record.seed != expected_seed {
+                return Err(BipopLedgerError::at(index, "derived-seed"));
+            }
+            if record.start.len() != point_dim || record.report.x_best.len() != point_dim {
+                return Err(BipopLedgerError::at(index, "point-dimension"));
+            }
+
+            let expected_lane = if large_budget_used <= small_budget_used {
+                BipopLane::Large
+            } else {
+                BipopLane::Small
+            };
+            if record.lane != expected_lane {
+                return Err(BipopLedgerError::at(index, "lane-selection"));
+            }
+            let expected_lambda = match expected_lane {
+                BipopLane::Large => 1usize
+                    .checked_shl(large_runs)
+                    .and_then(|scale| base_lambda.checked_mul(scale))
+                    .ok_or_else(|| BipopLedgerError::at(index, "population-overflow"))?,
+                BipopLane::Small => base_lambda,
+            };
+            if record.lambda != expected_lambda || self.schedule[index] != record.lambda {
+                return Err(BipopLedgerError::at(index, "population-schedule"));
+            }
+            if record.trace_start != cursor {
+                return Err(BipopLedgerError::at(index, "trace-start"));
+            }
+            let expected_end = cursor
+                .checked_add(record.report.evals)
+                .ok_or_else(|| BipopLedgerError::at(index, "trace-overflow"))?;
+            if record.trace_end != expected_end {
+                return Err(BipopLedgerError::at(index, "trace-end"));
+            }
+            if record.report.evals > record.allocated_budget {
+                return Err(BipopLedgerError::at(index, "local-budget"));
+            }
+            if record.allocated_budget == 0 {
+                return Err(BipopLedgerError::at(index, "positive-local-budget"));
+            }
+            let accounted_evals = record
+                .report
+                .generations
+                .checked_mul(record.lambda)
+                .and_then(|samples| samples.checked_add(1))
+                .ok_or_else(|| BipopLedgerError::at(index, "evaluation-overflow"))?;
+            if record.report.evals != accounted_evals {
+                return Err(BipopLedgerError::at(index, "generation-accounting"));
+            }
+            match record.stop_reason {
+                CmaStopReason::TargetReached if !record.report.converged => {
+                    return Err(BipopLedgerError::at(index, "terminal-reason"));
+                }
+                CmaStopReason::BudgetExhausted
+                    if record.report.converged
+                        || record.report.evals.checked_add(record.lambda).is_some_and(
+                            |next_generation| next_generation <= record.allocated_budget,
+                        ) =>
+                {
+                    return Err(BipopLedgerError::at(index, "terminal-reason"));
+                }
+                CmaStopReason::Stagnated
+                    if record.report.converged || record.report.generations == 0 =>
+                {
+                    return Err(BipopLedgerError::at(index, "terminal-reason"));
+                }
+                CmaStopReason::TargetReached
+                | CmaStopReason::BudgetExhausted
+                | CmaStopReason::Stagnated => {}
+            }
+
+            cursor = expected_end;
+            match record.lane {
+                BipopLane::Large => {
+                    large_budget_used = large_budget_used
+                        .checked_add(record.report.evals)
+                        .ok_or_else(|| BipopLedgerError::at(index, "lane-budget-overflow"))?;
+                    large_runs = large_runs
+                        .checked_add(1)
+                        .ok_or_else(|| BipopLedgerError::at(index, "large-run-overflow"))?;
+                }
+                BipopLane::Small => {
+                    small_budget_used = small_budget_used
+                        .checked_add(record.report.evals)
+                        .ok_or_else(|| BipopLedgerError::at(index, "lane-budget-overflow"))?;
+                }
+            }
+        }
+
+        if cursor != self.total_evals {
+            return Err(BipopLedgerError::global("total-evaluations"));
+        }
+        let mut expected_best = 0usize;
+        for index in 1..self.records.len() {
+            if self.records[index]
+                .report
+                .f_best
+                .total_cmp(&self.records[expected_best].report.f_best)
+                .is_lt()
+            {
+                expected_best = index;
+            }
+        }
+        if self.best_restart != expected_best {
+            return Err(BipopLedgerError::global("best-restart"));
+        }
+        if !cma_reports_match_bits(&self.best, &self.records[expected_best].report) {
+            return Err(BipopLedgerError::global("best-projection"));
+        }
+        Ok(())
+    }
 }
 
 /// BIPOP-CMA-ES: alternating large-population (doubling) and
 /// small-population restarts under a shared budget — the standard
 /// multimodal regime. Deterministic: restart seeds derive from the base
-/// seed by counter.
+/// seed by the versioned legacy wrapping counter rule. Fallible input,
+/// population, budget, and seed-overflow admission remains a follow-up.
 #[must_use]
+#[allow(clippy::too_many_lines)] // scheduler and record publication are one atomic state machine
 pub fn bipop_cmaes<F: FnMut(&[f64]) -> f64>(
     f: &mut F,
     x0: &[f64],
@@ -304,9 +694,9 @@ pub fn bipop_cmaes<F: FnMut(&[f64]) -> f64>(
 ) -> BipopReport {
     let n = x0.len();
     let base_lambda = 4 + (3.0 * fs_math::det::ln(n as f64)).floor() as usize;
-    let mut schedule = Vec::new();
+    let mut records: Vec<BipopRestartRecord> = Vec::new();
     let mut total_evals = 0usize;
-    let mut best: Option<CmaReport> = None;
+    let mut best_restart: Option<usize> = None;
     let mut large_runs = 0u32;
     let mut restart = 0u64;
     let mut small_budget_used = 0usize;
@@ -348,20 +738,44 @@ pub fn bipop_cmaes<F: FnMut(&[f64]) -> f64>(
                 .map(|&v| sigma0.mul_add(restart_stream.next_normal(), v))
                 .collect()
         };
-        let rep = cmaes(f, &start, &params, seed.wrapping_add(restart * 0x9E37_79B9));
-        total_evals += rep.evals;
+        let derived_seed = seed.wrapping_add(restart.wrapping_mul(BIPOP_RESTART_SEED_STRIDE));
+        let trace_start = total_evals;
+        let (rep, stop_reason) = cmaes_with_stop(f, &start, &params, derived_seed);
+        let trace_end = trace_start + rep.evals;
+        let record_index = records.len();
+        let is_better = best_restart.is_none_or(|best_index| {
+            rep.f_best
+                .total_cmp(&records[best_index].report.f_best)
+                .is_lt()
+        });
+        records.push(BipopRestartRecord {
+            schema_version: BIPOP_RESTART_SCHEMA_VERSION,
+            ordinal: restart,
+            lane: if run_large {
+                BipopLane::Large
+            } else {
+                BipopLane::Small
+            },
+            lambda,
+            allocated_budget: budget,
+            seed: derived_seed,
+            start,
+            trace_start,
+            trace_end,
+            stop_reason,
+            report: rep,
+        });
+        if is_better {
+            best_restart = Some(record_index);
+        }
+        total_evals = trace_end;
         if run_large {
-            large_budget_used += rep.evals;
+            large_budget_used += records[record_index].report.evals;
             large_runs += 1;
         } else {
-            small_budget_used += rep.evals;
+            small_budget_used += records[record_index].report.evals;
         }
-        schedule.push(lambda);
-        let is_better = best.as_ref().is_none_or(|b| rep.f_best < b.f_best);
-        if is_better {
-            best = Some(rep.clone());
-        }
-        if rep.converged {
+        if records[record_index].report.converged {
             break;
         }
         restart += 1;
@@ -372,9 +786,14 @@ pub fn bipop_cmaes<F: FnMut(&[f64]) -> f64>(
             break;
         }
     }
+    let best_restart = best_restart.expect("at least one run");
+    let schedule = records.iter().map(BipopRestartRecord::lambda).collect();
+    let best = records[best_restart].report.clone();
     BipopReport {
-        best: best.expect("at least one run"),
+        best,
         schedule,
         total_evals,
+        records,
+        best_restart,
     }
 }
