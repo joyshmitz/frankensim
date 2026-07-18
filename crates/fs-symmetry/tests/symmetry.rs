@@ -100,14 +100,20 @@ fn the_exact_symmetry_verdict_is_scale_invariant() {
     // double precision (false negative).
     // (a) A tiny but grossly asymmetric field must NOT read as exact.
     let tiny_asym = cyclic_residual(&[1e-13, 2e-13, 0.0, 0.0], 2).unwrap();
-    assert!(tiny_asym.relative > 1.0, "sanity: this field is ~141% asymmetric");
+    assert!(
+        tiny_asym.relative > 1.0,
+        "sanity: this field is ~141% asymmetric"
+    );
     assert!(
         !tiny_asym.is_exact,
         "a tiny asymmetric field must never be certified exactly symmetric"
     );
     // (b) A large field that IS 2-fold symmetric must read as exact.
     let big_sym = cyclic_residual(&[1e12, 3e12, 1e12, 3e12], 2).unwrap();
-    assert!(big_sym.is_exact, "a large 2-fold-symmetric field must be exact");
+    assert!(
+        big_sym.is_exact,
+        "a large 2-fold-symmetric field must be exact"
+    );
     // (c) The verdict matches its unit-scale twin (scale invariance).
     let unit_sym = cyclic_residual(&[1.0, 3.0, 1.0, 3.0], 2).unwrap();
     assert_eq!(unit_sym.is_exact, big_sym.is_exact);

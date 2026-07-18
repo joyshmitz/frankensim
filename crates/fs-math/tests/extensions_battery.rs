@@ -390,8 +390,14 @@ fn hypot_budget_specials_and_symmetry() {
     // max-ordering picks hi = 0.0 for `NaN >= 0.0 == false`, and the old
     // `hi == 0.0` short-circuit returned 0.0, swallowing the NaN and breaking
     // symmetry). Both orderings must agree.
-    assert!(det::hypot(f64::NAN, 0.0).is_nan(), "hypot(NaN, 0) must be NaN");
-    assert!(det::hypot(0.0, f64::NAN).is_nan(), "hypot(0, NaN) must be NaN");
+    assert!(
+        det::hypot(f64::NAN, 0.0).is_nan(),
+        "hypot(NaN, 0) must be NaN"
+    );
+    assert!(
+        det::hypot(0.0, f64::NAN).is_nan(),
+        "hypot(0, NaN) must be NaN"
+    );
     assert_eq!(
         det::hypot(f64::NAN, 0.0).to_bits(),
         det::hypot(0.0, f64::NAN).to_bits(),

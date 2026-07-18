@@ -117,7 +117,7 @@ fn sol_001_patch_tests_exact() {
             body_force: None,
             dirichlet: all.iter().map(|&p| (p, &lin as _)).collect(),
             traction: vec![],
-        symmetry: vec![],
+            symmetry: vec![],
         };
         let u = problem.solve().expect("patch solves");
         for (node, val) in u.iter().enumerate() {
@@ -194,7 +194,7 @@ fn sol_002_mms_orders_families_and_frontends() {
                 body_force: Some(&mms_f),
                 dirichlet: all.iter().map(|&p| (p, &mms_u as _)).collect(),
                 traction: vec![],
-        symmetry: vec![],
+                symmetry: vec![],
             };
             let u = problem.solve().expect("mms solves");
             errs.push(l2_h1_error(&mesh, &u, &mms_u, &mms_grad));
@@ -934,9 +934,20 @@ fn le1_sigma_yy(nx: usize, ny: usize) -> f64 {
     };
     let u = problem.solve().expect("LE1 solves");
     if std::env::var("LE1_DEBUG").is_ok() {
-        let d_node = mesh.nodes.iter().position(|p| (p[0] - 2.0).abs() < 1e-9 && p[1].abs() < 1e-9).unwrap();
-        let o_node = mesh.nodes.iter().position(|p| (p[0] - 3.25).abs() < 1e-9 && p[1].abs() < 1e-9).unwrap();
-        println!("{{\"debug\":\"le1\",\"u_D\":[{:.6},{:.6}],\"u_outer\":[{:.6},{:.6}]}}", u[d_node][0], u[d_node][1], u[o_node][0], u[o_node][1]);
+        let d_node = mesh
+            .nodes
+            .iter()
+            .position(|p| (p[0] - 2.0).abs() < 1e-9 && p[1].abs() < 1e-9)
+            .unwrap();
+        let o_node = mesh
+            .nodes
+            .iter()
+            .position(|p| (p[0] - 3.25).abs() < 1e-9 && p[1].abs() < 1e-9)
+            .unwrap();
+        println!(
+            "{{\"debug\":\"le1\",\"u_D\":[{:.6},{:.6}],\"u_outer\":[{:.6},{:.6}]}}",
+            u[d_node][0], u[d_node][1], u[o_node][0], u[o_node][1]
+        );
     }
     // Corner element at (xi, eta) = (0, 0): its first node is D itself
     // under mapped_quads' row-major numbering. Evaluate strain at the
@@ -944,20 +955,37 @@ fn le1_sigma_yy(nx: usize, ny: usize) -> f64 {
     let conn = mesh
         .elems
         .iter()
-        .find(|c| c.iter().any(|&n| {
-            let p = mesh.nodes[n];
-            (p[0] - 2.0).abs() < 1e-9 && p[1].abs() < 1e-9
-        }))
+        .find(|c| {
+            c.iter().any(|&n| {
+                let p = mesh.nodes[n];
+                (p[0] - 2.0).abs() < 1e-9 && p[1].abs() < 1e-9
+            })
+        })
         .expect("an element touches D");
     if std::env::var("LE1_DEBUG").is_ok() {
-        for (label, xi, eta) in [("corner", -0.577, -0.577), ("center", 0.0, 0.0), ("xi+", 0.577, -0.577), ("eta+", -0.577, 0.577)] {
+        for (label, xi, eta) in [
+            ("corner", -0.577, -0.577),
+            ("center", 0.0, 0.0),
+            ("xi+", 0.577, -0.577),
+            ("eta+", -0.577, 0.577),
+        ] {
             let (_, gr, _) = fs_solid::mesh2::shapes_at(&mesh.nodes, conn, xi, eta);
             let (mut xx, mut yy) = (0.0, 0.0);
-            for (a, g2) in conn.iter().zip(&gr) { xx += g2[0]*u[*a][0]; yy += g2[1]*u[*a][1]; }
+            for (a, g2) in conn.iter().zip(&gr) {
+                xx += g2[0] * u[*a][0];
+                yy += g2[1] * u[*a][1];
+            }
             let cc: f64 = 210_000.0 / (1.0 - 0.09);
-            println!("{{\"probe\":\"{label}\",\"sxx\":{:.2},\"syy\":{:.2}}}", cc*(xx + 0.3*yy), cc*(0.3f64).mul_add(xx, yy));
+            println!(
+                "{{\"probe\":\"{label}\",\"sxx\":{:.2},\"syy\":{:.2}}}",
+                cc * (xx + 0.3 * yy),
+                cc * (0.3f64).mul_add(xx, yy)
+            );
         }
-        println!("{{\"conn\":{conn:?},\"nodes\":[{:?},{:?},{:?},{:?}]}}", mesh.nodes[conn[0]], mesh.nodes[conn[1]], mesh.nodes[conn[2]], mesh.nodes[conn[3]]);
+        println!(
+            "{{\"conn\":{conn:?},\"nodes\":[{:?},{:?},{:?},{:?}]}}",
+            mesh.nodes[conn[0]], mesh.nodes[conn[1]], mesh.nodes[conn[2]], mesh.nodes[conn[3]]
+        );
     }
     let g = -1.0 / 3.0_f64.sqrt(); // 2x2 Gauss point nearest the D corner
     let (_, grads, _) = fs_solid::mesh2::shapes_at(&mesh.nodes, conn, g, g);

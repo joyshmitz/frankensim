@@ -62,8 +62,8 @@ fn se3_002_constant_twist_steps_compose_to_one_exponential() {
     for _ in 0..steps {
         walked = se3_exp_step(&walked, &twist, h).expect("exp step");
     }
-    let jumped = se3_exp_step(&Motor::identity(), &twist, h * f64::from(steps))
-        .expect("single exponential");
+    let jumped =
+        se3_exp_step(&Motor::identity(), &twist, h * f64::from(steps)).expect("single exponential");
     let probe = GaPoint {
         x: -0.6,
         y: 0.9,
@@ -152,8 +152,8 @@ fn se3_005_dep_adjoint_matches_finite_differences() {
     let steps = 25;
     let params = DepSolveParams::default();
     let bar_n = [0.25, -1.0, 0.5];
-    let bar_0 = dep_momentum_adjoint(omega0, INERTIA, h, steps, &params, bar_n)
-        .expect("adjoint runs");
+    let bar_0 =
+        dep_momentum_adjoint(omega0, INERTIA, h, steps, &params, bar_n).expect("adjoint runs");
     // Directional FD of <bar_n, omega_N(omega_0)> along d.
     let forward = |w0: [f64; 3]| -> [f64; 3] {
         let mut q = [1.0, 0.0, 0.0, 0.0];
@@ -165,7 +165,12 @@ fn se3_005_dep_adjoint_matches_finite_differences() {
         }
         w
     };
-    let dirs = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.6, -0.8, 0.2]];
+    let dirs = [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.6, -0.8, 0.2],
+    ];
     for d in dirs {
         let eps = 1e-6;
         let mut plus = omega0;
@@ -284,7 +289,11 @@ fn se3_008_rigid_body_step_tracks_so3_lane_and_conserves_free_velocity() {
     }
     // Reconstruct R from the motor by transporting basis directions.
     let origin = motor2
-        .transform_point(GaPoint { x: 0.0, y: 0.0, z: 0.0 })
+        .transform_point(GaPoint {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        })
         .expect("finite");
     let rot_v = {
         let tip = motor2

@@ -214,11 +214,12 @@ fn g0_interval_arithmetic_contains_the_pointwise_result() {
             let xs = [c1 - w1, c1, c1 + w1];
             let ys = [c2 - w2, c2, c2 + w2];
             xs.iter().all(|&x| {
-                ys.iter().all(|&y| {
-                    (a + b).contains(x + y) && (a * b).contains(x * y)
-                })
+                ys.iter()
+                    .all(|&y| (a + b).contains(x + y) && (a * b).contains(x * y))
             })
         },
     );
-    println!("{{\"suite\":\"fs-ivl\",\"case\":\"g0-containment\",\"verdict\":\"pass\",\"detail\":\"600 generated interval pairs, add+mul, shrink-armed\"}}");
+    println!(
+        "{{\"suite\":\"fs-ivl\",\"case\":\"g0-containment\",\"verdict\":\"pass\",\"detail\":\"600 generated interval pairs, add+mul, shrink-armed\"}}"
+    );
 }
