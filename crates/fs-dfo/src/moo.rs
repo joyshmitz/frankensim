@@ -1842,17 +1842,37 @@ mod tests {
 
     #[test]
     fn nsga3_normalization_multiple_row_swaps_run_through_intercept_production_path() {
+        // Every entry is dyadic so the fixture itself introduces no decimal
+        // oracle ambiguity. The two nontrivial swaps form a three-cycle: the
+        // recorded forward permutation is therefore distinct from both the
+        // identity and the reversed swap order.
         let matrix = vec![
-            vec![0.1, 0.2, 1.0],
-            vec![1.0, 0.1, 0.2],
-            vec![0.2, 1.0, 0.1],
+            vec![0.25, 0.125, 1.0],
+            vec![1.0, 0.25, 0.125],
+            vec![0.125, 1.0, 0.25],
         ];
         let factorization = nsga3_factor_hyperplane(&matrix).expect("matrix is nonsingular");
         assert_eq!(factorization.swaps, vec![1, 2, 2]);
 
+        // Independently construct b=A*[2,3,5] = [47/8,27/8,9/2]. Unlike the
+        // production all-ones RHS, this vector is not permutation-invariant;
+        // omitted, reversed, or otherwise misordered row swaps cannot retain
+        // the pinned solution.
+        let nonuniform_solution = nsga3_lu_solve(
+            &factorization.lu,
+            &factorization.swaps,
+            &[47.0 / 8.0, 27.0 / 8.0, 9.0 / 2.0],
+        )
+        .expect("multi-row-swapped nonuniform solve");
+        for (actual, expected) in nonuniform_solution.iter().zip([2.0, 3.0, 5.0]) {
+            assert!((actual - expected).abs() <= 16.0 * f64::EPSILON * expected);
+        }
+
+        // Each row sums to 11/8, so A*x=1 has the independent uniform
+        // coefficient solution 8/11 and production intercept span 11/8.
         let coefficients = nsga3_solve_hyperplane(&matrix).expect("admissible solve");
         for coefficient in &coefficients {
-            assert!((*coefficient - 10.0 / 13.0).abs() <= 8.0 * f64::EPSILON);
+            assert!((*coefficient - 8.0 / 11.0).abs() <= 8.0 * f64::EPSILON);
         }
         let pop: Vec<Individual> = matrix
             .iter()
@@ -1864,7 +1884,7 @@ mod tests {
         let span = nsga3_hyperplane_span(&pop, &[0, 1, 2], &[0.0, 0.0, 0.0], &[1.0, 1.0, 1.0])
             .expect("multi-row-swapped production intercept");
         for value in span {
-            assert!((value - 1.3).abs() <= 16.0 * f64::EPSILON);
+            assert!((value - 11.0 / 8.0).abs() <= 16.0 * f64::EPSILON);
         }
     }
 
