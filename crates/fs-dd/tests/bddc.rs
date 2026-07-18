@@ -6,7 +6,7 @@
 //! expected locality metric; subdomain sweep ledgered.
 #![cfg(feature = "bddc")]
 
-use fs_dd::{Bddc, Decomposition};
+use fs_dd::{Bddc, CgError, CgReport, CgTermination, Decomposition};
 
 fn verdict(case: &str, detail: &str) {
     println!(
@@ -26,6 +26,69 @@ fn rhs(n: usize, seed: u64) -> Vec<f64> {
             ((state >> 11) as f64) / (1u64 << 53) as f64 - 0.5
         })
         .collect()
+}
+
+fn converged_report(report: Result<CgReport, CgError>, tolerance: f64, case: &str) -> CgReport {
+    let report = report.unwrap_or_else(|error| panic!("{case}: admitted solve failed: {error}"));
+    assert_eq!(
+        report.termination,
+        CgTermination::Converged,
+        "{case}: claims require a converged solve, got {report:?}"
+    );
+    assert!(
+        report.relative_residual.is_finite() && report.relative_residual <= tolerance,
+        "{case}: converged residual exceeds tolerance {tolerance:e}: {report:?}"
+    );
+    report
+}
+
+fn converged_diagnostics(
+    report: Result<CgReport, CgError>,
+    tolerance: f64,
+    case: &str,
+) -> (usize, f64) {
+    let report = converged_report(report, tolerance, case);
+    let estimate = report
+        .condition_estimate
+        .unwrap_or_else(|| panic!("{case}: converged multi-step solve needs valid Ritz evidence"));
+    assert!(
+        estimate.krylov_dimension > 1,
+        "{case}: a one-dimensional Ritz projection is not conditioning evidence: {estimate:?}"
+    );
+    assert!(
+        estimate.ritz_min.is_finite()
+            && estimate.ritz_min > 0.0
+            && estimate.ritz_max.is_finite()
+            && estimate.ritz_max >= estimate.ritz_min
+            && estimate.kappa.is_finite()
+            && estimate.kappa >= 1.0,
+        "{case}: invalid condition estimate {estimate:?}"
+    );
+    (report.iterations, estimate.kappa)
+}
+
+fn stable_l2_norm(values: &[f64]) -> f64 {
+    let mut scale = 0.0f64;
+    let mut sum_squares = 1.0f64;
+    for value in values {
+        let magnitude = value.abs();
+        if magnitude == 0.0 {
+            continue;
+        }
+        if scale < magnitude {
+            let ratio = scale / magnitude;
+            sum_squares = 1.0 + sum_squares * ratio * ratio;
+            scale = magnitude;
+        } else {
+            let ratio = magnitude / scale;
+            sum_squares += ratio * ratio;
+        }
+    }
+    if scale == 0.0 {
+        0.0
+    } else {
+        scale * fs_math::det::sqrt(sum_squares)
+    }
 }
 
 /// Partition the non-Dirichlet lattice nodes into the globally eliminated
@@ -204,27 +267,175 @@ fn invalid_cell_coefficient_cannot_disappear_during_harmonic_mean() {
 fn zero_and_empty_rhs_solves_are_total() {
     let nonempty = Bddc::new(Decomposition::uniform(2, 2), false);
     let zero = vec![0.0; nonempty.gamma_len()];
-    assert_eq!(nonempty.solve_cg(&zero, 1e-8, 20), (0, 1.0));
+    assert_eq!(
+        nonempty.solve_cg(&zero, 1e-8, 20),
+        Ok(CgReport {
+            termination: CgTermination::Converged,
+            iterations: 0,
+            relative_residual: 0.0,
+            condition_estimate: None
+        })
+    );
 
     let mut tiny = vec![0.0; nonempty.gamma_len()];
     tiny[0] = 1e-300;
-    let (iterations, kappa) = nonempty.solve_cg(&tiny, 1e-8, 20);
+    let report = converged_report(nonempty.solve_cg(&tiny, 1e-8, 20), 1e-8, "tiny RHS");
     assert!(
-        iterations > 0,
+        report.iterations > 0,
         "a nonzero tiny RHS is not classified as zero"
     );
-    assert!(kappa.is_finite(), "tiny-RHS diagnostics stay finite");
+    assert!(report.relative_residual <= 1e-8, "{report:?}");
+    if let Some(estimate) = report.condition_estimate {
+        assert!(estimate.kappa.is_finite(), "{estimate:?}");
+    }
 
     let empty = Bddc::new(Decomposition::uniform(1, 2), false);
     assert_eq!(empty.gamma_len(), 0);
-    assert_eq!(empty.solve_cg(&[], 1e-8, 20), (0, 1.0));
+    assert_eq!(
+        empty.solve_cg(&[], 1e-8, 20),
+        Ok(CgReport {
+            termination: CgTermination::Converged,
+            iterations: 0,
+            relative_residual: 0.0,
+            condition_estimate: None
+        })
+    );
 }
 
 #[test]
-#[should_panic(expected = "RHS length must match the interface dimension")]
 fn rhs_dimension_mismatch_is_rejected_before_zero_shortcut() {
     let nonempty = Bddc::new(Decomposition::uniform(2, 2), false);
-    nonempty.solve_cg(&[], 1e-8, 20);
+    assert_eq!(
+        nonempty.solve_cg(&[], 1e-8, 20),
+        Err(CgError::DimensionMismatch {
+            expected: nonempty.gamma_len(),
+            actual: 0
+        })
+    );
+}
+
+#[test]
+fn cg_controls_and_zero_budget_are_typed() {
+    let bddc = Bddc::new(Decomposition::uniform(2, 2), false);
+    let zero = vec![0.0; bddc.gamma_len()];
+    for tolerance in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+        assert!(matches!(
+            bddc.solve_cg(&zero, tolerance, 0),
+            Err(CgError::InvalidTolerance { tolerance: rejected })
+                if rejected.to_bits() == tolerance.to_bits()
+        ));
+    }
+
+    let mut invalid_rhs = zero.clone();
+    invalid_rhs[0] = f64::NAN;
+    assert!(matches!(
+        bddc.solve_cg(&invalid_rhs, 1e-8, 20),
+        Err(CgError::NonFiniteRhs { index: 0, value }) if value.is_nan()
+    ));
+
+    let nonzero = rhs(bddc.gamma_len(), 0x4347_4255_4447_4554);
+    assert_eq!(
+        bddc.solve_cg(&nonzero, 0.0, 0),
+        Ok(CgReport {
+            termination: CgTermination::IterationLimit,
+            iterations: 0,
+            relative_residual: 1.0,
+            condition_estimate: None
+        })
+    );
+    assert_eq!(
+        bddc.solve_cg(&zero, 0.0, 0),
+        Ok(CgReport {
+            termination: CgTermination::Converged,
+            iterations: 0,
+            relative_residual: 0.0,
+            condition_estimate: None
+        })
+    );
+    assert_eq!(
+        bddc.solve_cg(&nonzero, 1.0, 0),
+        Ok(CgReport {
+            termination: CgTermination::Converged,
+            iterations: 0,
+            relative_residual: 1.0,
+            condition_estimate: None
+        })
+    );
+}
+
+#[test]
+fn one_iteration_exhaustion_retains_true_residual_and_ritz_dimension() {
+    let bddc = Bddc::new(Decomposition::checkerboard(4, 4, 1e6), false);
+    let input = rhs(bddc.gamma_len(), 0x4c49_4d49_542d_3031);
+    let report = bddc
+        .solve_cg(&input, 0.0, 1)
+        .expect("finite admitted one-step solve");
+    assert_eq!(report.termination, CgTermination::IterationLimit);
+    assert_eq!(report.iterations, 1);
+    assert!(
+        report.relative_residual.is_finite() && report.relative_residual > 0.0,
+        "{report:?}"
+    );
+    let estimate = report
+        .condition_estimate
+        .expect("one accepted Lanczos step has a transparent trivial projection");
+    assert_eq!(estimate.krylov_dimension, 1);
+    assert_eq!(estimate.kappa, 1.0);
+
+    // Independently reconstruct the accepted one-step iterate using the
+    // public operator/preconditioner, then check the report against b - Sx.
+    // This prevents the cheaper recursive residual from masquerading as the
+    // terminal true-residual diagnostic.
+    let input_scale = input.iter().map(|value| value.abs()).fold(0.0f64, f64::max);
+    let scaled_input: Vec<f64> = input.iter().map(|value| value / input_scale).collect();
+    let direction = bddc.precondition(&scaled_input);
+    let image = bddc.schur_apply(&direction);
+    let rz: f64 = scaled_input
+        .iter()
+        .zip(&direction)
+        .map(|(left, right)| left * right)
+        .sum();
+    let curvature: f64 = direction
+        .iter()
+        .zip(&image)
+        .map(|(left, right)| left * right)
+        .sum();
+    let alpha = rz / curvature;
+    let iterate: Vec<f64> = direction
+        .iter()
+        .map(|value| alpha.mul_add(*value, 0.0))
+        .collect();
+    let true_image = bddc.schur_apply(&iterate);
+    let true_residual: Vec<f64> = scaled_input
+        .iter()
+        .zip(&true_image)
+        .map(|(right, left)| right - left)
+        .collect();
+    let independently_recomputed = stable_l2_norm(&true_residual) / stable_l2_norm(&scaled_input);
+    assert_eq!(
+        report.relative_residual.to_bits(),
+        independently_recomputed.to_bits(),
+        "iteration-limit reports must carry the true residual"
+    );
+}
+
+#[test]
+fn g3_rhs_sign_and_power_of_two_scaling_preserve_cg_diagnostics() {
+    let bddc = Bddc::new(Decomposition::uniform(2, 4), true);
+    let base_rhs = rhs(bddc.gamma_len(), 0x5343_414c_4544_4347);
+    let expected = bddc
+        .solve_cg(&base_rhs, 1e-10, 200)
+        .expect("finite admitted base solve");
+    assert_eq!(expected.termination, CgTermination::Converged);
+    assert!(expected.relative_residual <= 1e-10, "{expected:?}");
+
+    for scale in [-1.0, 2.0_f64.powi(200), 2.0_f64.powi(-200)] {
+        let transformed: Vec<f64> = base_rhs.iter().map(|value| value * scale).collect();
+        let actual = bddc
+            .solve_cg(&transformed, 1e-10, 200)
+            .expect("finite admitted transformed solve");
+        assert_eq!(actual, expected, "RHS scale {scale:e}");
+    }
 }
 
 #[test]
@@ -249,7 +460,11 @@ fn dd_001_g0_preconditioner_properties() {
         "symmetric: {lhs} vs {rhs_}"
     );
     // The preconditioned solve converges fast on the uniform problem.
-    let (iters, kappa) = bddc.solve_cg(&rhs(bddc.gamma_len(), 9), 1e-8, 200);
+    let (iters, kappa) = converged_diagnostics(
+        bddc.solve_cg(&rhs(bddc.gamma_len(), 9), 1e-8, 200),
+        1e-8,
+        "dd-001 uniform solve",
+    );
     assert!(iters < 30, "uniform 2x2 converges quickly: {iters}");
     assert!(kappa < 50.0, "conditioned: {kappa}");
     verdict(
@@ -266,7 +481,11 @@ fn dd_002_log_squared_h_over_h_scaling() {
     let mut rows = Vec::new();
     for m in [4usize, 8, 16] {
         let bddc = Bddc::new(Decomposition::uniform(4, m), true);
-        let (iters, kappa) = bddc.solve_cg(&rhs(bddc.gamma_len(), 42), 1e-8, 400);
+        let (iters, kappa) = converged_diagnostics(
+            bddc.solve_cg(&rhs(bddc.gamma_len(), 42), 1e-8, 400),
+            1e-8,
+            "dd-002 scaling solve",
+        );
         let logf = (1.0 + (m as f64).ln()).powi(2);
         rows.push((m, iters, kappa, kappa / logf));
         println!(
@@ -304,9 +523,17 @@ fn dd_003_coefficient_jump_robustness() {
     // Checkerboard 1e6: the jump-aligned decomposition must stay
     // bounded. Compare against the uniform problem's iterations.
     let uniform = Bddc::new(Decomposition::uniform(4, 4), true);
-    let (it_u, _) = uniform.solve_cg(&rhs(uniform.gamma_len(), 5), 1e-8, 400);
+    let (it_u, _) = converged_diagnostics(
+        uniform.solve_cg(&rhs(uniform.gamma_len(), 5), 1e-8, 400),
+        1e-8,
+        "dd-003 uniform reference",
+    );
     let jump = Bddc::new(Decomposition::checkerboard(4, 4, 1e6), true);
-    let (it_j, kappa_j) = jump.solve_cg(&rhs(jump.gamma_len(), 5), 1e-8, 400);
+    let (it_j, kappa_j) = converged_diagnostics(
+        jump.solve_cg(&rhs(jump.gamma_len(), 5), 1e-8, 400),
+        1e-8,
+        "dd-003 jump solve",
+    );
     println!(
         "{{\"metric\":\"jump-robustness\",\"uniform_iters\":{it_u},\"jump_iters\":{it_j},\
          \"jump_kappa\":{kappa_j:.2}}}"
@@ -332,9 +559,17 @@ fn dd_004_sheaf_edge_coarse_vs_corners_only() {
         ("jump-1e6", Decomposition::checkerboard(4, 4, 1e6)),
     ] {
         let corners = Bddc::new(d.clone(), false);
-        let (it_c, k_c) = corners.solve_cg(&rhs(corners.gamma_len(), 11), 1e-8, 600);
+        let (it_c, k_c) = converged_diagnostics(
+            corners.solve_cg(&rhs(corners.gamma_len(), 11), 1e-8, 600),
+            1e-8,
+            "dd-004 corners solve",
+        );
         let sheaf = Bddc::new(d, true);
-        let (it_s, k_s) = sheaf.solve_cg(&rhs(sheaf.gamma_len(), 11), 1e-8, 600);
+        let (it_s, k_s) = converged_diagnostics(
+            sheaf.solve_cg(&rhs(sheaf.gamma_len(), 11), 1e-8, 600),
+            1e-8,
+            "dd-004 sheaf solve",
+        );
         println!(
             "{{\"metric\":\"coarse-comparison\",\"fixture\":\"{name}\",\
              \"corners\":{{\"iters\":{it_c},\"kappa\":{k_c:.2},\"dim\":{}}},\

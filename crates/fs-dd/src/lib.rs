@@ -10,8 +10,8 @@
 //! the unit square (spectrally equivalent to P1 FEM — the setting BDDC
 //! theory addresses): `n = s·m` cells per side, `s²` square subdomains
 //! of `m²` cells. The solver is CG on the INTERFACE Schur system with
-//! the BDDC preconditioner; condition numbers are estimated from the
-//! CG Lanczos coefficients.
+//! the BDDC preconditioner. Condition diagnostics come only from validated
+//! CG/Lanczos coefficients; conditioning claims require explicit convergence.
 #![cfg(feature = "bddc")]
 
 use fs_math::det;
@@ -260,6 +260,178 @@ struct Subdomain {
     /// K_BB (boundary × boundary).
     k_bb: Vec<Vec<f64>>,
 }
+
+/// A preconditioned-CG solve report.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CgReport {
+    /// Why the iteration stopped.
+    pub termination: CgTermination,
+    /// Number of completed CG iterations.
+    pub iterations: usize,
+    /// Last finite residual norm divided by the normalized RHS norm.
+    ///
+    /// On numerical breakdown this is the last confirmed finite value before
+    /// the rejected recurrence step, not a value synthesized from poisoned
+    /// arithmetic.
+    pub relative_residual: f64,
+    /// Lanczos/Ritz condition estimate when at least one valid iteration
+    /// supplied a finite positive-definite tridiagonal. A one-dimensional
+    /// projection transparently reports `kappa = 1` with
+    /// `krylov_dimension = 1`; zero steps have no spectral evidence.
+    ///
+    /// This diagnostic is not a certified enclosure and is not claim-worthy
+    /// unless [`CgTermination::Converged`] also holds.
+    pub condition_estimate: Option<LanczosConditionEstimate>,
+}
+
+/// Extreme-Ritz condition diagnostic from a valid CG/Lanczos prefix.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LanczosConditionEstimate {
+    /// Ratio `ritz_max / ritz_min`.
+    pub kappa: f64,
+    /// Smallest Ritz value of the normalized projected operator.
+    pub ritz_min: f64,
+    /// Largest Ritz value of the normalized projected operator.
+    pub ritz_max: f64,
+    /// Dimension of the RHS-dependent Krylov projection.
+    pub krylov_dimension: usize,
+}
+
+/// Termination disposition for [`Bddc::solve_cg`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CgTermination {
+    /// The admitted relative-residual tolerance was met.
+    Converged,
+    /// The explicit iteration budget was exhausted with a finite recurrence.
+    IterationLimit,
+    /// The SPD or finite-arithmetic recurrence broke down.
+    Breakdown(CgBreakdown),
+}
+
+/// A fail-closed preconditioned-CG recurrence failure.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CgBreakdown {
+    /// `rᵀ M⁻¹ r` was non-finite.
+    NonFinitePreconditionedResidual {
+        /// Completed iterations when detected.
+        iteration: usize,
+        /// Rejected inner product.
+        value: f64,
+    },
+    /// `rᵀ M⁻¹ r` was not strictly positive for a non-converged residual.
+    NonPositivePreconditionedResidual {
+        /// Completed iterations when detected.
+        iteration: usize,
+        /// Rejected inner product.
+        value: f64,
+    },
+    /// `pᵀ S p` was non-finite.
+    NonFiniteCurvature {
+        /// Completed iterations before the attempted step.
+        iteration: usize,
+        /// Rejected curvature.
+        value: f64,
+    },
+    /// `pᵀ S p` was not strictly positive, violating the SPD contract.
+    NonPositiveCurvature {
+        /// Completed iterations before the attempted step.
+        iteration: usize,
+        /// Rejected curvature.
+        value: f64,
+    },
+    /// The CG step length was non-finite or non-positive.
+    InvalidStep {
+        /// Completed iterations before the attempted step.
+        iteration: usize,
+        /// Rejected `alpha`.
+        value: f64,
+    },
+    /// A normalized solution component became non-finite during the update.
+    NonFiniteSolution {
+        /// Completed iterations before the attempted step.
+        iteration: usize,
+        /// Rejected solution component index.
+        index: usize,
+        /// Rejected component.
+        value: f64,
+    },
+    /// A residual component became non-finite during the update.
+    NonFiniteResidual {
+        /// Completed iterations before the attempted step.
+        iteration: usize,
+        /// Rejected residual component index.
+        index: usize,
+        /// Rejected component.
+        value: f64,
+    },
+    /// The residual norm or relative residual became non-finite.
+    NonFiniteResidualNorm {
+        /// Completed iterations including the rejected residual update.
+        iteration: usize,
+        /// Rejected norm or ratio.
+        value: f64,
+    },
+    /// The CG direction recurrence coefficient was non-finite or non-positive.
+    InvalidRecurrence {
+        /// Completed iterations when detected.
+        iteration: usize,
+        /// Rejected `beta`.
+        value: f64,
+    },
+    /// A search-direction component became non-finite.
+    NonFiniteDirection {
+        /// Completed iterations when detected.
+        iteration: usize,
+        /// Rejected direction component index.
+        index: usize,
+        /// Rejected component.
+        value: f64,
+    },
+}
+
+/// Admission failures for [`Bddc::solve_cg`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CgError {
+    /// The RHS length does not match the retained interface dimension.
+    DimensionMismatch {
+        /// Required interface dimension.
+        expected: usize,
+        /// Supplied RHS length.
+        actual: usize,
+    },
+    /// A supplied RHS component is non-finite.
+    NonFiniteRhs {
+        /// Rejected component index.
+        index: usize,
+        /// Rejected component.
+        value: f64,
+    },
+    /// Relative tolerance must be finite and non-negative.
+    InvalidTolerance {
+        /// Rejected tolerance.
+        tolerance: f64,
+    },
+}
+
+impl core::fmt::Display for CgError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::DimensionMismatch { expected, actual } => write!(
+                f,
+                "CG RHS length must match the {expected}-entry interface dimension (got {actual})"
+            ),
+            Self::NonFiniteRhs { index, value } => {
+                write!(f, "CG RHS entry {index} must be finite (got {value})")
+            }
+            Self::InvalidTolerance { tolerance } => write!(
+                f,
+                "CG relative tolerance must be finite and non-negative (got {tolerance})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CgError {}
 
 /// The BDDC solver context for one decomposition.
 pub struct Bddc {
@@ -641,66 +813,360 @@ impl Bddc {
         z.iter().zip(&self.weight).map(|(a, w)| a * w).collect()
     }
 
-    /// Preconditioned CG on the Schur system with a Lanczos condition
-    /// estimate. Returns (iterations, kappa_estimate).
-    #[must_use]
-    pub fn solve_cg(&self, b_gamma: &[f64], tol: f64, max_iter: usize) -> (usize, f64) {
-        assert_eq!(
-            b_gamma.len(),
-            self.gamma.len(),
-            "RHS length must match the interface dimension"
-        );
-        assert!(
-            b_gamma.iter().all(|value| value.is_finite()),
-            "RHS entries must be finite"
-        );
+    /// Preconditioned CG on the Schur system with explicit termination,
+    /// residual, and RHS-dependent Lanczos/Ritz diagnostics.
+    ///
+    /// The finite RHS is normalized by its largest magnitude before any dot
+    /// product. A zero iteration budget is a valid request: a zero RHS (or an
+    /// already-admitted loose tolerance) is converged at iteration zero, while
+    /// a non-converged RHS reports [`CgTermination::IterationLimit`].
+    ///
+    /// # Errors
+    /// [`CgError`] for caller-invalid dimension, RHS, or tolerance. Numerical
+    /// recurrence failures are successful reports with
+    /// [`CgTermination::Breakdown`] so the last finite residual is retained.
+    pub fn solve_cg(
+        &self,
+        b_gamma: &[f64],
+        tol: f64,
+        max_iter: usize,
+    ) -> Result<CgReport, CgError> {
+        if b_gamma.len() != self.gamma.len() {
+            return Err(CgError::DimensionMismatch {
+                expected: self.gamma.len(),
+                actual: b_gamma.len(),
+            });
+        }
+        if let Some((index, value)) = b_gamma
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, value)| !value.is_finite())
+        {
+            return Err(CgError::NonFiniteRhs { index, value });
+        }
+        if !tol.is_finite() || tol < 0.0 {
+            return Err(CgError::InvalidTolerance { tolerance: tol });
+        }
         let n = b_gamma.len();
         let b_scale = b_gamma
             .iter()
             .map(|value| value.abs())
             .fold(0.0f64, f64::max);
         if b_scale == 0.0 {
-            return (0, 1.0);
+            return Ok(CgReport {
+                termination: CgTermination::Converged,
+                iterations: 0,
+                relative_residual: 0.0,
+                condition_estimate: None,
+            });
         }
-        // CG is homogeneous in the RHS, and this API returns only iteration
-        // and condition diagnostics. Normalize before forming dot products so
-        // a finite nonzero RHS cannot be mistaken for zero through squaring
-        // underflow (or overflow while computing its norm).
+        // CG is homogeneous in the RHS, and this API returns diagnostics rather
+        // than a solution vector. Normalize before dot products so a finite
+        // nonzero RHS cannot disappear through squaring underflow or overflow.
         let scaled_b: Vec<f64> = b_gamma.iter().map(|value| value / b_scale).collect();
-        let b_norm_sq: f64 = scaled_b.iter().map(|v| v * v).sum();
-        let b_norm = det::sqrt(b_norm_sq);
+        let b_norm = scaled_l2_norm(&scaled_b);
+        if !b_norm.is_finite() || b_norm <= 0.0 {
+            return Ok(cg_breakdown_report(
+                0,
+                1.0,
+                &[],
+                &[],
+                CgBreakdown::NonFiniteResidualNorm {
+                    iteration: 0,
+                    value: b_norm,
+                },
+            ));
+        }
+        let mut relative_residual = 1.0;
+        if relative_residual <= tol {
+            return Ok(CgReport {
+                termination: CgTermination::Converged,
+                iterations: 0,
+                relative_residual,
+                condition_estimate: None,
+            });
+        }
+        if max_iter == 0 {
+            return Ok(CgReport {
+                termination: CgTermination::IterationLimit,
+                iterations: 0,
+                relative_residual,
+                condition_estimate: None,
+            });
+        }
         let mut x = vec![0.0f64; n];
-        let mut r = scaled_b;
+        let mut r = scaled_b.clone();
         let mut z = self.precondition(&r);
         let mut p = z.clone();
-        let mut rz: f64 = r.iter().zip(&z).map(|(a, b)| a * b).sum();
+        let mut rz = dot(&r, &z);
         let mut alphas: Vec<f64> = Vec::new();
         let mut betas: Vec<f64> = Vec::new();
         let mut iters = 0usize;
-        for _ in 0..max_iter {
+        if !rz.is_finite() {
+            return Ok(cg_breakdown_report(
+                iters,
+                relative_residual,
+                &alphas,
+                &betas,
+                CgBreakdown::NonFinitePreconditionedResidual {
+                    iteration: iters,
+                    value: rz,
+                },
+            ));
+        }
+        if rz <= 0.0 {
+            return Ok(cg_breakdown_report(
+                iters,
+                relative_residual,
+                &alphas,
+                &betas,
+                CgBreakdown::NonPositivePreconditionedResidual {
+                    iteration: iters,
+                    value: rz,
+                },
+            ));
+        }
+        loop {
             let sp = self.schur_apply(&p);
-            let pap: f64 = p.iter().zip(&sp).map(|(a, b)| a * b).sum();
+            let pap = dot(&p, &sp);
+            if !pap.is_finite() {
+                return Ok(cg_breakdown_report(
+                    iters,
+                    relative_residual,
+                    &alphas,
+                    &betas,
+                    CgBreakdown::NonFiniteCurvature {
+                        iteration: iters,
+                        value: pap,
+                    },
+                ));
+            }
+            if pap <= 0.0 {
+                return Ok(cg_breakdown_report(
+                    iters,
+                    relative_residual,
+                    &alphas,
+                    &betas,
+                    CgBreakdown::NonPositiveCurvature {
+                        iteration: iters,
+                        value: pap,
+                    },
+                ));
+            }
             let alpha = rz / pap;
-            alphas.push(alpha);
+            if !alpha.is_finite() || alpha <= 0.0 {
+                return Ok(cg_breakdown_report(
+                    iters,
+                    relative_residual,
+                    &alphas,
+                    &betas,
+                    CgBreakdown::InvalidStep {
+                        iteration: iters,
+                        value: alpha,
+                    },
+                ));
+            }
             for i in 0..n {
-                x[i] += alpha * p[i];
+                let next_x = alpha.mul_add(p[i], x[i]);
+                if !next_x.is_finite() {
+                    return Ok(cg_breakdown_report(
+                        iters,
+                        relative_residual,
+                        &alphas,
+                        &betas,
+                        CgBreakdown::NonFiniteSolution {
+                            iteration: iters,
+                            index: i,
+                            value: next_x,
+                        },
+                    ));
+                }
+                x[i] = next_x;
                 r[i] -= alpha * sp[i];
+                if !r[i].is_finite() {
+                    return Ok(cg_breakdown_report(
+                        iters,
+                        relative_residual,
+                        &alphas,
+                        &betas,
+                        CgBreakdown::NonFiniteResidual {
+                            iteration: iters,
+                            index: i,
+                            value: r[i],
+                        },
+                    ));
+                }
             }
             iters += 1;
-            let rn: f64 = det::sqrt(r.iter().map(|v| v * v).sum());
-            if rn <= tol * b_norm {
-                break;
+            let residual_norm = scaled_l2_norm(&r);
+            let next_relative_residual = residual_norm / b_norm;
+            if !residual_norm.is_finite() || !next_relative_residual.is_finite() {
+                return Ok(cg_breakdown_report(
+                    iters,
+                    relative_residual,
+                    &alphas,
+                    &betas,
+                    CgBreakdown::NonFiniteResidualNorm {
+                        iteration: iters,
+                        value: next_relative_residual,
+                    },
+                ));
+            }
+            relative_residual = next_relative_residual;
+            alphas.push(alpha);
+            let recursive_converged = if tol == 0.0 {
+                residual_norm == 0.0
+            } else {
+                relative_residual <= tol
+            };
+            if recursive_converged || iters == max_iter {
+                let applied = self.schur_apply(&x);
+                let mut true_r = Vec::with_capacity(n);
+                for (index, (rhs, image)) in scaled_b.iter().zip(&applied).enumerate() {
+                    let value = rhs - image;
+                    if !value.is_finite() {
+                        return Ok(cg_breakdown_report(
+                            iters,
+                            relative_residual,
+                            &alphas,
+                            &betas,
+                            CgBreakdown::NonFiniteResidual {
+                                iteration: iters,
+                                index,
+                                value,
+                            },
+                        ));
+                    }
+                    true_r.push(value);
+                }
+                let true_norm = scaled_l2_norm(&true_r);
+                let true_relative_residual = true_norm / b_norm;
+                if !true_norm.is_finite() || !true_relative_residual.is_finite() {
+                    return Ok(cg_breakdown_report(
+                        iters,
+                        relative_residual,
+                        &alphas,
+                        &betas,
+                        CgBreakdown::NonFiniteResidualNorm {
+                            iteration: iters,
+                            value: true_relative_residual,
+                        },
+                    ));
+                }
+                relative_residual = true_relative_residual;
+                let true_converged = if tol == 0.0 {
+                    true_norm == 0.0
+                } else {
+                    relative_residual <= tol
+                };
+                if true_converged || iters == max_iter {
+                    return Ok(CgReport {
+                        termination: if true_converged {
+                            CgTermination::Converged
+                        } else {
+                            CgTermination::IterationLimit
+                        },
+                        iterations: iters,
+                        relative_residual,
+                        condition_estimate: lanczos_condition_estimate(&alphas, &betas),
+                    });
+                }
+
+                // The recursive residual met the tolerance but the independent
+                // true residual did not. Restart from the verified residual;
+                // the old Lanczos chain no longer describes the recurrence.
+                r = true_r;
+                alphas.clear();
+                betas.clear();
+                z = self.precondition(&r);
+                p = z.clone();
+                rz = dot(&r, &z);
+                if !rz.is_finite() {
+                    return Ok(cg_breakdown_report(
+                        iters,
+                        relative_residual,
+                        &alphas,
+                        &betas,
+                        CgBreakdown::NonFinitePreconditionedResidual {
+                            iteration: iters,
+                            value: rz,
+                        },
+                    ));
+                }
+                if rz <= 0.0 {
+                    return Ok(cg_breakdown_report(
+                        iters,
+                        relative_residual,
+                        &alphas,
+                        &betas,
+                        CgBreakdown::NonPositivePreconditionedResidual {
+                            iteration: iters,
+                            value: rz,
+                        },
+                    ));
+                }
+                continue;
             }
             z = self.precondition(&r);
-            let rz_new: f64 = r.iter().zip(&z).map(|(a, b)| a * b).sum();
+            let rz_new = dot(&r, &z);
+            if !rz_new.is_finite() {
+                return Ok(cg_breakdown_report(
+                    iters,
+                    relative_residual,
+                    &alphas,
+                    &betas,
+                    CgBreakdown::NonFinitePreconditionedResidual {
+                        iteration: iters,
+                        value: rz_new,
+                    },
+                ));
+            }
+            if rz_new <= 0.0 {
+                return Ok(cg_breakdown_report(
+                    iters,
+                    relative_residual,
+                    &alphas,
+                    &betas,
+                    CgBreakdown::NonPositivePreconditionedResidual {
+                        iteration: iters,
+                        value: rz_new,
+                    },
+                ));
+            }
             let beta = rz_new / rz;
+            if !beta.is_finite() || beta <= 0.0 {
+                return Ok(cg_breakdown_report(
+                    iters,
+                    relative_residual,
+                    &alphas,
+                    &betas,
+                    CgBreakdown::InvalidRecurrence {
+                        iteration: iters,
+                        value: beta,
+                    },
+                ));
+            }
+            for i in 0..n {
+                let next = beta.mul_add(p[i], z[i]);
+                if !next.is_finite() {
+                    return Ok(cg_breakdown_report(
+                        iters,
+                        relative_residual,
+                        &alphas,
+                        &betas,
+                        CgBreakdown::NonFiniteDirection {
+                            iteration: iters,
+                            index: i,
+                            value: next,
+                        },
+                    ));
+                }
+                p[i] = next;
+            }
             betas.push(beta);
             rz = rz_new;
-            for i in 0..n {
-                p[i] = z[i] + beta * p[i];
-            }
         }
-        (iters, lanczos_kappa(&alphas, &betas))
     }
 
     /// Gamma dimension (for reports).
@@ -755,16 +1221,86 @@ impl Bddc {
     }
 }
 
-/// Condition estimate from CG's Lanczos tridiagonal (standard
-/// coefficients-to-eigenvalues route, power/inverse-free).
-fn lanczos_kappa(alphas: &[f64], betas: &[f64]) -> f64 {
+fn dot(lhs: &[f64], rhs: &[f64]) -> f64 {
+    lhs.iter().zip(rhs).map(|(a, b)| a * b).sum()
+}
+
+/// Scaled sum-of-squares norm (the BLAS `nrm2` recurrence).
+fn scaled_l2_norm(values: &[f64]) -> f64 {
+    let mut scale = 0.0f64;
+    let mut sum_squares = 1.0f64;
+    for value in values {
+        let magnitude = value.abs();
+        if !magnitude.is_finite() {
+            return f64::NAN;
+        }
+        if magnitude == 0.0 {
+            continue;
+        }
+        if scale < magnitude {
+            let ratio = scale / magnitude;
+            sum_squares = 1.0 + sum_squares * ratio * ratio;
+            scale = magnitude;
+        } else {
+            let ratio = magnitude / scale;
+            sum_squares += ratio * ratio;
+        }
+    }
+    if scale == 0.0 {
+        0.0
+    } else {
+        scale * det::sqrt(sum_squares)
+    }
+}
+
+fn cg_breakdown_report(
+    iterations: usize,
+    relative_residual: f64,
+    alphas: &[f64],
+    betas: &[f64],
+    breakdown: CgBreakdown,
+) -> CgReport {
+    CgReport {
+        termination: CgTermination::Breakdown(breakdown),
+        iterations,
+        relative_residual,
+        condition_estimate: lanczos_prefix_condition_estimate(alphas, betas),
+    }
+}
+
+/// Retain only a completely determined tridiagonal when a later CG step
+/// breaks down. Between steps, CG has already formed the beta leading into the
+/// next (rejected) alpha; that trailing beta is not part of the preceding
+/// `T_k` and must not erase the otherwise valid prefix.
+fn lanczos_prefix_condition_estimate(
+    alphas: &[f64],
+    betas: &[f64],
+) -> Option<LanczosConditionEstimate> {
+    let complete_betas = alphas.len().checked_sub(1)?;
+    match betas.len() {
+        len if len == complete_betas => lanczos_condition_estimate(alphas, betas),
+        len if len == alphas.len() => lanczos_condition_estimate(alphas, &betas[..complete_betas]),
+        _ => None,
+    }
+}
+
+/// Condition estimate from a validated CG/Lanczos tridiagonal (standard
+/// coefficients-to-extreme-Ritz-values route, power/inverse-free).
+fn lanczos_condition_estimate(alphas: &[f64], betas: &[f64]) -> Option<LanczosConditionEstimate> {
     let k = alphas.len();
-    if k == 0 {
-        return 1.0;
+    if k == 0 || betas.len() != k - 1 {
+        return None;
+    }
+    if alphas
+        .iter()
+        .any(|alpha| !alpha.is_finite() || *alpha <= 0.0)
+        || betas.iter().any(|beta| !beta.is_finite() || *beta <= 0.0)
+    {
+        return None;
     }
     // Tridiagonal entries (Golub–Van Loan): d_i, e_i from alpha/beta.
     let mut d = vec![0.0f64; k];
-    let mut e = vec![0.0f64; k.saturating_sub(1)];
+    let mut e = vec![0.0f64; k - 1];
     for i in 0..k {
         d[i] = 1.0 / alphas[i];
         if i > 0 {
@@ -772,6 +1308,23 @@ fn lanczos_kappa(alphas: &[f64], betas: &[f64]) -> f64 {
         }
         if i + 1 < k {
             e[i] = det::sqrt(betas[i]) / alphas[i];
+        }
+        if !d[i].is_finite() || d[i] <= 0.0 || (i < e.len() && (!e[i].is_finite() || e[i] <= 0.0)) {
+            return None;
+        }
+    }
+    let scale = d
+        .iter()
+        .chain(&e)
+        .map(|value| value.abs())
+        .fold(0.0f64, f64::max);
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    for value in d.iter_mut().chain(&mut e) {
+        *value /= scale;
+        if !value.is_finite() || *value <= 0.0 {
+            return None;
         }
     }
     // Eigenvalue extremes by bisection on the Sturm sequence.
@@ -789,36 +1342,122 @@ fn lanczos_kappa(alphas: &[f64], betas: &[f64]) -> f64 {
             r
         })
         .fold(0.0, f64::max);
-    let count_below = |lam: f64| -> usize {
-        let mut count = 0usize;
-        let mut q = d[0] - lam;
-        if q < 0.0 {
+    if !radius.is_finite() || radius <= 0.0 {
+        return None;
+    }
+    let ritz_min = bisect_ritz(&d, &e, radius, 0)?;
+    let ritz_max = bisect_ritz(&d, &e, radius, k - 1)?;
+    if !ritz_min.is_finite() || !ritz_max.is_finite() || ritz_min <= 0.0 || ritz_max < ritz_min {
+        return None;
+    }
+    let kappa = ritz_max / ritz_min;
+    if !kappa.is_finite() || kappa < 1.0 {
+        return None;
+    }
+    Some(LanczosConditionEstimate {
+        kappa,
+        ritz_min,
+        ritz_max,
+        krylov_dimension: k,
+    })
+}
+
+fn sturm_count_below(d: &[f64], e: &[f64], lambda: f64) -> Option<usize> {
+    let mut count = 0usize;
+    let mut pivot = d[0] - lambda;
+    if !pivot.is_finite() {
+        return None;
+    }
+    if pivot < 0.0 {
+        count += 1;
+    }
+    for i in 1..d.len() {
+        let denominator = if pivot.abs() < f64::MIN_POSITIVE {
+            if pivot.is_sign_negative() {
+                -f64::MIN_POSITIVE
+            } else {
+                f64::MIN_POSITIVE
+            }
+        } else {
+            pivot
+        };
+        pivot = d[i] - lambda - e[i - 1] * e[i - 1] / denominator;
+        if !pivot.is_finite() {
+            return None;
+        }
+        if pivot < 0.0 {
             count += 1;
         }
-        for i in 1..k {
-            let e2 = e[i - 1] * e[i - 1];
-            q = d[i] - lam - e2 / if q.abs() < 1e-300 { 1e-300 } else { q };
-            if q < 0.0 {
-                count += 1;
-            }
+    }
+    Some(count)
+}
+
+fn bisect_ritz(d: &[f64], e: &[f64], radius: f64, target: usize) -> Option<f64> {
+    let (mut lo, mut hi) = (-radius, radius);
+    // 1,100 halvings cover the complete binary64 exponent range; the adjacent
+    // endpoint check normally stops much earlier.
+    for _ in 0..1_100 {
+        let mid = f64::midpoint(lo, hi);
+        if mid == lo || mid == hi {
+            break;
         }
-        count
-    };
-    let bisect = |target: usize| -> f64 {
-        let (mut lo, mut hi) = (-radius, radius);
-        for _ in 0..80 {
-            let mid = f64::midpoint(lo, hi);
-            if count_below(mid) > target {
-                hi = mid;
-            } else {
-                lo = mid;
-            }
+        if sturm_count_below(d, e, mid)? > target {
+            hi = mid;
+        } else {
+            lo = mid;
         }
-        f64::midpoint(lo, hi)
-    };
-    let lam_min = bisect(0).max(1e-300);
-    let lam_max = bisect(k - 1);
-    (lam_max / lam_min).max(1.0)
+    }
+    let estimate = f64::midpoint(lo, hi);
+    estimate.is_finite().then_some(estimate)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{lanczos_condition_estimate, lanczos_prefix_condition_estimate};
+
+    #[test]
+    fn lanczos_condition_estimate_rejects_malformed_evidence() {
+        assert_eq!(lanczos_condition_estimate(&[], &[]), None);
+        assert_eq!(lanczos_condition_estimate(&[1.0, 1.0], &[]), None);
+        assert_eq!(lanczos_condition_estimate(&[0.0], &[]), None);
+        assert_eq!(lanczos_condition_estimate(&[f64::NAN], &[]), None);
+        assert_eq!(lanczos_condition_estimate(&[f64::from_bits(1)], &[]), None);
+        assert_eq!(lanczos_condition_estimate(&[1.0, 1.0], &[-0.25]), None);
+        assert_eq!(
+            lanczos_condition_estimate(&[1.0, 1.0], &[f64::INFINITY]),
+            None
+        );
+    }
+
+    #[test]
+    fn lanczos_condition_estimate_recovers_known_ritz_ratio() {
+        let one = lanczos_condition_estimate(&[0.5], &[]).expect("one valid Ritz value");
+        assert_eq!(one.kappa, 1.0);
+        assert_eq!(one.krylov_dimension, 1);
+
+        // alpha=[1/2, 2/3], beta=[1/4] reconstructs [[2, 1], [1, 2]],
+        // whose eigenvalues are 1 and 3 (the internal normalization preserves
+        // their ratio).
+        let estimate = lanczos_condition_estimate(&[0.5, 2.0 / 3.0], &[0.25])
+            .expect("finite positive-definite two-step tridiagonal");
+        assert_eq!(estimate.krylov_dimension, 2);
+        assert!((estimate.kappa - 3.0).abs() < 1e-12, "{estimate:?}");
+        assert!(estimate.ritz_min > 0.0);
+        assert!(estimate.ritz_max > estimate.ritz_min);
+    }
+
+    #[test]
+    fn breakdown_estimate_ignores_only_one_pending_beta() {
+        let prefix = lanczos_prefix_condition_estimate(&[0.5], &[0.25])
+            .expect("one accepted alpha remains a valid one-dimensional prefix");
+        assert_eq!(prefix.kappa, 1.0);
+        assert_eq!(prefix.krylov_dimension, 1);
+        assert_eq!(
+            lanczos_prefix_condition_estimate(&[0.5], &[0.25, 0.5]),
+            None,
+            "more than one unmatched beta is malformed evidence"
+        );
+    }
 }
 
 /// Crate version, re-exported for provenance stamping.
