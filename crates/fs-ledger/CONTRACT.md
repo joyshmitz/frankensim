@@ -131,6 +131,16 @@ and the lower-layer Franken crates declared in `Cargo.toml`, including
   validation behind type and byte-length checks, so an oversized raw row is
   refused without reparsing its payload. A kernel scan refuses before payload
   materialization above 1,024 rows or 16 MiB aggregate output.
+- `nightly_ledger` is the bounded, fail-closed CI writer. It admits exactly one
+  database path (1..=4 KiB UTF-8 bytes, no NUL), `ok|error`, one nonempty suite
+  identity (at most 64 KiB), and one finite floating-point token (at most 256
+  bytes). `GITHUB_SHA` and `RUNNER_OS` are each either absent and encoded as a
+  typed `availability=unavailable` object, or present as 1..=128 KiB of valid
+  UTF-8 and encoded as `availability=reported`; malformed values refuse and no
+  `local` sentinel is invented. All argument, provenance, escaping, and final
+  JSON-envelope bounds are checked before `Ledger::open`, so pure admission
+  failures cannot create a database or journal sidecar. DSR/nightly invocation
+  should export both variables when it intends to make those provenance claims.
 - Durable session registry (`session_registry`, schema v6-v8):
   `SessionMutationClaim` binds one mutation authority to the checked physical
   `LedgerInstanceId`, durable governor, session-open authority, kind, session,
@@ -488,6 +498,11 @@ refusal, or verifier panic).
     version, state-schema version, canonical parameter-block hash, and
     contract/code hash. Any disagreement withholds the state bytes as unknown
     semantics rather than attempting a stale decode.
+15. The nightly writer publishes op + metric + benchmark event + terminal
+    outcome in one explicit transaction. A write or commit failure is primary;
+    rollback is always attempted, and a rollback failure is retained after the
+    primary failure in a deterministic combined diagnostic. Cleanup failure
+    never replaces or obscures the causal failure.
 
 ## Error model
 
@@ -526,6 +541,10 @@ treated as a negative lookup or completion.
 Never panics across the crate boundary. Signed database metadata that
 represents a length or count is converted with an explicit non-negative check;
 physical corruption cannot reinterpret `-1` as `u64::MAX`.
+The `nightly_ledger` binary adds bounded `NightlyInput` refusals and a
+`NightlyTransactionCleanup` diagnostic. The latter renders stable primary
+error code/detail first and rollback error code/detail second; successful
+rollback returns the original `LedgerError` unchanged.
 
 ## Determinism class
 
@@ -534,6 +553,10 @@ function). Row ids, timestamps, and physical file bytes are NOT deterministic
 and are excluded from identity. Deterministic replays should pass logical
 times to `begin_op`/`append_event` (caller-controlled `t`). Tune scans use the
 total order `(shape_class, machine)` and refuse rather than truncate.
+Nightly admission and diagnostic ordering are deterministic:
+`argv -> db-path -> outcome -> suite -> value -> GITHUB_SHA -> RUNNER_OS ->
+constructed envelopes`. Environment values are used exactly as supplied after
+UTF-8/bound validation, and unavailable values have one canonical object form.
 
 ## Cancellation behavior
 
@@ -548,6 +571,10 @@ propagation on that tested async response-wait path. Cancellation is observed
 after SQL dispatch: it does not preempt blocking SQL, and it does not prove an
 already-dispatched mutation was rolled back. The synchronous `Ledger` API does
 not yet claim per-call scope-tree cancellation.
+The nightly writer has no asynchronous cancellation boundary. Once its
+transaction begins, every fallible write/commit path attempts synchronous
+rollback; if both operations fail, both errors escape in primary-then-cleanup
+order. This preserves diagnosis but does not claim rollback succeeded.
 
 ## Unsafe boundary
 
@@ -576,6 +603,13 @@ reopen. Tune unit regressions cover every exact field limit and limit+1,
 empty/NUL/non-ASCII identities, hostile oversized raw-SQL rows, lint detection,
 and deterministic row/aggregate scan caps (including an exact 16 MiB boundary
 that counts the cloned kernel identity once per returned row).
+`ledger_010` and the binary's inline G0/G4 regressions exhaust all RFC 8259
+ASCII-control escapes, freeze admission precedence and every input cap/cap+1,
+verify stdout/stderr exclusivity, typed reported/unavailable provenance,
+hostile valid paths, non-UTF-8 argument and environment refusals, and zero
+database/sidecar creation on pure refusal. Closure-injected transaction faults
+prove write-plus-rollback and commit-plus-rollback diagnostics retain both
+causes in exact order without requiring a production fault-injection switch.
 Artifact unit regressions cover inline and chunked exact caller caps, cap+1
 refusal with zero payload callbacks, and the explicit metadata-declaration
 precedence for a tampered length. Op unit regressions cover exact and cap+1 canonical writes
@@ -785,6 +819,11 @@ The graph is the minting authority for `fs_evidence::AdmittedColor`:
 
 ## No-claim boundaries
 
+- Nightly `GITHUB_SHA` and `RUNNER_OS` values are self-reported process
+  environment provenance, not cryptographic attestations that DSR, a VCS, or a
+  particular machine minted them. Typed `unavailable` proves only that the
+  variable was absent from this process environment; it does not prove that no
+  commit or runner identity exists elsewhere.
 - Multi-process multi-writer access: unclaimed (FrankenSQLite documents this
   as partial; use one process, one connection per thread).
 - Unbounded restart snapshots are not claimed: a physical ledger with more

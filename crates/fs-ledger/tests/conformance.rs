@@ -35,7 +35,15 @@ fn temp_db(tag: &str) -> String {
 
 /// Best-effort cleanup of a database and its WAL/shm sidecars.
 fn cleanup_db(path: &str) {
-    for suffix in ["", "-wal", "-shm", ".fsqlite-wal", ".fsqlite-shm"] {
+    for suffix in [
+        "",
+        "-wal",
+        "-shm",
+        "-journal",
+        ".fsqlite-wal",
+        ".fsqlite-shm",
+        ".fsqlite-journal",
+    ] {
         let _ = std::fs::remove_file(format!("{path}{suffix}"));
     }
 }
@@ -1438,6 +1446,24 @@ fn ledger_010_nightly_writer_records_run() {
         line
     }
 
+    fn assert_no_db_artifacts(path: &str) {
+        for suffix in [
+            "",
+            "-wal",
+            "-shm",
+            "-journal",
+            ".fsqlite-wal",
+            ".fsqlite-shm",
+            ".fsqlite-journal",
+        ] {
+            let candidate = format!("{path}{suffix}");
+            assert!(
+                !std::path::Path::new(&candidate).exists(),
+                "pure nightly admission unexpectedly created {candidate:?}"
+            );
+        }
+    }
+
     const SUITE: &str = "nightly\",\"forged\":true,\"tail\":\"\\line\nnext\u{0001}";
     const SUITE_JSON: &str =
         "nightly\\\",\\\"forged\\\":true,\\\"tail\\\":\\\"\\\\line\\nnext\\u0001";
@@ -1459,6 +1485,7 @@ fn ledger_010_nightly_writer_records_run() {
         "nightly_ledger failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    assert!(out.stderr.is_empty(), "success must not emit stderr");
     let stdout = one_json_line(&out.stdout, "stdout");
     assert!(stdout.contains(&format!("\"metric\":\"{SUITE_JSON}\"")));
     assert!(!stdout.contains("\"forged\":true"));
@@ -1473,10 +1500,20 @@ fn ledger_010_nightly_writer_records_run() {
         op.ir,
         format!("{{\"op\":\"ci.nightly\",\"suite\":\"{SUITE_JSON}\"}}")
     );
-    assert_eq!(op.versions, format!("{{\"frankensim\":\"{SHA_JSON}\"}}"));
+    assert_eq!(
+        op.versions,
+        format!(
+            "{{\"frankensim\":{{\"availability\":\"reported\",\"source\":\
+             \"process_environment\",\"variable\":\"GITHUB_SHA\",\"value\":\"{SHA_JSON}\"}}}}"
+        )
+    );
     assert_eq!(
         op.capability,
-        format!("{{\"ops\":[\"ci.nightly\"],\"runner\":\"{RUNNER_JSON}\"}}")
+        format!(
+            "{{\"ops\":[\"ci.nightly\"],\"runner\":{{\"availability\":\"reported\",\
+             \"source\":\"process_environment\",\"variable\":\"RUNNER_OS\",\
+             \"value\":\"{RUNNER_JSON}\"}}}}"
+        )
     );
     l.append_event(&EventRow {
         session: None,
@@ -1489,15 +1526,21 @@ fn ledger_010_nightly_writer_records_run() {
     assert!(l.lint().unwrap().is_clean());
     // Bad arguments are structured refusals on stderr, never panics.
     const BAD_OUTCOME: &str = "bogus\",\"forged\":true,\"tail\":\"\\\n\u{0002}";
-    const BAD_OUTCOME_JSON: &str = "bogus\\\",\\\"forged\\\":true,\\\"tail\\\":\\\"\\\\\\n\\u0002";
     let bad = std::process::Command::new(exe)
         .args([db.as_str(), BAD_OUTCOME, "x", "y"])
         .output()
         .expect("run nightly_ledger with bad args");
     assert!(!bad.status.success());
+    assert!(bad.stdout.is_empty(), "refusal must not emit stdout");
     let bad_stderr = one_json_line(&bad.stderr, "bad-argument stderr");
-    assert!(bad_stderr.contains("NightlyLedger"));
-    assert!(bad_stderr.contains(BAD_OUTCOME_JSON));
+    assert_eq!(
+        bad_stderr,
+        format!(
+            "{{\"error\":\"NightlyLedger\",\"detail\":\"NightlyInput: field 'outcome' \
+             rejected: UTF-8 encoding must contain 1..=5 bytes; observed {}\"}}",
+            BAD_OUTCOME.len()
+        )
+    );
     assert!(!bad_stderr.contains("\"forged\":true"));
     l.append_event(&EventRow {
         session: None,
@@ -1514,8 +1557,9 @@ fn ledger_010_nightly_writer_records_run() {
         .output()
         .expect("run nightly_ledger with non-finite value");
     assert!(!nonfinite.status.success());
+    assert!(nonfinite.stdout.is_empty(), "refusal must not emit stdout");
     let nonfinite_stderr = one_json_line(&nonfinite.stderr, "non-finite stderr");
-    assert!(nonfinite_stderr.contains("value must be finite, got NaN"));
+    assert!(nonfinite_stderr.contains("field 'value' rejected: must be finite"));
     l.append_event(&EventRow {
         session: None,
         t: 3,
@@ -1524,38 +1568,200 @@ fn ledger_010_nightly_writer_records_run() {
     })
     .expect("non-finite refusal is one valid JSON value");
 
-    // A failure after begin_op must roll back the whole write group. The empty
-    // suite passes IR admission, then violates metrics.name's non-empty CHECK.
-    let late_failure = std::process::Command::new(exe)
+    // Empty metric identity is a pure admission refusal, before database open.
+    let empty_suite = std::process::Command::new(exe)
         .args([db.as_str(), "ok", "", "1"])
         .output()
-        .expect("run nightly_ledger with a late metric failure");
-    assert!(!late_failure.status.success());
-    let late_stderr = one_json_line(&late_failure.stderr, "late-failure stderr");
-    assert!(late_stderr.contains("NightlyLedger"));
+        .expect("run nightly_ledger with an empty suite");
+    assert!(!empty_suite.status.success());
+    assert!(
+        empty_suite.stdout.is_empty(),
+        "refusal must not emit stdout"
+    );
+    let empty_suite_stderr = one_json_line(&empty_suite.stderr, "empty-suite stderr");
+    assert!(empty_suite_stderr.contains(
+        "field 'suite' rejected: UTF-8 encoding must contain 1..=65536 bytes; observed 0"
+    ));
     l.append_event(&EventRow {
         session: None,
         t: 4,
-        kind: "nightly_writer_rollback_validation",
-        payload: Some(late_stderr),
+        kind: "nightly_writer_admission_validation",
+        payload: Some(empty_suite_stderr),
     })
-    .expect("late-failure refusal is one valid JSON value");
+    .expect("empty-suite refusal is one valid JSON value");
+
+    // Pure admission must not open a fresh database or create any known
+    // journal sidecar. Simultaneously-invalid later fields prove the fixed
+    // diagnostic precedence: suite precedes value and provenance.
+    let admission_db = temp_db("nightly-admission-refusal");
+    cleanup_db(&admission_db);
+    assert_no_db_artifacts(&admission_db);
+    let admission = std::process::Command::new(exe)
+        .args([admission_db.as_str(), "ok", "", "NaN"])
+        .env("GITHUB_SHA", "")
+        .env("RUNNER_OS", "")
+        .output()
+        .expect("run pure-admission refusal");
+    assert!(!admission.status.success());
+    assert!(admission.stdout.is_empty(), "refusal must not emit stdout");
+    assert_eq!(
+        one_json_line(&admission.stderr, "admission stderr"),
+        "{\"error\":\"NightlyLedger\",\"detail\":\"NightlyInput: field 'suite' rejected: UTF-8 encoding must contain 1..=65536 bytes; observed 0\"}"
+    );
+    assert_no_db_artifacts(&admission_db);
+
+    let cap_db = temp_db("nightly-suite-cap-refusal");
+    cleanup_db(&cap_db);
+    let oversized_suite = "s".repeat(64 * 1024 + 1);
+    let cap = std::process::Command::new(exe)
+        .args([cap_db.as_str(), "ok", &oversized_suite, "1"])
+        .env_remove("GITHUB_SHA")
+        .env_remove("RUNNER_OS")
+        .output()
+        .expect("run suite cap+1 refusal");
+    assert!(!cap.status.success());
+    assert!(cap.stdout.is_empty(), "refusal must not emit stdout");
+    assert!(one_json_line(&cap.stderr, "cap+1 stderr").contains("observed 65537"));
+    assert_no_db_artifacts(&cap_db);
+
+    for (tag, outcome, suite, value, sha, runner, expected_field) in [
+        (
+            "outcome",
+            "bogus",
+            "suite",
+            "1",
+            "sha",
+            "runner",
+            "field 'outcome'",
+        ),
+        (
+            "value",
+            "ok",
+            "suite",
+            "NaN",
+            "sha",
+            "runner",
+            "field 'value'",
+        ),
+        (
+            "sha",
+            "ok",
+            "suite",
+            "1",
+            "",
+            "runner",
+            "field 'GITHUB_SHA'",
+        ),
+        ("runner", "ok", "suite", "1", "sha", "", "field 'RUNNER_OS'"),
+    ] {
+        let pure_db = temp_db(&format!("nightly-pure-{tag}"));
+        cleanup_db(&pure_db);
+        let refusal = std::process::Command::new(exe)
+            .args([pure_db.as_str(), outcome, suite, value])
+            .env("GITHUB_SHA", sha)
+            .env("RUNNER_OS", runner)
+            .output()
+            .expect("run pure nightly refusal");
+        assert!(!refusal.status.success());
+        assert!(refusal.stdout.is_empty(), "refusal must not emit stdout");
+        assert!(
+            one_json_line(&refusal.stderr, "pure-refusal stderr").contains(expected_field),
+            "wrong diagnostic precedence for {tag}"
+        );
+        assert_no_db_artifacts(&pure_db);
+    }
+
+    // Missing provenance is explicit typed data, never a fabricated commit,
+    // machine, or ambiguous `local` sentinel.
+    let unavailable_db = temp_db("nightly-unavailable-provenance");
+    cleanup_db(&unavailable_db);
+    let unavailable = std::process::Command::new(exe)
+        .args([unavailable_db.as_str(), "error", "unavailable", "0"])
+        .env_remove("GITHUB_SHA")
+        .env_remove("RUNNER_OS")
+        .output()
+        .expect("run nightly_ledger without optional provenance variables");
+    assert!(
+        unavailable.status.success(),
+        "typed-unavailable run failed: {}",
+        String::from_utf8_lossy(&unavailable.stderr)
+    );
+    assert!(
+        unavailable.stderr.is_empty(),
+        "success must not emit stderr"
+    );
+    one_json_line(&unavailable.stdout, "typed-unavailable stdout");
+    let unavailable_ledger = Ledger::open(&unavailable_db).expect("open unavailable ledger");
+    let unavailable_op = unavailable_ledger.op(1).unwrap().expect("unavailable op");
+    assert_eq!(
+        unavailable_op.versions,
+        "{\"frankensim\":{\"availability\":\"unavailable\",\"source\":\"process_environment\",\"variable\":\"GITHUB_SHA\"}}"
+    );
+    assert_eq!(
+        unavailable_op.capability,
+        "{\"ops\":[\"ci.nightly\"],\"runner\":{\"availability\":\"unavailable\",\"source\":\"process_environment\",\"variable\":\"RUNNER_OS\"}}"
+    );
+    assert!(!unavailable_op.versions.contains("local"));
+    assert!(!unavailable_op.capability.contains("local"));
+    assert!(unavailable_ledger.lint().unwrap().is_clean());
+    drop(unavailable_ledger);
+    cleanup_db(&unavailable_db);
+
+    #[cfg(unix)]
+    {
+        // These bytes are valid POSIX filename data but reserved path syntax
+        // on Windows. The resulting stdout must still be exactly one JSON line.
+        let hostile_db = std::env::temp_dir().join(format!(
+            "fs-ledger-nightly-path-{}-quote\"-slash\\-line\n-control\u{0001}.db",
+            std::process::id()
+        ));
+        let hostile_db = hostile_db.to_str().expect("hostile path remains UTF-8");
+        cleanup_db(hostile_db);
+        let hostile_path = std::process::Command::new(exe)
+            .args([hostile_db, "ok", "hostile-path", "1"])
+            .env_remove("GITHUB_SHA")
+            .env_remove("RUNNER_OS")
+            .output()
+            .expect("run nightly_ledger with hostile valid path");
+        assert!(
+            hostile_path.status.success(),
+            "hostile path run failed: {}",
+            String::from_utf8_lossy(&hostile_path.stderr)
+        );
+        assert!(
+            hostile_path.stderr.is_empty(),
+            "success must not emit stderr"
+        );
+        let hostile_stdout = one_json_line(&hostile_path.stdout, "hostile-path stdout");
+        assert!(hostile_stdout.contains("quote\\\"-slash\\\\-line\\n-control\\u0001.db"));
+        let hostile_ledger = Ledger::open(hostile_db).expect("reopen hostile path ledger");
+        assert_eq!(hostile_ledger.table_count("ops").unwrap(), 1);
+        assert!(hostile_ledger.lint().unwrap().is_clean());
+        drop(hostile_ledger);
+        cleanup_db(hostile_db);
+    }
 
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStringExt as _;
 
+        let non_utf8_db = temp_db("nightly-non-utf8-suite");
+        cleanup_db(&non_utf8_db);
         let non_utf8_suite = std::ffi::OsString::from_vec(vec![0xff]);
         let non_utf8 = std::process::Command::new(exe)
-            .arg(db.as_str())
+            .arg(non_utf8_db.as_str())
             .arg("ok")
             .arg(non_utf8_suite)
             .arg("1")
+            .env_remove("GITHUB_SHA")
+            .env_remove("RUNNER_OS")
             .output()
             .expect("run nightly_ledger with non-UTF-8 suite");
         assert!(!non_utf8.status.success());
+        assert!(non_utf8.stdout.is_empty(), "refusal must not emit stdout");
         let non_utf8_stderr = one_json_line(&non_utf8.stderr, "non-UTF-8 stderr");
-        assert!(non_utf8_stderr.contains("suite must be valid UTF-8"));
+        assert!(non_utf8_stderr.contains("field 'suite' rejected: must be valid UTF-8"));
+        assert_no_db_artifacts(&non_utf8_db);
         l.append_event(&EventRow {
             session: None,
             t: 5,
@@ -1563,6 +1769,34 @@ fn ledger_010_nightly_writer_records_run() {
             payload: Some(non_utf8_stderr),
         })
         .expect("non-UTF-8 refusal is one valid JSON value");
+
+        for (tag, variable) in [
+            ("nightly-non-utf8-sha", "GITHUB_SHA"),
+            ("nightly-non-utf8-runner", "RUNNER_OS"),
+        ] {
+            let env_db = temp_db(tag);
+            cleanup_db(&env_db);
+            let mut command = std::process::Command::new(exe);
+            command.args([env_db.as_str(), "ok", "non-utf8-env", "1"]);
+            if variable == "GITHUB_SHA" {
+                command
+                    .env("GITHUB_SHA", std::ffi::OsString::from_vec(vec![0xff]))
+                    .env_remove("RUNNER_OS");
+            } else {
+                command
+                    .env("GITHUB_SHA", "valid-sha")
+                    .env("RUNNER_OS", std::ffi::OsString::from_vec(vec![0xfe]));
+            }
+            let invalid_env = command.output().expect("run with non-UTF-8 provenance");
+            assert!(!invalid_env.status.success());
+            assert!(
+                invalid_env.stdout.is_empty(),
+                "refusal must not emit stdout"
+            );
+            let stderr = one_json_line(&invalid_env.stderr, "non-UTF-8 provenance stderr");
+            assert!(stderr.contains(&format!("field '{variable}' rejected: must be valid UTF-8")));
+            assert_no_db_artifacts(&env_db);
+        }
     }
 
     assert_eq!(l.table_count("ops").unwrap(), 1);
@@ -1577,6 +1811,6 @@ fn ledger_010_nightly_writer_records_run() {
     cleanup_db(&db);
     verdict(
         "ledger-010",
-        "nightly_ledger preserves hostile strings in valid JSON; bad args and non-finite values refuse structurally",
+        "nightly_ledger preserves hostile JSON, records typed provenance, and refuses every pure invalid input before database creation",
     );
 }
