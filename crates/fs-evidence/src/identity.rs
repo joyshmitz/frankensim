@@ -1,9 +1,9 @@
 //! Typed, canonical identities for evidence semantics.
 //!
 //! This module covers exact color-evidence graph replay, normalized validity
-//! domains, model-card declarations with exact calibration sources, and an
-//! opaque strong-identity projection of locally certified scalar evidence
-//! through separate schemas. It does not reinterpret
+//! domains, model-form evidence slices, model-card declarations with exact
+//! calibration sources, and an opaque strong-identity projection of locally
+//! certified scalar evidence through separate schemas. It does not reinterpret
 //! [`crate::ProvenanceHash`], and it publishes only unanchored
 //! [`IdentityReceipt`] values. Origin verification, policy admission,
 //! structural [`crate::Certified`] consistency, and scientific color rank
@@ -24,7 +24,7 @@ use fs_blake3::identity::{
 
 use crate::{
     Ambition, COLOR_ALGEBRA_VERSION, Certified, Color, ColorPayloadError, IntervalOp, ModelCard,
-    NumericalKind, ProvenanceHash, StatisticalCertificate, ValidityDomain, compose,
+    ModelEvidence, NumericalKind, ProvenanceHash, StatisticalCertificate, ValidityDomain, compose,
     validate_color_payload,
 };
 
@@ -34,6 +34,8 @@ pub const COLOR_EVIDENCE_SOURCE_IDENTITY_VERSION_V1: u32 = 1;
 pub const COLOR_EVIDENCE_NODE_IDENTITY_VERSION_V1: u32 = 1;
 /// Identity schema version for normalized evidence-validity domains.
 pub const VALIDITY_DOMAIN_IDENTITY_VERSION_V1: u32 = 1;
+/// Identity schema version for one model-evidence semantic slice.
+pub const MODEL_EVIDENCE_IDENTITY_VERSION_V1: u32 = 1;
 /// Identity schema version for one locally certified scalar-evidence projection.
 pub const CERTIFIED_F64_EVIDENCE_IDENTITY_VERSION_V1: u32 = 1;
 /// Identity schema version for exact model-card calibration source bytes.
@@ -44,6 +46,8 @@ pub const MODEL_CARD_IDENTITY_VERSION_V1: u32 = 1;
 pub const MAX_COLOR_EVIDENCE_NODE_BYTES_V1: u64 = 1 << 20;
 /// Hard payload ceiling for the ordered axes field of one validity domain.
 pub const MAX_VALIDITY_DOMAIN_FIELD_BYTES_V1: u64 = 1 << 20;
+/// Hard payload ceiling for each variable model-evidence identity field.
+pub const MAX_MODEL_EVIDENCE_IDENTITY_FIELD_BYTES_V1: u64 = 1 << 20;
 /// Hard payload ceiling for each variable certified-evidence field.
 pub const MAX_CERTIFIED_F64_EVIDENCE_FIELD_BYTES_V1: u64 = 1 << 20;
 /// Hard payload ceiling for each variable model-card declaration field.
@@ -141,6 +145,94 @@ impl IdentifiedValidityDomainV1 {
     #[must_use]
     pub fn into_domain(self) -> ValidityDomain {
         self.domain
+    }
+}
+
+static MODEL_EVIDENCE_VALIDITY_CHILD_V1: ChildSpec =
+    ChildSpec::for_identity::<ValidityDomainIdV1>();
+
+/// Canonical semantic schema for one model-form evidence slice.
+pub enum ModelEvidenceIdentitySchemaV1 {}
+
+impl CanonicalSchema for ModelEvidenceIdentitySchemaV1 {
+    const DOMAIN: &'static str = "org.frankensim.fs-evidence.model-evidence.v1";
+    const NAME: &'static str = "model-evidence";
+    const VERSION: u32 = MODEL_EVIDENCE_IDENTITY_VERSION_V1;
+    const CONTEXT: &'static str = "exact model-card name and assumption sets, typed declared validity, discrepancy bits, and in-domain claim state; no card content, units, evaluation point, origin, scientific authority, or trust";
+    const FIELDS: &'static [FieldSpec] = &[
+        FieldSpec::required("model-card-names", WireType::CanonicalSet),
+        FieldSpec::required("assumptions", WireType::CanonicalSet),
+        FieldSpec::child_of("validity", &MODEL_EVIDENCE_VALIDITY_CHILD_V1),
+        FieldSpec::required("discrepancy-rel-ieee754-bits", WireType::U64),
+        FieldSpec::required("in-domain", WireType::Bool),
+    ];
+}
+
+/// Low-level schema-shaped identity for one model-evidence semantic frame.
+///
+/// Only [`IdentifiedModelEvidenceV1`] proves correspondence with an attached
+/// public [`ModelEvidence`] and helper-validated validity child.
+pub type ModelEvidenceIdV1 = SemanticId<ModelEvidenceIdentitySchemaV1>;
+
+/// Low-level producer receipt for one model-evidence semantic frame.
+pub type ModelEvidenceReceiptV1 = IdentityReceipt<ModelEvidenceIdV1>;
+
+/// A model-form evidence slice kept attached to its unanchored semantic
+/// identity and helper-built validity receipt.
+#[derive(Debug, Clone)]
+pub struct IdentifiedModelEvidenceV1 {
+    model_evidence: ModelEvidence,
+    validity_receipt: ValidityDomainReceiptV1,
+    receipt: ModelEvidenceReceiptV1,
+}
+
+impl IdentifiedModelEvidenceV1 {
+    /// Read-only model evidence committed by this identity.
+    #[must_use]
+    pub const fn model_evidence(&self) -> &ModelEvidence {
+        &self.model_evidence
+    }
+
+    /// Typed semantic identity.
+    #[must_use]
+    pub const fn id(&self) -> ModelEvidenceIdV1 {
+        self.receipt.id()
+    }
+
+    /// Complete unanchored semantic receipt.
+    #[must_use]
+    pub const fn receipt(&self) -> ModelEvidenceReceiptV1 {
+        self.receipt
+    }
+
+    /// Typed normalized validity identity bound as a child.
+    #[must_use]
+    pub const fn validity_id(&self) -> ValidityDomainIdV1 {
+        self.validity_receipt.id()
+    }
+
+    /// Complete helper-built validity receipt.
+    #[must_use]
+    pub const fn validity_receipt(&self) -> ValidityDomainReceiptV1 {
+        self.validity_receipt
+    }
+
+    /// Fixed-size typed digest bytes.
+    #[must_use]
+    pub fn id_bytes(&self) -> [u8; 32] {
+        *self.id().as_bytes()
+    }
+
+    /// Identity state of a producer receipt. This is always unanchored.
+    #[must_use]
+    pub fn trust_state(&self) -> EvidenceIdentityTrustState {
+        self.receipt.audit_record().trust()
+    }
+
+    /// Surrender the identity attachment and recover the model evidence.
+    #[must_use]
+    pub fn into_model_evidence(self) -> ModelEvidence {
+        self.model_evidence
     }
 }
 
@@ -661,6 +753,62 @@ pub enum ValidityDomainIdentityError {
     },
     /// Canonical framing, resource admission, or cancellation refused.
     Canonical(CanonicalError),
+}
+
+/// Fail-closed refusal from model-evidence semantic identity construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelEvidenceIdentityError {
+    /// The relative discrepancy is NaN or negative.
+    InvalidDiscrepancy {
+        /// Exact refused IEEE-754 bits.
+        bits: u64,
+        /// Structural requirement that was violated.
+        reason: &'static str,
+    },
+    /// The typed validity child refused normalization, limits, or cancellation.
+    Validity(ValidityDomainIdentityError),
+    /// Canonical framing, set admission, resources, or cancellation refused.
+    Canonical(CanonicalError),
+}
+
+impl fmt::Display for ModelEvidenceIdentityError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidDiscrepancy { bits, reason } => write!(
+                formatter,
+                "model-evidence identity refused discrepancy bits 0x{bits:016x}: {reason}"
+            ),
+            Self::Validity(error) => {
+                write!(
+                    formatter,
+                    "model-evidence identity refused validity: {error}"
+                )
+            }
+            Self::Canonical(error) => write!(formatter, "model-evidence identity refused: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for ModelEvidenceIdentityError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Validity(error) => Some(error),
+            Self::Canonical(error) => Some(error),
+            Self::InvalidDiscrepancy { .. } => None,
+        }
+    }
+}
+
+impl From<ValidityDomainIdentityError> for ModelEvidenceIdentityError {
+    fn from(error: ValidityDomainIdentityError) -> Self {
+        Self::Validity(error)
+    }
+}
+
+impl From<CanonicalError> for ModelEvidenceIdentityError {
+    fn from(error: CanonicalError) -> Self {
+        Self::Canonical(error)
+    }
 }
 
 /// Fail-closed refusal from model-card identity construction.
@@ -1189,6 +1337,101 @@ where
         }
     }
     Ok(count)
+}
+
+/// Identify one model-form evidence slice without promoting its declarations
+/// into scientific authority.
+///
+/// The helper consumes and retains the public/mutable [`ModelEvidence`] while
+/// binding exact canonical model-card name and assumption sets, a typed
+/// normalized validity child, raw discrepancy bits, and the exact `in_domain`
+/// claim bit. Card names are identifiers only; this frame does not bind
+/// [`ModelCard`] contents, an evaluation point, units, or occupancy evidence.
+/// Empty card/assumption sets are preserved as explicit state rather than
+/// interpreted as model absence by this helper.
+///
+/// Cards and assumptions must already be strictly byte-sorted and
+/// duplicate-free. Discrepancy refuses NaN and negative values, accepts
+/// positive infinity as explicit unbounded state, and preserves signed-zero
+/// bits.
+///
+/// # Errors
+/// Refuses malformed discrepancy or validity, non-canonical sets, invalid
+/// limits, resource overflow, or cancellation. No partial identity is
+/// published.
+pub fn identify_model_evidence_v1<C>(
+    model_evidence: ModelEvidence,
+    limits: EvidenceIdentityLimits,
+    mut cancellation: C,
+) -> Result<IdentifiedModelEvidenceV1, ModelEvidenceIdentityError>
+where
+    C: EvidenceIdentityCancellationProbe,
+{
+    if limits.cancellation_poll_bytes() == 0 {
+        return Err(
+            CanonicalError::InvalidLimits("cancellation_poll_bytes must be positive").into(),
+        );
+    }
+    poll_identity_cancellation(&mut cancellation)?;
+    if model_evidence.discrepancy_rel.is_nan() {
+        return Err(ModelEvidenceIdentityError::InvalidDiscrepancy {
+            bits: model_evidence.discrepancy_rel.to_bits(),
+            reason: "discrepancy must not be NaN",
+        });
+    }
+    if model_evidence.discrepancy_rel < 0.0 {
+        return Err(ModelEvidenceIdentityError::InvalidDiscrepancy {
+            bits: model_evidence.discrepancy_rel.to_bits(),
+            reason: "discrepancy must be non-negative; positive infinity is explicit unbounded state",
+        });
+    }
+
+    let (receipt, validity_receipt) = {
+        let validity_receipt = identify_validity_domain_receipt_v1(
+            &model_evidence.validity,
+            limits,
+            &mut cancellation,
+        )?;
+        let card_count = preflight_canonical_string_set_v1(
+            &model_evidence.cards,
+            limits,
+            MAX_MODEL_EVIDENCE_IDENTITY_FIELD_BYTES_V1,
+            &mut cancellation,
+        )?;
+        let assumption_count = preflight_canonical_string_set_v1(
+            &model_evidence.assumptions,
+            limits,
+            MAX_MODEL_EVIDENCE_IDENTITY_FIELD_BYTES_V1,
+            &mut cancellation,
+        )?;
+        let receipt = CanonicalEncoder::<ModelEvidenceIdV1, _>::new(limits, cancellation)?
+            .canonical_set(
+                Field::new(0, "model-card-names"),
+                card_count,
+                model_evidence.cards.iter().map(|card| card.as_bytes()),
+            )?
+            .canonical_set(
+                Field::new(1, "assumptions"),
+                assumption_count,
+                model_evidence
+                    .assumptions
+                    .iter()
+                    .map(|assumption| assumption.as_bytes()),
+            )?
+            .child(Field::new(2, "validity"), validity_receipt.id())?
+            .u64(
+                Field::new(3, "discrepancy-rel-ieee754-bits"),
+                model_evidence.discrepancy_rel.to_bits(),
+            )?
+            .flag(Field::new(4, "in-domain"), model_evidence.in_domain)?
+            .finish()?;
+        (receipt, validity_receipt)
+    };
+    Ok(IdentifiedModelEvidenceV1 {
+        model_evidence,
+        validity_receipt,
+        receipt,
+    })
 }
 
 const MODEL_CARD_LEGACY_FNV_OFFSET_BASIS_V1: u64 = 0xcbf2_9ce4_8422_2325;

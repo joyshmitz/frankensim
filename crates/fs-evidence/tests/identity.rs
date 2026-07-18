@@ -15,13 +15,15 @@ use fs_evidence::{
     ColorEvidenceNodeIdentitySchemaV1, ColorEvidenceNodeKindV1, ColorEvidenceNodeV1,
     ColorEvidenceOperationV1, ColorEvidenceParentSemanticsV1, ColorEvidenceSourceIdV1,
     ColorEvidenceSourceV1, Evidence, IdentifiedCertifiedF64EvidenceV1, IdentifiedModelCardV1,
-    IdentifiedValidityDomainV1, ModelCard, ModelCardCalibrationSourceIdV1,
-    ModelCardCalibrationSourceReceiptV1, ModelCardIdV1, ModelCardIdentityError, ModelCardReceiptV1,
-    ModelEvidence, NumericalKind, ProvenanceHash, SensitivitySummary, StatisticalCertificate,
-    ValidityDomain, ValidityDomainIdV1, ValidityDomainIdentityError,
-    compose_color_evidence_nodes_v1, identify_certified_f64_evidence_v1,
-    identify_color_evidence_source_node_v1, identify_color_evidence_source_v1,
-    identify_model_card_v1, identify_validity_domain_v1,
+    IdentifiedModelEvidenceV1, IdentifiedValidityDomainV1, ModelCard,
+    ModelCardCalibrationSourceIdV1, ModelCardCalibrationSourceReceiptV1, ModelCardIdV1,
+    ModelCardIdentityError, ModelCardReceiptV1, ModelEvidence, ModelEvidenceIdV1,
+    ModelEvidenceIdentityError, ModelEvidenceReceiptV1, NumericalKind, ProvenanceHash,
+    SensitivitySummary, StatisticalCertificate, ValidityDomain, ValidityDomainIdV1,
+    ValidityDomainIdentityError, compose_color_evidence_nodes_v1,
+    identify_certified_f64_evidence_v1, identify_color_evidence_source_node_v1,
+    identify_color_evidence_source_v1, identify_model_card_v1, identify_model_evidence_v1,
+    identify_validity_domain_v1,
 };
 
 const LIMITS: CanonicalLimits = CanonicalLimits::new(16_384, 8_192, 32, 64, 256);
@@ -77,8 +79,8 @@ fn identified_domain(domain: ValidityDomain) -> IdentifiedValidityDomainV1 {
     identify_validity_domain_v1(domain, LIMITS, || false).expect("valid normalized domain")
 }
 
-fn certified_fixture() -> Certified<f64> {
-    let model = ModelEvidence {
+fn model_evidence_fixture() -> ModelEvidence {
+    ModelEvidence {
         cards: vec!["card-a".to_string(), "card-b".to_string()],
         assumptions: vec!["assumption-a".to_string(), "assumption-b".to_string()],
         validity: ValidityDomain::unconstrained()
@@ -86,7 +88,48 @@ fn certified_fixture() -> Certified<f64> {
             .with("α", -1.0, 1.0),
         discrepancy_rel: 0.125,
         in_domain: true,
-    };
+    }
+}
+
+fn identified_model_evidence(model_evidence: ModelEvidence) -> IdentifiedModelEvidenceV1 {
+    identify_model_evidence_v1(model_evidence, LIMITS, || false)
+        .expect("valid model-evidence identity")
+}
+
+fn manual_model_evidence_receipt(model_evidence: &ModelEvidence) -> ModelEvidenceReceiptV1 {
+    let validity = identified_domain(model_evidence.validity.clone());
+    CanonicalEncoder::<ModelEvidenceIdV1, _>::new(LIMITS, || false)
+        .expect("model-evidence schema")
+        .canonical_set(
+            Field::new(0, "model-card-names"),
+            u64::try_from(model_evidence.cards.len()).expect("model-card count"),
+            model_evidence.cards.iter().map(|card| card.as_bytes()),
+        )
+        .expect("model-card names")
+        .canonical_set(
+            Field::new(1, "assumptions"),
+            u64::try_from(model_evidence.assumptions.len()).expect("assumption count"),
+            model_evidence
+                .assumptions
+                .iter()
+                .map(|assumption| assumption.as_bytes()),
+        )
+        .expect("assumptions")
+        .child(Field::new(2, "validity"), validity.id())
+        .expect("validity")
+        .u64(
+            Field::new(3, "discrepancy-rel-ieee754-bits"),
+            model_evidence.discrepancy_rel.to_bits(),
+        )
+        .expect("discrepancy")
+        .flag(Field::new(4, "in-domain"), model_evidence.in_domain)
+        .expect("in-domain")
+        .finish()
+        .expect("manual model-evidence identity")
+}
+
+fn certified_fixture() -> Certified<f64> {
+    let model = model_evidence_fixture();
     let sensitivity = SensitivitySummary {
         d_qoi: BTreeMap::from([("Mach number".to_string(), -0.0), ("α".to_string(), 2.5)]),
     };
@@ -606,6 +649,281 @@ fn raw_validity_domain_receipt_is_only_schema_shaped() {
         malformed.audit_record().no_claim(),
         NoClaimState::ExternalTrustRequired
     );
+}
+
+#[test]
+fn model_evidence_identity_replays_manual_frame_and_retains_input() {
+    let model_evidence = model_evidence_fixture();
+    let first = identified_model_evidence(model_evidence.clone());
+    let replay = identified_model_evidence(model_evidence.clone());
+    let manual = manual_model_evidence_receipt(&model_evidence);
+
+    assert_eq!(first.id(), replay.id());
+    assert_eq!(first.id(), manual.id());
+    assert_eq!(
+        first.receipt().canonical_preimage(),
+        manual.canonical_preimage()
+    );
+    assert_eq!(
+        first.validity_id(),
+        identified_domain(model_evidence.validity.clone()).id()
+    );
+    assert_eq!(first.id_bytes(), first.receipt().audit_record().id());
+    assert_eq!(first.trust_state(), TrustState::Unanchored);
+    assert_eq!(
+        first.receipt().audit_record().no_claim(),
+        NoClaimState::ExternalTrustRequired
+    );
+    assert_eq!(first.model_evidence(), &model_evidence);
+
+    let none = ModelEvidence::none();
+    let identified_none = identified_model_evidence(none.clone());
+    assert_eq!(
+        identified_none.id(),
+        manual_model_evidence_receipt(&none).id()
+    );
+    assert_ne!(first.id(), identified_none.id());
+
+    assert_eq!(first.into_model_evidence(), model_evidence);
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one mutation and refusal matrix shares an exact model-evidence baseline"
+)]
+fn model_evidence_identity_binds_every_field_and_refuses_malformed_claims() {
+    let model_evidence = model_evidence_fixture();
+    let base = identified_model_evidence(model_evidence.clone());
+    let identify = |model_evidence: ModelEvidence| {
+        identify_model_evidence_v1(model_evidence, LIMITS, || false)
+            .expect("valid model-evidence mutation")
+    };
+
+    let mut card = model_evidence.clone();
+    card.cards.push("card-c".to_string());
+    let card_id = identify(card).id();
+
+    let mut assumption = model_evidence.clone();
+    assumption.assumptions.push("assumption-c".to_string());
+    let assumption_id = identify(assumption).id();
+
+    let mut validity = model_evidence.clone();
+    validity.validity = validity.validity.with("β", -2.0, 2.0);
+    let validity_id = identify(validity).id();
+
+    let mut discrepancy = model_evidence.clone();
+    discrepancy.discrepancy_rel = 0.125_f64.next_up();
+    let discrepancy_id = identify(discrepancy).id();
+
+    let mut out_of_domain = model_evidence.clone();
+    out_of_domain.in_domain = false;
+    let out_of_domain_id = identify(out_of_domain).id();
+
+    for (field, mutated_id) in [
+        ("model-card", card_id),
+        ("assumption", assumption_id),
+        ("validity", validity_id),
+        ("discrepancy", discrepancy_id),
+        ("in-domain", out_of_domain_id),
+    ] {
+        assert_ne!(base.id(), mutated_id, "{field} must move the model root");
+    }
+
+    let mut unsorted = ModelEvidence::none();
+    unsorted.cards = vec!["z".to_string(), "a".to_string()];
+    assert!(matches!(
+        identify_model_evidence_v1(unsorted, LIMITS, || false),
+        Err(ModelEvidenceIdentityError::Canonical(
+            CanonicalError::NonCanonicalSetOrder { index: 1 }
+        ))
+    ));
+
+    let mut duplicate = ModelEvidence::none();
+    duplicate.assumptions = vec!["same".to_string(), "same".to_string()];
+    assert!(matches!(
+        identify_model_evidence_v1(duplicate, LIMITS, || false),
+        Err(ModelEvidenceIdentityError::Canonical(
+            CanonicalError::DuplicateSetItem { index: 1 }
+        ))
+    ));
+
+    let mut invalid_validity = ModelEvidence::none();
+    invalid_validity.validity = invalid_validity.validity.with("bad", f64::NAN, 1.0);
+    assert!(matches!(
+        identify_model_evidence_v1(invalid_validity, LIMITS, || false),
+        Err(ModelEvidenceIdentityError::Validity(
+            ValidityDomainIdentityError::InvalidBounds { .. }
+        ))
+    ));
+
+    for discrepancy_rel in [f64::NAN, -0.1, f64::NEG_INFINITY] {
+        let mut invalid = ModelEvidence::none();
+        invalid.discrepancy_rel = discrepancy_rel;
+        assert!(matches!(
+            identify_model_evidence_v1(invalid, LIMITS, || false),
+            Err(ModelEvidenceIdentityError::InvalidDiscrepancy { bits, .. })
+                if bits == discrepancy_rel.to_bits()
+        ));
+    }
+
+    let mut positive_zero = ModelEvidence::none();
+    positive_zero.discrepancy_rel = 0.0;
+    let mut negative_zero = ModelEvidence::none();
+    negative_zero.discrepancy_rel = -0.0;
+    assert_ne!(identify(positive_zero).id(), identify(negative_zero).id());
+
+    let mut unbounded = ModelEvidence::none();
+    unbounded.discrepancy_rel = f64::INFINITY;
+    let _unbounded = identify(unbounded);
+
+    let none_id = identified_model_evidence(ModelEvidence::none()).id();
+    let mut uncarded_assumption = ModelEvidence::none();
+    uncarded_assumption.assumptions = vec!["declared assumption".to_string()];
+    let mut uncarded_validity = ModelEvidence::none();
+    uncarded_validity.validity = uncarded_validity.validity.with("Re", 1.0, 2.0);
+    let mut uncarded_discrepancy = ModelEvidence::none();
+    uncarded_discrepancy.discrepancy_rel = 0.25;
+    let mut uncarded_out_of_domain = ModelEvidence::none();
+    uncarded_out_of_domain.in_domain = false;
+    for (field, diagnostic_id) in [
+        ("assumption", identify(uncarded_assumption).id()),
+        ("validity", identify(uncarded_validity).id()),
+        ("discrepancy", identify(uncarded_discrepancy).id()),
+        ("in-domain", identify(uncarded_out_of_domain).id()),
+    ] {
+        assert_ne!(
+            none_id, diagnostic_id,
+            "empty cards must not erase {field} diagnostic state"
+        );
+    }
+
+    let original_card = model_card_fixture(None);
+    let mut revised_card = original_card.clone();
+    revised_card.version.push_str(".revision");
+    revised_card.ambition = Ambition::Moonshot;
+    revised_card
+        .known_failures
+        .push("new failure outside this projection".to_string());
+    revised_card.calibration = Some(ProvenanceHash(0xfeed_face));
+    let point = BTreeMap::from([("Mach number".to_string(), 0.5), ("α".to_string(), 0.0)]);
+    let original_projection = ModelEvidence::from_card(&original_card, &point);
+    let revised_projection = ModelEvidence::from_card(&revised_card, &point);
+    assert_eq!(original_projection, revised_projection);
+    assert_eq!(
+        identify(original_projection).id(),
+        identify(revised_projection).id(),
+        "card fields absent from ModelEvidence must remain explicit no-claims"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exact-limit matrix shares the same model-evidence schema and poll ledger"
+)]
+fn model_evidence_identity_enforces_exact_resources_and_cancellation() {
+    let field_limits = CanonicalLimits::new(65_536, 1_024, 32, 64, 64);
+    let mut exact_card = ModelEvidence::none();
+    exact_card.cards = vec!["c".repeat(1_008)];
+    identify_model_evidence_v1(exact_card, field_limits, || false)
+        .expect("exact 1024-byte canonical-set payload is admitted");
+    let mut oversized_card = ModelEvidence::none();
+    oversized_card.cards = vec!["c".repeat(1_009)];
+    assert!(matches!(
+        identify_model_evidence_v1(oversized_card, field_limits, || false),
+        Err(ModelEvidenceIdentityError::Canonical(
+            CanonicalError::LimitExceeded {
+                kind: fs_blake3::identity::LimitKind::FieldBytes,
+                requested: 1_025,
+                limit: 1_024,
+            }
+        ))
+    ));
+
+    let mut two_cards = ModelEvidence::none();
+    two_cards.cards = vec!["a".to_string(), "b".to_string()];
+    let collection_limits = CanonicalLimits::new(16_384, 8_192, 32, 1, 64);
+    assert!(matches!(
+        identify_model_evidence_v1(two_cards, collection_limits, || false),
+        Err(ModelEvidenceIdentityError::Canonical(
+            CanonicalError::LimitExceeded {
+                kind: fs_blake3::identity::LimitKind::CollectionItems,
+                requested: 2,
+                limit: 1,
+            }
+        ))
+    ));
+
+    let model_evidence = model_evidence_fixture();
+    let baseline = identified_model_evidence(model_evidence.clone());
+    let frame_limit = baseline
+        .receipt()
+        .canonical_bytes()
+        .checked_sub(1)
+        .expect("non-empty model-evidence frame");
+    let frame_limits = CanonicalLimits::new(frame_limit, 8_192, 32, 64, 64);
+    assert!(matches!(
+        identify_model_evidence_v1(model_evidence.clone(), frame_limits, || false),
+        Err(ModelEvidenceIdentityError::Canonical(
+            CanonicalError::LimitExceeded {
+                kind: fs_blake3::identity::LimitKind::CanonicalBytes,
+                requested,
+                limit,
+            }
+        )) if requested > limit && limit == frame_limit
+    ));
+
+    assert!(matches!(
+        identify_model_evidence_v1(
+            model_evidence.clone(),
+            CanonicalLimits::new(16_384, 8_192, 32, 64, 0),
+            || false,
+        ),
+        Err(ModelEvidenceIdentityError::Canonical(
+            CanonicalError::InvalidLimits("cancellation_poll_bytes must be positive")
+        ))
+    ));
+    assert!(matches!(
+        identify_model_evidence_v1(model_evidence.clone(), LIMITS, || true),
+        Err(ModelEvidenceIdentityError::Canonical(
+            CanonicalError::Cancelled { absorbed_bytes: 0 }
+        ))
+    ));
+
+    #[derive(Debug)]
+    struct CancelAfter {
+        successful_polls: usize,
+    }
+    impl CancellationProbe for CancelAfter {
+        fn is_cancelled(&mut self) -> bool {
+            if self.successful_polls == 0 {
+                true
+            } else {
+                self.successful_polls -= 1;
+                false
+            }
+        }
+    }
+    let poll_count = std::cell::Cell::new(0_usize);
+    identify_model_evidence_v1(model_evidence.clone(), LIMITS, || {
+        poll_count.set(poll_count.get() + 1);
+        false
+    })
+    .expect("baseline model-evidence poll count");
+    let late = identify_model_evidence_v1(
+        model_evidence,
+        LIMITS,
+        CancelAfter {
+            successful_polls: poll_count.get() - 1,
+        },
+    );
+    assert!(matches!(
+        late,
+        Err(ModelEvidenceIdentityError::Canonical(
+            CanonicalError::Cancelled { absorbed_bytes }
+        )) if absorbed_bytes > 0
+    ));
 }
 
 #[test]
