@@ -5786,8 +5786,8 @@ fn i13_terminal_v2_authority_is_acyclic_closed_and_capacity_complete() {
             "capacity_orphan_reconciliation_prepare_decision_v4",
         ),
         (
-            "capacity_orphan_reconciliation_prepare_decision_v4",
             "capacity_orphan_ordinal_member_v4",
+            "capacity_orphan_reconciliation_prepare_decision_v4",
         ),
         (
             "capacity_allocation_initial_pending_outcome_v4",
@@ -5803,6 +5803,10 @@ fn i13_terminal_v2_authority_is_acyclic_closed_and_capacity_complete() {
         ),
         (
             "capacity_orphan_candidate_root_v4",
+            "capacity_orphan_reconciliation_prepare_decision_v4",
+        ),
+        (
+            "capacity_orphan_reconciliation_prepare_decision_v4",
             "capacity_orphan_reconciliation_local_terminal_v4",
         ),
         (
@@ -5846,6 +5850,10 @@ fn i13_terminal_v2_authority_is_acyclic_closed_and_capacity_complete() {
         (
             "for_each_capacity_prepared_payload_v4",
             "for_each_capacity_effect_visibility_gate_v4",
+        ),
+        (
+            "capacity_orphan_reconciliation_prepare_decision_v4",
+            "capacity_orphan_ordinal_member_v4",
         ),
         (
             "capacity_orphan_reconciliation_local_terminal_v4",
@@ -5970,6 +5978,14 @@ fn i13_terminal_v2_authority_is_acyclic_closed_and_capacity_complete() {
         (
             "bootstrap_capacity_aggregate_outcome_append_receipt_b",
             "bootstrap_capacity_allocation_evidence_bundle",
+        ),
+        (
+            "capacity_orphan_candidate_root_v4",
+            "capacity_orphan_reconciliation_local_terminal_v4",
+        ),
+        (
+            "capacity_orphan_ordinal_member_v4",
+            "capacity_orphan_reconciliation_local_terminal_v4",
         ),
     ] {
         let mut frontier = BTreeSet::from([start]);
