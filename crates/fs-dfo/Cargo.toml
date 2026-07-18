@@ -17,5 +17,8 @@ fs-math = { path = "../fs-math" }
 fs-rand = { path = "../fs-rand" }
 fs-robust = { path = "../fs-robust" }
 
+[dev-dependencies]
+fs-blake3 = { path = "../fs-blake3" }
+
 [lints]
 workspace = true

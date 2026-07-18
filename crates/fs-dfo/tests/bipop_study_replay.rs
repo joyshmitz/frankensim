@@ -11,16 +11,17 @@
 //! refused as a stale payload, the self-consistently resealed edit is refused
 //! both against the retained reference and by semantic admission, and the
 //! resulting red fs-obs evidence is independently reproducible. This is one
-//! finite same-build, same-ISA deterministic study, not an optimizer-quality,
+//! finite source-snapshot-bound, same-target deterministic study, not an optimizer-quality,
 //! refreshed cross-ISA, or performance claim.
 
+use fs_blake3::{ContentHash, hash_domain};
 use fs_dfo::{
-    BIPOP_RESTART_SCHEMA_VERSION, BipopLane, BipopReport, BipopRestartRecord, CmaReport,
-    CmaStopReason, bipop_cmaes,
+    BIPOP_ADMISSION_SCHEMA_VERSION, BIPOP_RESTART_SCHEMA_VERSION, BipopAdmission, BipopLane,
+    BipopReport, BipopRestartRecord, CmaReport, CmaStopReason, admit_bipop, bipop_cmaes,
 };
 use fs_obs::ident::{IdentityBuilder, ReplayIdentity};
 use fs_obs::{Emitter, Event, EventKind, Severity};
-use fs_rand::StreamKey;
+use fs_rand::{StreamCheckpoint, StreamKey};
 use std::fmt::Write as _;
 use std::panic::catch_unwind;
 
@@ -46,7 +47,64 @@ const CMA_MEANINGFUL_IMPROVEMENT_RELATIVE: f64 = 1e-12;
 const CMA_STAGNATION_GENERATIONS: usize = 120;
 const OBJECTIVE_ORACLE_ROUNDOFF_SCALE: f64 = 64.0;
 const SEMANTIC_ORACLE_VERSION: &str =
-    "bipop-algebraic-objective-trace-driven-cma-ledger-accounting-v3";
+    "bipop-algebraic-objective-trace-driven-cma-ledger-accounting-v4";
+const STRONG_IDENTITY_DOMAIN: &str = "frankensim.fs-dfo.bipop-study.replay-identity.v1";
+const STRONG_EVENT_IDENTITY_DOMAIN: &str =
+    "frankensim.fs-dfo.bipop-study.event-content-identity.v1";
+const SOURCE_FILE_IDENTITY_DOMAIN: &str = "frankensim.fs-dfo.bipop-study.source-file-identity.v1";
+const SOURCE_SNAPSHOT_FILES: &[(&str, &[u8])] = &[
+    ("crates/fs-dfo/Cargo.toml", include_bytes!("../Cargo.toml")),
+    ("crates/fs-dfo/src/lib.rs", include_bytes!("../src/lib.rs")),
+    ("crates/fs-dfo/src/cma.rs", include_bytes!("../src/cma.rs")),
+    (
+        "crates/fs-la/src/lib.rs",
+        include_bytes!("../../fs-la/src/lib.rs"),
+    ),
+    (
+        "crates/fs-la/src/eigen.rs",
+        include_bytes!("../../fs-la/src/eigen.rs"),
+    ),
+    (
+        "crates/fs-rand/src/lib.rs",
+        include_bytes!("../../fs-rand/src/lib.rs"),
+    ),
+    (
+        "crates/fs-rand/src/philox.rs",
+        include_bytes!("../../fs-rand/src/philox.rs"),
+    ),
+    (
+        "crates/fs-math/src/lib.rs",
+        include_bytes!("../../fs-math/src/lib.rs"),
+    ),
+    (
+        "crates/fs-math/src/det.rs",
+        include_bytes!("../../fs-math/src/det.rs"),
+    ),
+    (
+        "crates/fs-math/src/dd.rs",
+        include_bytes!("../../fs-math/src/dd.rs"),
+    ),
+    (
+        "crates/fs-math/src/eft.rs",
+        include_bytes!("../../fs-math/src/eft.rs"),
+    ),
+    (
+        "crates/fs-math/src/payne.rs",
+        include_bytes!("../../fs-math/src/payne.rs"),
+    ),
+    (
+        "crates/fs-obs/src/ident.rs",
+        include_bytes!("../../fs-obs/src/ident.rs"),
+    ),
+    (
+        "crates/fs-obs/src/lib.rs",
+        include_bytes!("../../fs-obs/src/lib.rs"),
+    ),
+    (
+        "crates/fs-blake3/src/lib.rs",
+        include_bytes!("../../fs-blake3/src/lib.rs"),
+    ),
+];
 
 // These are the logical stream coordinates and restart rule used by
 // `fs_dfo::cma`; recording them makes the private implementation choice
@@ -65,6 +123,7 @@ struct Evaluation {
 #[derive(Debug, Clone)]
 struct StudyRun {
     input_seed: u64,
+    admission: BipopAdmission,
     fixture: ReplayIdentity,
     report: BipopReport,
     evaluations: Vec<Evaluation>,
@@ -73,6 +132,7 @@ struct StudyRun {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AdmissionError {
+    AdmissionReceiptMismatch { field: &'static str },
     FixtureIdentityMismatch { declared: u64, computed: u64 },
     PayloadIdentityMismatch { declared: u64, computed: u64 },
     ReferenceIdentityMismatch { expected: u64, found: u64 },
@@ -83,6 +143,12 @@ struct RestartSlice {
     start: usize,
     end: usize,
     lambda: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StreamWitness {
+    checkpoint: StreamCheckpoint,
+    exact_blocks: u128,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +178,22 @@ struct SeededCorruption {
 
 fn usize_u64(value: usize) -> u64 {
     u64::try_from(value).expect("fixture cardinality fits u64")
+}
+
+fn strong_identity_hash(identity: &ReplayIdentity) -> ContentHash {
+    hash_domain(STRONG_IDENTITY_DOMAIN, identity.canonical_bytes())
+}
+
+fn strong_event_identity_hash(event: &Event) -> ContentHash {
+    hash_domain(
+        STRONG_EVENT_IDENTITY_DOMAIN,
+        event.content_identity().canonical_bytes(),
+    )
+}
+
+fn source_file_identity_hash(path: &str, bytes: &[u8]) -> ContentHash {
+    let domain = format!("{SOURCE_FILE_IDENTITY_DOMAIN}:{path}");
+    hash_domain(&domain, bytes)
 }
 
 fn lane_name(lane: BipopLane) -> &'static str {
@@ -169,12 +251,154 @@ fn expected_base_lambda() -> usize {
     4 + (3.0 * fs_math::det::ln(DIMENSION as f64)).floor() as usize
 }
 
-fn fixture_identity(seed: u64) -> ReplayIdentity {
-    let mut builder = IdentityBuilder::new("fs-dfo-bipop-study-fixture-v3")
+fn admission_mismatch(left: &BipopAdmission, right: &BipopAdmission) -> Option<&'static str> {
+    if left.schema_version() != right.schema_version() {
+        return Some("schema-version");
+    }
+    if left.stream_semantics_version() != right.stream_semantics_version() {
+        return Some("stream-semantics-version");
+    }
+    match (left.jacobi_admission(), right.jacobi_admission()) {
+        (Some(left_jacobi), Some(right_jacobi)) => {
+            if left_jacobi.schema_version() != right_jacobi.schema_version() {
+                return Some("jacobi.schema-version");
+            }
+            if left_jacobi.dimension() != right_jacobi.dimension() {
+                return Some("jacobi.dimension");
+            }
+            if left_jacobi.matrix_entries() != right_jacobi.matrix_entries() {
+                return Some("jacobi.matrix-entries");
+            }
+            if left_jacobi.aggregate_work_elements() != right_jacobi.aggregate_work_elements() {
+                return Some("jacobi.aggregate-work-elements");
+            }
+            if left_jacobi.work_element_cap() != right_jacobi.work_element_cap() {
+                return Some("jacobi.work-element-cap");
+            }
+        }
+        (None, None) => {}
+        (Some(_), None) | (None, Some(_)) => return Some("jacobi.presence"),
+    }
+    if left.dimension() != right.dimension() {
+        return Some("dimension");
+    }
+    if left.total_budget() != right.total_budget() {
+        return Some("total-budget");
+    }
+    if left.base_lambda() != right.base_lambda() {
+        return Some("base-lambda");
+    }
+    if left.max_large_lambda() != right.max_large_lambda() {
+        return Some("max-large-lambda");
+    }
+    if left.max_local_budget() != right.max_local_budget() {
+        return Some("max-local-budget");
+    }
+    if left.max_restart_ordinal() != right.max_restart_ordinal() {
+        return Some("max-restart-ordinal");
+    }
+    if left.max_matrix_entries() != right.max_matrix_entries() {
+        return Some("max-matrix-entries");
+    }
+    if left.max_population_entries() != right.max_population_entries() {
+        return Some("max-population-entries");
+    }
+    if left.max_restart_stream_blocks() != right.max_restart_stream_blocks() {
+        return Some("max-restart-stream-blocks");
+    }
+    if left.max_cma_stream_blocks() != right.max_cma_stream_blocks() {
+        return Some("max-cma-stream-blocks");
+    }
+    (left != right).then_some("unclassified-private-field")
+}
+
+fn fixture_admission_kat_mismatch(admission: &BipopAdmission) -> Option<String> {
+    let checks = [
+        ("schema-version", u128::from(admission.schema_version()), 3),
+        (
+            "stream-semantics-version",
+            u128::from(admission.stream_semantics_version()),
+            1,
+        ),
+        ("dimension", admission.dimension() as u128, 4),
+        ("total-budget", admission.total_budget() as u128, 6_000),
+        ("base-lambda", admission.base_lambda() as u128, 8),
+        (
+            "max-large-lambda",
+            admission.max_large_lambda() as u128,
+            2_048,
+        ),
+        (
+            "max-local-budget",
+            admission.max_local_budget() as u128,
+            512_000,
+        ),
+        (
+            "max-restart-ordinal",
+            u128::from(admission.max_restart_ordinal()),
+            5_999,
+        ),
+        (
+            "max-matrix-entries",
+            admission.max_matrix_entries() as u128,
+            16,
+        ),
+        (
+            "max-population-entries",
+            admission.max_population_entries() as u128,
+            8_192,
+        ),
+        (
+            "max-restart-stream-blocks",
+            admission.max_restart_stream_blocks(),
+            47_992,
+        ),
+        (
+            "max-cma-stream-blocks",
+            admission.max_cma_stream_blocks(),
+            47_872,
+        ),
+    ];
+    for (field, found, expected) in checks {
+        if found != expected {
+            return Some(format!("{field}:{found}!={expected}"));
+        }
+    }
+    let Some(jacobi) = admission.jacobi_admission() else {
+        return Some("jacobi:missing".to_string());
+    };
+    let jacobi_checks = [
+        ("schema-version", u128::from(jacobi.schema_version()), 1),
+        ("dimension", jacobi.dimension() as u128, 4),
+        ("matrix-entries", jacobi.matrix_entries() as u128, 16),
+        (
+            "aggregate-work-elements",
+            jacobi.aggregate_work_elements() as u128,
+            76,
+        ),
+        (
+            "work-element-cap",
+            jacobi.work_element_cap() as u128,
+            67_108_864,
+        ),
+    ];
+    for (field, found, expected) in jacobi_checks {
+        if found != expected {
+            return Some(format!("jacobi.{field}:{found}!={expected}"));
+        }
+    }
+    None
+}
+
+fn fixture_identity(seed: u64, admission: &BipopAdmission) -> ReplayIdentity {
+    let mut builder = IdentityBuilder::new("fs-dfo-bipop-study-fixture-v4")
         .str("suite", SUITE)
         .str("case", CASE)
         .str("red-case", RED_CASE)
         .str("semantic-oracle-version", SEMANTIC_ORACLE_VERSION)
+        .str("strong-identity-domain", STRONG_IDENTITY_DOMAIN)
+        .str("strong-event-identity-domain", STRONG_EVENT_IDENTITY_DOMAIN)
+        .str("source-file-identity-domain", SOURCE_FILE_IDENTITY_DOMAIN)
         .str("algorithm", "fs_dfo::bipop_cmaes")
         .str("objective", "shifted-rastrigin")
         .str(
@@ -232,6 +456,107 @@ fn fixture_identity(seed: u64) -> ReplayIdentity {
             "bipop-restart-record-schema-version",
             u64::from(BIPOP_RESTART_SCHEMA_VERSION),
         )
+        .u64(
+            "bipop-admission-schema-version",
+            u64::from(BIPOP_ADMISSION_SCHEMA_VERSION),
+        )
+        .u64(
+            "admission-receipt-schema-version",
+            u64::from(admission.schema_version()),
+        )
+        .u64(
+            "admission-stream-semantics-version",
+            u64::from(admission.stream_semantics_version()),
+        )
+        .u64(
+            "supported-fs-rand-stream-semantics-version",
+            u64::from(fs_rand::STREAM_SEMANTICS_VERSION),
+        )
+        .u64(
+            "supported-fs-rand-stream-checkpoint-version",
+            u64::from(fs_rand::STREAM_CHECKPOINT_VERSION),
+        )
+        .str(
+            "fs-rand-stream-checkpoint-identity-domain",
+            fs_rand::STREAM_CHECKPOINT_IDENTITY_DOMAIN,
+        )
+        .u64("admission-dimension", usize_u64(admission.dimension()))
+        .u64(
+            "admission-total-budget",
+            usize_u64(admission.total_budget()),
+        )
+        .u64("admission-base-lambda", usize_u64(admission.base_lambda()))
+        .u64(
+            "admission-max-large-lambda",
+            usize_u64(admission.max_large_lambda()),
+        )
+        .u64(
+            "admission-max-local-budget",
+            usize_u64(admission.max_local_budget()),
+        )
+        .u64(
+            "admission-max-restart-ordinal",
+            admission.max_restart_ordinal(),
+        )
+        .u64(
+            "admission-max-matrix-entries",
+            usize_u64(admission.max_matrix_entries()),
+        )
+        .u64(
+            "admission-max-population-entries",
+            usize_u64(admission.max_population_entries()),
+        )
+        .u64(
+            "admission-max-restart-stream-blocks-low",
+            admission.max_restart_stream_blocks() as u64,
+        )
+        .u64(
+            "admission-max-restart-stream-blocks-high",
+            (admission.max_restart_stream_blocks() >> 64) as u64,
+        )
+        .u64(
+            "admission-max-cma-stream-blocks-low",
+            admission.max_cma_stream_blocks() as u64,
+        )
+        .u64(
+            "admission-max-cma-stream-blocks-high",
+            (admission.max_cma_stream_blocks() >> 64) as u64,
+        )
+        .flag(
+            "jacobi-admission-present",
+            admission.jacobi_admission().is_some(),
+        )
+        .u64(
+            "supported-jacobi-admission-schema-version",
+            u64::from(fs_la::eigen::JACOBI_EIGH_ADMISSION_SCHEMA_VERSION),
+        );
+    for &(path, bytes) in SOURCE_SNAPSHOT_FILES {
+        builder = builder.str("source-file-path", path).bytes(
+            "source-file-blake3",
+            source_file_identity_hash(path, bytes).as_bytes(),
+        );
+    }
+    if let Some(jacobi) = admission.jacobi_admission() {
+        builder = builder
+            .u64(
+                "jacobi-admission-schema-version",
+                u64::from(jacobi.schema_version()),
+            )
+            .u64("jacobi-admission-dimension", usize_u64(jacobi.dimension()))
+            .u64(
+                "jacobi-admission-matrix-entries",
+                usize_u64(jacobi.matrix_entries()),
+            )
+            .u64(
+                "jacobi-admission-aggregate-work-elements",
+                usize_u64(jacobi.aggregate_work_elements()),
+            )
+            .u64(
+                "jacobi-admission-work-element-cap",
+                usize_u64(jacobi.work_element_cap()),
+            );
+    }
+    builder = builder
         .str(
             "bipop-restart-record-fields",
             "schema-version;ordinal;lane;lambda;allocated-budget;seed;start;half-open-trace-interval;terminal-reason;complete-cma-report",
@@ -280,7 +605,22 @@ fn fixture_identity(seed: u64) -> ReplayIdentity {
             "safe-rust;strict-fs-math;keyed-fs-rand;canonical-fs-obs",
         )
         .str("execution-context", "single-threaded-direct-test-no-Cx")
-        .str("determinism-scope", "same-build-same-ISA")
+        .str(
+            "determinism-scope",
+            "same-source-snapshot-same-target-test-binary",
+        )
+        .str("compiler-fingerprint", "not-bound-no-claim")
+        .str("target-architecture", std::env::consts::ARCH)
+        .str("target-operating-system", std::env::consts::OS)
+        .u64("target-pointer-width-bits", u64::from(usize::BITS))
+        .str(
+            "target-endianness",
+            if cfg!(target_endian = "little") {
+                "little"
+            } else {
+                "big"
+            },
+        )
         .str("fs-dfo-version", fs_dfo::VERSION)
         .str("fs-la-version", fs_la::VERSION)
         .str("fs-math-version", fs_math::VERSION)
@@ -300,9 +640,19 @@ fn result_identity(
     report: &BipopReport,
     evaluations: &[Evaluation],
 ) -> ReplayIdentity {
-    let mut builder = IdentityBuilder::new("fs-dfo-bipop-study-result-v2")
+    let mut builder = IdentityBuilder::new("fs-dfo-bipop-study-result-v4")
         .child("fixture", fixture)
+        // IdentityBuilder::child retains the legacy 64-bit child root. Carry
+        // the complete child preimage as well so the domain-separated result
+        // BLAKE3 is transitively bound to every fixture byte rather than only
+        // to that compact compatibility projection.
+        .bytes("fixture-canonical-bytes", fixture.canonical_bytes())
+        .bytes(
+            "fixture-blake3",
+            strong_identity_hash(fixture).as_bytes(),
+        )
         .u64("total-evals", usize_u64(report.total_evals))
+        .u64("total-budget", usize_u64(report.total_budget()))
         .u64("schedule-length", usize_u64(report.schedule.len()))
         .u64("restart-record-count", usize_u64(report.records().len()))
         .u64("best-restart", usize_u64(report.best_restart()))
@@ -379,8 +729,8 @@ fn result_identity(
     builder.finish()
 }
 
-fn run_study(seed: u64) -> StudyRun {
-    let mut evaluations = Vec::with_capacity(TOTAL_BUDGET);
+fn execute_study_payload(seed: u64, total_budget: usize) -> (BipopReport, Vec<Evaluation>) {
+    let mut evaluations = Vec::with_capacity(total_budget);
     let report = {
         let mut objective = |x: &[f64]| {
             let value = shifted_rastrigin_callback(x);
@@ -390,12 +740,20 @@ fn run_study(seed: u64) -> StudyRun {
             });
             value
         };
-        bipop_cmaes(&mut objective, &X0, SIGMA0, TOTAL_BUDGET, F_TARGET, seed)
+        bipop_cmaes(&mut objective, &X0, SIGMA0, total_budget, F_TARGET, seed)
     };
-    let fixture = fixture_identity(seed);
+    (report, evaluations)
+}
+
+fn run_study(seed: u64) -> StudyRun {
+    let admission = admit_bipop(&X0, SIGMA0, TOTAL_BUDGET, Some(F_TARGET), seed)
+        .expect("the retained study fixture admits before callbacks");
+    let (report, evaluations) = execute_study_payload(seed, TOTAL_BUDGET);
+    let fixture = fixture_identity(seed, &admission);
     let result = result_identity(&fixture, &report, &evaluations);
     StudyRun {
         input_seed: seed,
+        admission,
         fixture,
         report,
         evaluations,
@@ -411,14 +769,17 @@ fn same_point_bits(left: &[f64], right: &[f64]) -> bool {
             .all(|(a, b)| a.to_bits() == b.to_bits())
 }
 
-fn expected_restart_starts(input_seed: u64, restart_count: usize) -> Vec<Vec<f64>> {
-    let mut stream = StreamKey {
+fn expected_restart_starts(
+    input_seed: u64,
+    restart_count: usize,
+) -> (Vec<Vec<f64>>, StreamCheckpoint) {
+    let key = StreamKey {
         seed: input_seed,
         kernel: CMA_STREAM_KERNEL,
         tile: CMA_RESTART_TILE,
-    }
-    .stream();
-    (0..restart_count)
+    };
+    let mut stream = key.stream();
+    let starts = (0..restart_count)
         .map(|restart| {
             if restart == 0 {
                 X0.to_vec()
@@ -428,7 +789,49 @@ fn expected_restart_starts(input_seed: u64, restart_count: usize) -> Vec<Vec<f64
                     .collect()
             }
         })
-        .collect()
+        .collect();
+    (starts, stream.checkpoint())
+}
+
+fn exact_cma_stream_witness(
+    checkpoint: StreamCheckpoint,
+    expected_key: StreamKey,
+    admitted_stream_semantics_version: u32,
+    dimension: usize,
+    lambda: usize,
+    generations: usize,
+) -> Result<StreamWitness, String> {
+    if checkpoint.checkpoint_version != fs_rand::STREAM_CHECKPOINT_VERSION {
+        return Err(format!(
+            "CMA-shadow-checkpoint-version-{}!=supported-{}",
+            checkpoint.checkpoint_version,
+            fs_rand::STREAM_CHECKPOINT_VERSION,
+        ));
+    }
+    if checkpoint.stream_semantics_version != admitted_stream_semantics_version {
+        return Err(format!(
+            "CMA-shadow-stream-semantics-{}!=admitted-{admitted_stream_semantics_version}",
+            checkpoint.stream_semantics_version
+        ));
+    }
+    if checkpoint.key != expected_key {
+        return Err("CMA-shadow-stream-key-mismatch".to_string());
+    }
+    let expected = 2_u128
+        .checked_mul(dimension as u128)
+        .and_then(|blocks| blocks.checked_mul(lambda as u128))
+        .and_then(|blocks| blocks.checked_mul(generations as u128))
+        .ok_or_else(|| "CMA-shadow-counter-formula-overflow".to_string())?;
+    if u128::from(checkpoint.index) != expected {
+        return Err(format!(
+            "CMA-shadow-counter-index-{}!=formula-{expected}",
+            checkpoint.index
+        ));
+    }
+    Ok(StreamWitness {
+        checkpoint,
+        exact_blocks: expected,
+    })
 }
 
 fn report_mismatch(prefix: &str, actual: &CmaReport, expected: &CmaReport) -> Option<String> {
@@ -499,7 +902,9 @@ fn reconstruct_cma_from_trace(
     lambda: usize,
     allocated_budget: usize,
     seed: u64,
-) -> Result<(CmaReport, CmaStopReason), String> {
+    jacobi_admission: fs_la::eigen::JacobiEighAdmission,
+    admitted_stream_semantics_version: u32,
+) -> Result<(CmaReport, CmaStopReason, StreamWitness), String> {
     let Some(initial) = evaluations.first() else {
         return Err("empty-callback-trace".to_string());
     };
@@ -517,6 +922,11 @@ fn reconstruct_cma_from_trace(
     }
 
     let n = start.len();
+    let recomputed_jacobi = fs_la::eigen::admit_jacobi_eigh(n)
+        .map_err(|error| format!("shadow-jacobi-admission-refused:{error}"))?;
+    if recomputed_jacobi != jacobi_admission {
+        return Err("shadow-jacobi-admission-receipt-mismatch".to_string());
+    }
     let lambda = lambda.max(4);
     let mu = lambda / 2;
     let raw: Vec<f64> = (0..mu)
@@ -549,12 +959,12 @@ fn reconstruct_cma_from_trace(
     let mut sigma_path = vec![0.0_f64; n];
     let mut eigenvectors = covariance.clone();
     let mut eigenvalue_roots = vec![1.0_f64; n];
-    let mut stream = StreamKey {
+    let stream_key = StreamKey {
         seed,
         kernel: CMA_STREAM_KERNEL,
         tile: CMA_SAMPLE_TILE,
-    }
-    .stream();
+    };
+    let mut stream = stream_key.stream();
 
     let mut x_best = mean.clone();
     let mut f_best = initial.value;
@@ -567,6 +977,14 @@ fn reconstruct_cma_from_trace(
                 evaluations.len()
             ));
         }
+        let stream_witness = exact_cma_stream_witness(
+            stream.checkpoint(),
+            stream_key,
+            admitted_stream_semantics_version,
+            n,
+            lambda,
+            generations,
+        )?;
         return Ok((
             CmaReport {
                 x_best,
@@ -577,6 +995,7 @@ fn reconstruct_cma_from_trace(
                 sigma,
             },
             CmaStopReason::TargetReached,
+            stream_witness,
         ));
     }
     let mut generations_since_improvement = 0usize;
@@ -655,6 +1074,14 @@ fn reconstruct_cma_from_trace(
                     evaluations.len()
                 ));
             }
+            let stream_witness = exact_cma_stream_witness(
+                stream.checkpoint(),
+                stream_key,
+                admitted_stream_semantics_version,
+                n,
+                lambda,
+                generations,
+            )?;
             return Ok((
                 CmaReport {
                     x_best,
@@ -665,6 +1092,7 @@ fn reconstruct_cma_from_trace(
                     sigma,
                 },
                 CmaStopReason::TargetReached,
+                stream_witness,
             ));
         }
 
@@ -729,6 +1157,14 @@ fn reconstruct_cma_from_trace(
                     evaluations.len()
                 ));
             }
+            let stream_witness = exact_cma_stream_witness(
+                stream.checkpoint(),
+                stream_key,
+                admitted_stream_semantics_version,
+                n,
+                lambda,
+                generations,
+            )?;
             return Ok((
                 CmaReport {
                     x_best,
@@ -739,6 +1175,7 @@ fn reconstruct_cma_from_trace(
                     sigma,
                 },
                 CmaStopReason::Stagnated,
+                stream_witness,
             ));
         }
 
@@ -791,6 +1228,14 @@ fn reconstruct_cma_from_trace(
             evaluations.len()
         ));
     }
+    let stream_witness = exact_cma_stream_witness(
+        stream.checkpoint(),
+        stream_key,
+        admitted_stream_semantics_version,
+        n,
+        lambda,
+        generations,
+    )?;
     Ok((
         CmaReport {
             x_best,
@@ -801,6 +1246,7 @@ fn reconstruct_cma_from_trace(
             sigma,
         },
         CmaStopReason::BudgetExhausted,
+        stream_witness,
     ))
 }
 
@@ -817,7 +1263,56 @@ fn reconstruct_restart_ledger(run: &StudyRun) -> Result<Vec<ReconstructedRestart
             records.len()
         ));
     }
-    let expected_starts = expected_restart_starts(run.input_seed, records.len());
+    let (expected_starts, restart_checkpoint) =
+        expected_restart_starts(run.input_seed, records.len());
+    let expected_restart_key = StreamKey {
+        seed: run.input_seed,
+        kernel: CMA_STREAM_KERNEL,
+        tile: CMA_RESTART_TILE,
+    };
+    if restart_checkpoint.checkpoint_version != fs_rand::STREAM_CHECKPOINT_VERSION {
+        return Err(format!(
+            "restart-checkpoint-version-{}!=supported-{}",
+            restart_checkpoint.checkpoint_version,
+            fs_rand::STREAM_CHECKPOINT_VERSION,
+        ));
+    }
+    if restart_checkpoint.stream_semantics_version != run.admission.stream_semantics_version() {
+        return Err(format!(
+            "restart-stream-semantics-{}!=admitted-{}",
+            restart_checkpoint.stream_semantics_version,
+            run.admission.stream_semantics_version()
+        ));
+    }
+    if restart_checkpoint.key != expected_restart_key {
+        return Err("restart-stream-key-mismatch".to_string());
+    }
+    let expected_restart_stream_blocks = 2_u128
+        .checked_mul(DIMENSION as u128)
+        .and_then(|blocks| blocks.checked_mul((records.len() - 1) as u128))
+        .ok_or_else(|| "restart-stream-counter-formula-overflow".to_string())?;
+    if u128::from(restart_checkpoint.index) != expected_restart_stream_blocks {
+        return Err(format!(
+            "restart-stream-index-{}!=formula-{expected_restart_stream_blocks}",
+            restart_checkpoint.index
+        ));
+    }
+    if expected_restart_stream_blocks > run.admission.max_restart_stream_blocks() {
+        return Err(format!(
+            "restart-stream-blocks-{expected_restart_stream_blocks}>admitted-{}",
+            run.admission.max_restart_stream_blocks()
+        ));
+    }
+    let jacobi_admission = run
+        .admission
+        .jacobi_admission()
+        .ok_or_else(|| "study-admission-omits-reachable-jacobi-authority".to_string())?;
+    if run.admission.dimension() != DIMENSION
+        || jacobi_admission.dimension() != DIMENSION
+        || jacobi_admission.matrix_entries() != DIMENSION * DIMENSION
+    {
+        return Err("study-admission-dimension-authority-mismatch".to_string());
+    }
     let mut boundaries = Vec::with_capacity(expected_starts.len());
     for (restart, expected) in expected_starts.iter().enumerate() {
         let matches: Vec<usize> = run
@@ -876,9 +1371,13 @@ fn reconstruct_restart_ledger(run: &StudyRun) -> Result<Vec<ReconstructedRestart
         };
         let expected_ordinal =
             u64::try_from(restart).map_err(|_| format!("restart[{restart}]-ordinal-overflow"))?;
+        let seed_delta = expected_ordinal
+            .checked_mul(RESTART_SEED_STRIDE)
+            .ok_or_else(|| format!("restart[{restart}]-seed-stride-multiplication-overflow"))?;
         let expected_seed = run
             .input_seed
-            .wrapping_add(expected_ordinal.wrapping_mul(RESTART_SEED_STRIDE));
+            .checked_add(seed_delta)
+            .ok_or_else(|| format!("restart[{restart}]-seed-range-overflow"))?;
         if record.schema_version() != BIPOP_RESTART_SCHEMA_VERSION {
             return Err(format!(
                 "restart[{restart}]-schema-version:{}!={BIPOP_RESTART_SCHEMA_VERSION}",
@@ -972,14 +1471,31 @@ fn reconstruct_restart_ledger(run: &StudyRun) -> Result<Vec<ReconstructedRestart
             end,
             lambda: expected_lambda,
         };
-        let (expected_report, expected_stop_reason) = reconstruct_cma_from_trace(
-            &run.evaluations[start..end],
-            &expected_starts[restart],
-            expected_lambda,
-            admitted_budget,
-            expected_seed,
-        )
-        .map_err(|mismatch| format!("restart[{restart}]-{mismatch}"))?;
+        let (expected_report, expected_stop_reason, cma_stream_witness) =
+            reconstruct_cma_from_trace(
+                &run.evaluations[start..end],
+                &expected_starts[restart],
+                expected_lambda,
+                admitted_budget,
+                expected_seed,
+                jacobi_admission,
+                run.admission.stream_semantics_version(),
+            )
+            .map_err(|mismatch| format!("restart[{restart}]-{mismatch}"))?;
+        if cma_stream_witness.checkpoint.stream_semantics_version
+            != run.admission.stream_semantics_version()
+        {
+            return Err(format!(
+                "restart[{restart}]-CMA-stream-semantics-witness-mismatch"
+            ));
+        }
+        if cma_stream_witness.exact_blocks > run.admission.max_cma_stream_blocks() {
+            return Err(format!(
+                "restart[{restart}]-CMA-stream-blocks-{}>admitted-{}",
+                cma_stream_witness.exact_blocks,
+                run.admission.max_cma_stream_blocks()
+            ));
+        }
         if let Some(mismatch) = report_mismatch(
             &format!("restart[{restart}].report"),
             record.report(),
@@ -1038,6 +1554,30 @@ fn reconstruct_restart_ledger(run: &StudyRun) -> Result<Vec<ReconstructedRestart
 
 #[allow(clippy::too_many_lines)] // Complete trace and public-report accounting is the oracle.
 fn accounting_mismatch(run: &StudyRun) -> Option<String> {
+    let expected_admission =
+        match admit_bipop(&X0, SIGMA0, TOTAL_BUDGET, Some(F_TARGET), run.input_seed) {
+            Ok(admission) => admission,
+            Err(error) => return Some(format!("fixture-admission-refused:{error}")),
+        };
+    if let Some(field) = admission_mismatch(&run.admission, &expected_admission) {
+        return Some(format!("admission-receipt.{field}"));
+    }
+    if let Some(mismatch) = fixture_admission_kat_mismatch(&run.admission) {
+        return Some(format!("admission-KAT.{mismatch}"));
+    }
+    if run.report.total_budget() != run.admission.total_budget() {
+        return Some(format!(
+            "report-total-budget:{}!=admission-budget:{}",
+            run.report.total_budget(),
+            run.admission.total_budget()
+        ));
+    }
+    if run.report.total_budget() != TOTAL_BUDGET {
+        return Some(format!(
+            "retained-total-budget:{}!=fixture-budget:{TOTAL_BUDGET}",
+            run.report.total_budget()
+        ));
+    }
     if run.report.total_evals != run.evaluations.len() {
         return Some(format!(
             "reported-total-evals:{}!=closure-count:{}",
@@ -1286,6 +1826,9 @@ fn first_public_mismatch(left: &StudyRun, right: &StudyRun) -> Option<String> {
             left.input_seed, right.input_seed
         ));
     }
+    if let Some(field) = admission_mismatch(&left.admission, &right.admission) {
+        return Some(format!("admission-receipt.{field}"));
+    }
     if left.fixture.canonical_bytes() != right.fixture.canonical_bytes() {
         return Some("fixture-identity".to_string());
     }
@@ -1293,6 +1836,13 @@ fn first_public_mismatch(left: &StudyRun, right: &StudyRun) -> Option<String> {
         return Some(format!(
             "total-evals:{}!={}",
             left.report.total_evals, right.report.total_evals
+        ));
+    }
+    if left.report.total_budget() != right.report.total_budget() {
+        return Some(format!(
+            "total-budget:{}!={}",
+            left.report.total_budget(),
+            right.report.total_budget()
         ));
     }
     if left.report.schedule.len() != right.report.schedule.len() {
@@ -1423,7 +1973,12 @@ fn first_public_mismatch(left: &StudyRun, right: &StudyRun) -> Option<String> {
 }
 
 fn validate_payload(run: &StudyRun) -> Result<(), AdmissionError> {
-    let expected_fixture = fixture_identity(run.input_seed);
+    let expected_admission = admit_bipop(&X0, SIGMA0, TOTAL_BUDGET, Some(F_TARGET), run.input_seed)
+        .expect("the fixed study input domain is admitted");
+    if let Some(field) = admission_mismatch(&run.admission, &expected_admission) {
+        return Err(AdmissionError::AdmissionReceiptMismatch { field });
+    }
+    let expected_fixture = fixture_identity(run.input_seed, &expected_admission);
     if run.fixture.canonical_bytes() != expected_fixture.canonical_bytes() {
         return Err(AdmissionError::FixtureIdentityMismatch {
             declared: run.fixture.root(),
@@ -1488,7 +2043,37 @@ fn schedule_json(schedule: &[usize]) -> String {
     json
 }
 
-fn emit_green_receipt(run: &StudyRun) {
+fn realized_stream_block_witnesses(run: &StudyRun) -> (u128, u128) {
+    let restart_blocks = 2_u128
+        .checked_mul(DIMENSION as u128)
+        .and_then(|blocks| blocks.checked_mul(run.report.records().len().saturating_sub(1) as u128))
+        .expect("fixed study restart witness fits u128");
+    let max_cma_blocks = run
+        .report
+        .records()
+        .iter()
+        .map(|record| {
+            2_u128
+                .checked_mul(DIMENSION as u128)
+                .and_then(|blocks| blocks.checked_mul(record.lambda() as u128))
+                .and_then(|blocks| blocks.checked_mul(record.report().generations as u128))
+                .expect("fixed study CMA witness fits u128")
+        })
+        .max()
+        .unwrap_or(0);
+    (restart_blocks, max_cma_blocks)
+}
+
+#[allow(clippy::too_many_lines)] // The emitted object is one field-complete receipt schema.
+fn emit_green_receipt(run: &StudyRun) -> Event {
+    let admission = &run.admission;
+    let jacobi = admission
+        .jacobi_admission()
+        .expect("the retained study reaches the admitted Jacobi dependency");
+    let (_, restart_checkpoint) =
+        expected_restart_starts(run.input_seed, run.report.records().len());
+    let (realized_restart_stream_blocks, max_realized_cma_stream_blocks) =
+        realized_stream_block_witnesses(run);
     let mut emitter = Emitter::new(SUITE, CASE);
     let event = emitter.emit(
         Severity::Info,
@@ -1496,50 +2081,134 @@ fn emit_green_receipt(run: &StudyRun) {
             name: "bipop-cma-full-study-replay-receipt".to_string(),
             json: format!(
                 concat!(
-                    "{{\"fixture_identity\":\"{}\",\"result_identity\":\"{}\",",
+                    "{{\"fixture_identity\":\"{fixture}\",",
+                    "\"result_identity\":\"{result}\",",
+                    "\"fixture_blake3\":\"{fixture_blake3}\",",
+                    "\"result_blake3\":\"{result_blake3}\",",
+                    "\"strong_identity_domain\":\"{strong_identity_domain}\",",
+                    "\"strong_event_identity_domain\":\"{strong_event_identity_domain}\",",
+                    "\"source_file_identity_domain\":\"{source_file_identity_domain}\",",
+                    "\"source_file_count\":{source_file_count},",
                     "\"algorithm\":\"fs_dfo::bipop_cmaes\",\"objective\":\"shifted-rastrigin\",",
-                    "\"semantic_oracle\":\"{}\",\"units\":\"dimensionless\",",
-                    "\"input_seed\":{},\"corruption_seed\":{},\"dimension\":{},",
-                    "\"total_budget\":{},\"total_evals\":{},\"schedule\":{},",
-                    "\"restart_schema_version\":{},\"record_count\":{},",
-                    "\"best_restart\":{},\"ledger\":\"complete-ordered-public-records\",",
-                    "\"best\":{{\"x_len\":{},\"f_bits\":\"0x{:016x}\",",
-                    "\"evals\":{},\"generations\":{},\"converged\":{},",
-                    "\"sigma_bits\":\"0x{:016x}\"}},\"trace_len\":{},",
-                    "\"stream_semantics_version\":{},",
-                    "\"determinism_scope\":\"same-build-same-ISA\",\"versions\":{{",
-                    "\"fs_dfo\":\"{}\",\"fs_la\":\"{}\",\"fs_math\":\"{}\",",
-                    "\"fs_rand\":\"{}\",\"fs_obs\":\"{}\"}},",
+                    "\"semantic_oracle\":\"{semantic_oracle}\",\"units\":\"dimensionless\",",
+                    "\"input_seed\":{input_seed},\"corruption_seed\":{corruption_seed},",
+                    "\"dimension\":{dimension},\"total_budget\":{total_budget},",
+                    "\"total_evals\":{total_evals},\"schedule\":{schedule},",
+                    "\"admission\":{{\"schema_version\":{admission_schema},",
+                    "\"supported_schema_version\":{supported_admission_schema},",
+                    "\"stream_semantics_version\":{stream_semantics},",
+                    "\"supported_stream_semantics_version\":{supported_stream_semantics},",
+                    "\"stream_position_domain\":\"{stream_position_domain}\",",
+                    "\"checkpoint_version\":{checkpoint_version},",
+                    "\"supported_checkpoint_version\":{supported_checkpoint_version},",
+                    "\"checkpoint_identity_domain\":\"{checkpoint_identity_domain}\",",
+                    "\"dimension\":{admission_dimension},",
+                    "\"total_budget\":{admission_budget},",
+                    "\"base_lambda\":{base_lambda},",
+                    "\"max_large_lambda\":{max_large_lambda},",
+                    "\"max_local_budget\":{max_local_budget},",
+                    "\"max_restart_ordinal\":{max_restart_ordinal},",
+                    "\"max_matrix_entries\":{max_matrix_entries},",
+                    "\"max_population_entries\":{max_population_entries},",
+                    "\"max_restart_stream_blocks\":\"{max_restart_stream_blocks}\",",
+                    "\"max_cma_stream_blocks\":\"{max_cma_stream_blocks}\",",
+                    "\"realized_restart_stream_blocks\":\"{realized_restart_stream_blocks}\",",
+                    "\"max_realized_cma_stream_blocks\":\"{max_realized_cma_stream_blocks}\",",
+                    "\"jacobi_present\":{jacobi_present},\"jacobi\":{{",
+                    "\"schema_version\":{jacobi_schema},",
+                    "\"supported_schema_version\":{supported_jacobi_schema},",
+                    "\"dimension\":{jacobi_dimension},",
+                    "\"matrix_entries\":{jacobi_matrix_entries},",
+                    "\"aggregate_work_elements\":{jacobi_work},",
+                    "\"work_element_cap\":{jacobi_cap}}}}},",
+                    "\"restart_schema_version\":{restart_schema},",
+                    "\"record_count\":{record_count},\"best_restart\":{best_restart},",
+                    "\"ledger\":\"complete-ordered-public-records\",",
+                    "\"best\":{{\"x_len\":{best_x_len},",
+                    "\"f_bits\":\"0x{best_f_bits:016x}\",",
+                    "\"evals\":{best_evals},\"generations\":{best_generations},",
+                    "\"converged\":{best_converged},",
+                    "\"sigma_bits\":\"0x{best_sigma_bits:016x}\"}},",
+                    "\"trace_len\":{trace_len},",
+                    "\"target\":{{\"architecture\":\"{target_architecture}\",",
+                    "\"operating_system\":\"{target_operating_system}\",",
+                    "\"pointer_width_bits\":{target_pointer_width_bits},",
+                    "\"endianness\":\"{target_endianness}\"}},",
+                    "\"determinism_scope\":\"same-source-snapshot-same-target-test-binary\",",
+                    "\"compiler_fingerprint\":\"not-bound-no-claim\",\"versions\":{{",
+                    "\"fs_dfo\":\"{fs_dfo_version}\",\"fs_la\":\"{fs_la_version}\",",
+                    "\"fs_math\":\"{fs_math_version}\",",
+                    "\"fs_rand\":\"{fs_rand_version}\",\"fs_obs\":\"{fs_obs_version}\"}},",
                     "\"no_claims\":[\"optimizer-quality\",\"all-objectives\",",
                     "\"all-dimensions\",\"all-budgets\",\"all-seeds\",",
                     "\"cross-ISA-equality\",\"cancellation\",\"checkpointing\",",
-                    "\"performance\"]}}"
+                    "\"compiler-build-identity\",\"signed-authentication\",\"performance\"]}}"
                 ),
-                run.fixture.hex(),
-                run.result.hex(),
-                SEMANTIC_ORACLE_VERSION,
-                run.input_seed,
-                CORRUPTION_SEED,
-                DIMENSION,
-                TOTAL_BUDGET,
-                run.report.total_evals,
-                schedule_json(&run.report.schedule),
-                BIPOP_RESTART_SCHEMA_VERSION,
-                run.report.records().len(),
-                run.report.best_restart(),
-                run.report.best.x_best.len(),
-                run.report.best.f_best.to_bits(),
-                run.report.best.evals,
-                run.report.best.generations,
-                run.report.best.converged,
-                run.report.best.sigma.to_bits(),
-                run.evaluations.len(),
-                fs_rand::STREAM_SEMANTICS_VERSION,
-                fs_dfo::VERSION,
-                fs_la::VERSION,
-                fs_math::VERSION,
-                fs_rand::VERSION,
-                fs_obs::VERSION,
+                fixture = run.fixture.hex(),
+                result = run.result.hex(),
+                fixture_blake3 = strong_identity_hash(&run.fixture),
+                result_blake3 = strong_identity_hash(&run.result),
+                strong_identity_domain = STRONG_IDENTITY_DOMAIN,
+                strong_event_identity_domain = STRONG_EVENT_IDENTITY_DOMAIN,
+                source_file_identity_domain = SOURCE_FILE_IDENTITY_DOMAIN,
+                source_file_count = SOURCE_SNAPSHOT_FILES.len(),
+                semantic_oracle = SEMANTIC_ORACLE_VERSION,
+                input_seed = run.input_seed,
+                corruption_seed = CORRUPTION_SEED,
+                dimension = DIMENSION,
+                total_budget = run.report.total_budget(),
+                total_evals = run.report.total_evals,
+                schedule = schedule_json(&run.report.schedule),
+                admission_schema = admission.schema_version(),
+                supported_admission_schema = BIPOP_ADMISSION_SCHEMA_VERSION,
+                stream_semantics = admission.stream_semantics_version(),
+                supported_stream_semantics = fs_rand::STREAM_SEMANTICS_VERSION,
+                stream_position_domain = fs_rand::STREAM_POSITION_IDENTITY_DOMAIN,
+                checkpoint_version = restart_checkpoint.checkpoint_version,
+                supported_checkpoint_version = fs_rand::STREAM_CHECKPOINT_VERSION,
+                checkpoint_identity_domain = fs_rand::STREAM_CHECKPOINT_IDENTITY_DOMAIN,
+                admission_dimension = admission.dimension(),
+                admission_budget = admission.total_budget(),
+                base_lambda = admission.base_lambda(),
+                max_large_lambda = admission.max_large_lambda(),
+                max_local_budget = admission.max_local_budget(),
+                max_restart_ordinal = admission.max_restart_ordinal(),
+                max_matrix_entries = admission.max_matrix_entries(),
+                max_population_entries = admission.max_population_entries(),
+                max_restart_stream_blocks = admission.max_restart_stream_blocks(),
+                max_cma_stream_blocks = admission.max_cma_stream_blocks(),
+                realized_restart_stream_blocks = realized_restart_stream_blocks,
+                max_realized_cma_stream_blocks = max_realized_cma_stream_blocks,
+                jacobi_present = admission.jacobi_admission().is_some(),
+                jacobi_schema = jacobi.schema_version(),
+                supported_jacobi_schema = fs_la::eigen::JACOBI_EIGH_ADMISSION_SCHEMA_VERSION,
+                jacobi_dimension = jacobi.dimension(),
+                jacobi_matrix_entries = jacobi.matrix_entries(),
+                jacobi_work = jacobi.aggregate_work_elements(),
+                jacobi_cap = jacobi.work_element_cap(),
+                restart_schema = BIPOP_RESTART_SCHEMA_VERSION,
+                record_count = run.report.records().len(),
+                best_restart = run.report.best_restart(),
+                best_x_len = run.report.best.x_best.len(),
+                best_f_bits = run.report.best.f_best.to_bits(),
+                best_evals = run.report.best.evals,
+                best_generations = run.report.best.generations,
+                best_converged = run.report.best.converged,
+                best_sigma_bits = run.report.best.sigma.to_bits(),
+                trace_len = run.evaluations.len(),
+                target_architecture = std::env::consts::ARCH,
+                target_operating_system = std::env::consts::OS,
+                target_pointer_width_bits = usize::BITS,
+                target_endianness = if cfg!(target_endian = "little") {
+                    "little"
+                } else {
+                    "big"
+                },
+                fs_dfo_version = fs_dfo::VERSION,
+                fs_la_version = fs_la::VERSION,
+                fs_math_version = fs_math::VERSION,
+                fs_rand_version = fs_rand::VERSION,
+                fs_obs_version = fs_obs::VERSION,
             ),
         },
         None,
@@ -1551,16 +2220,116 @@ fn emit_green_receipt(run: &StudyRun) {
         .admit_content_identity(&receipt)
         .expect("fresh retained event identity must admit exactly");
     println!("{line}");
+    event
+}
+
+fn assert_green_receipt_json_mutation_is_detected(canonical: &Event) {
+    let retained = canonical.content_identity_receipt();
+    let mutations = [
+        (
+            "\"admission\":{\"schema_version\":3,",
+            "\"admission\":{\"schema_version\":4,",
+        ),
+        (
+            "\"stream_semantics_version\":1,",
+            "\"stream_semantics_version\":2,",
+        ),
+        ("\"checkpoint_version\":1,", "\"checkpoint_version\":2,"),
+        (
+            "\"checkpoint_identity_domain\":\"org.frankensim.fs-rand.stream-checkpoint.v1\"",
+            "\"checkpoint_identity_domain\":\"org.frankensim.fs-rand.stream-checkpoint.v2\"",
+        ),
+        (
+            "\"dimension\":4,\"total_budget\":6000,\"base_lambda\":8,",
+            "\"dimension\":4,\"total_budget\":6001,\"base_lambda\":8,",
+        ),
+        ("\"jacobi_present\":true", "\"jacobi_present\":false"),
+        (
+            "\"jacobi\":{\"schema_version\":1,",
+            "\"jacobi\":{\"schema_version\":2,",
+        ),
+        (
+            "\"max_cma_stream_blocks\":\"47872\"",
+            "\"max_cma_stream_blocks\":\"47873\"",
+        ),
+        (
+            "\"realized_restart_stream_blocks\":\"",
+            "\"realized_restart_stream_blocks\":\"0",
+        ),
+        (
+            "\"max_realized_cma_stream_blocks\":\"",
+            "\"max_realized_cma_stream_blocks\":\"0",
+        ),
+        (
+            "\"strong_identity_domain\":\"frankensim.fs-dfo.bipop-study.replay-identity.v1\"",
+            "\"strong_identity_domain\":\"frankensim.fs-dfo.bipop-study.replay-identity.v2\"",
+        ),
+        (
+            "\"strong_event_identity_domain\":\"frankensim.fs-dfo.bipop-study.event-content-identity.v1\"",
+            "\"strong_event_identity_domain\":\"frankensim.fs-dfo.bipop-study.event-content-identity.v2\"",
+        ),
+        (
+            "\"source_file_identity_domain\":\"frankensim.fs-dfo.bipop-study.source-file-identity.v1\"",
+            "\"source_file_identity_domain\":\"frankensim.fs-dfo.bipop-study.source-file-identity.v2\"",
+        ),
+        (
+            "\"target\":{\"architecture\":\"",
+            "\"target\":{\"architecture\":\"mutated-",
+        ),
+    ];
+    for (needle, replacement) in mutations {
+        let mut mutant = canonical.clone();
+        let EventKind::Custom { json, .. } = &mut mutant.kind else {
+            panic!("green BIPOP receipt must be a Custom event");
+        };
+        assert!(
+            json.contains(needle),
+            "receipt is missing mutation field {needle}"
+        );
+        *json = json.replacen(needle, replacement, 1);
+        let line = mutant.to_jsonl();
+        fs_obs::validate_line(&line)
+            .expect("mutated receipt remains structurally valid fs-obs wire JSON");
+        mutant
+            .admit_content_identity(&retained)
+            .expect_err("an admission-envelope mutation must stale the retained event identity");
+    }
 }
 
 fn green_verdict_detail(run: &StudyRun) -> String {
+    let jacobi = run
+        .admission
+        .jacobi_admission()
+        .expect("the retained study reaches the Jacobi dependency");
+    let (realized_restart_blocks, max_realized_cma_blocks) = realized_stream_block_witnesses(run);
     format!(
-        "fixture={}; result={}; total_evals={}; records={}; best_restart={}; trace=bit-exact; ordered_ledger=fully-bound; legacy_projections=exact; determinism=same-build-same-ISA; semantic_oracle={SEMANTIC_ORACLE_VERSION}",
+        "fixture={}; result={}; fixture_blake3={}; result_blake3={}; admission_schema={}; stream_semantics={}; checkpoint_version={}; jacobi_present={}; jacobi_schema={}; restart_blocks={}/{}; max_CMA_blocks={}/{}; total_budget={}; total_evals={}; records={}; best_restart={}; target={}-{}-{}-bit-{}-endian; source_files={}; trace=bit-exact; ordered_ledger=fully-bound; legacy_projections=exact; determinism=same-source-snapshot-same-target-test-binary; compiler-fingerprint=no-claim; semantic_oracle={SEMANTIC_ORACLE_VERSION}",
         run.fixture.hex(),
         run.result.hex(),
+        strong_identity_hash(&run.fixture),
+        strong_identity_hash(&run.result),
+        run.admission.schema_version(),
+        run.admission.stream_semantics_version(),
+        fs_rand::STREAM_CHECKPOINT_VERSION,
+        run.admission.jacobi_admission().is_some(),
+        jacobi.schema_version(),
+        realized_restart_blocks,
+        run.admission.max_restart_stream_blocks(),
+        max_realized_cma_blocks,
+        run.admission.max_cma_stream_blocks(),
+        run.report.total_budget(),
         run.report.total_evals,
         run.report.records().len(),
-        run.report.best_restart()
+        run.report.best_restart(),
+        std::env::consts::ARCH,
+        std::env::consts::OS,
+        usize::BITS,
+        if cfg!(target_endian = "little") {
+            "little"
+        } else {
+            "big"
+        },
+        SOURCE_SNAPSHOT_FILES.len(),
     )
 }
 
@@ -1823,10 +2592,11 @@ fn seeded_corruption(canonical: &StudyRun, seed: u64) -> SeededCorruption {
 
 fn corruption_detail(canonical: &StudyRun, corruption: &SeededCorruption) -> String {
     format!(
-        "input_seed=0x{:016x}; corruption_seed=0x{:016x}; fixture={}; coordinate={}; mantissa_bit={}; before=0x{:016x}; after=0x{:016x}; stale_gate={:?}; reference_gate={:?}; first_mismatch={}; canonical={}; corrupted={}",
+        "input_seed=0x{:016x}; corruption_seed=0x{:016x}; fixture={}; fixture_blake3={}; coordinate={}; mantissa_bit={}; before=0x{:016x}; after=0x{:016x}; stale_gate={:?}; reference_gate={:?}; first_mismatch={}; canonical={}; canonical_blake3={}; corrupted={}; corrupted_blake3={}",
         canonical.input_seed,
         corruption.mutation.seed,
         canonical.fixture.hex(),
+        strong_identity_hash(&canonical.fixture),
         corruption.mutation.coordinate,
         corruption.mutation.mantissa_bit,
         corruption.mutation.before,
@@ -1835,11 +2605,13 @@ fn corruption_detail(canonical: &StudyRun, corruption: &SeededCorruption) -> Str
         corruption.reference_error,
         corruption.mismatch,
         canonical.result.hex(),
-        corruption.run.result.hex()
+        strong_identity_hash(&canonical.result),
+        corruption.run.result.hex(),
+        strong_identity_hash(&corruption.run.result),
     )
 }
 
-fn exercise_disclosed_corruption(canonical: &StudyRun, replay: &StudyRun) {
+fn exercise_disclosed_corruption(canonical: &StudyRun, replay: &StudyRun) -> ContentHash {
     let first_corruption = seeded_corruption(canonical, CORRUPTION_SEED);
     let replay_corruption = seeded_corruption(replay, CORRUPTION_SEED);
     assert_eq!(
@@ -1961,9 +2733,25 @@ fn exercise_disclosed_corruption(canonical: &StudyRun, replay: &StudyRun) {
         .expect("semantic merge-gate panic carries text");
     assert!(semantic_message.contains(RED_CASE));
     assert!(semantic_message.contains("semantic mismatch"));
+
+    strong_event_identity_hash(&first_event)
 }
 
 #[test]
+fn admission_comparison_checks_outer_fields_when_jacobi_is_unreachable() {
+    let one = admit_bipop(&[0.0], 0.5, 1, None, INPUT_SEED).expect("budget one admits");
+    let two = admit_bipop(&[0.0], 0.5, 2, None, INPUT_SEED).expect("budget two admits");
+    assert_eq!(one.jacobi_admission(), None);
+    assert_eq!(two.jacobi_admission(), None);
+    assert_eq!(
+        admission_mismatch(&one, &two),
+        Some("total-budget"),
+        "absence of a nested capability cannot skip outer receipt comparison"
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One test exercises the complete green/red merge contract.
 fn bipop_full_study_replays_and_seeded_failure_is_refused() {
     let first = run_study(INPUT_SEED);
     let replay = run_study(INPUT_SEED);
@@ -1989,7 +2777,8 @@ fn bipop_full_study_replays_and_seeded_failure_is_refused() {
         "the retained complete result frame must replay byte-for-byte"
     );
 
-    emit_green_receipt(&first);
+    let green_receipt = emit_green_receipt(&first);
+    assert_green_receipt_json_mutation_is_detected(&green_receipt);
     let green_verdict = emit_green_verdict(&replay);
     assert_mergeable(&replay, &first.result, &green_verdict);
     assert_verdict_envelope_mutations_refused(&replay, &first.result, &green_verdict);
@@ -2012,6 +2801,95 @@ fn bipop_full_study_replays_and_seeded_failure_is_refused() {
         .expect("fixture total-evaluation mutation fits usize");
     assert_resealed_semantic_refusal(total_mutant, &green_verdict, "reported-total-evals");
 
+    let mut admission_budget_mutant = first.clone();
+    admission_budget_mutant.admission =
+        admit_bipop(&X0, SIGMA0, TOTAL_BUDGET + 1, Some(F_TARGET), INPUT_SEED)
+            .expect("adjacent-budget admission remains structurally valid");
+    assert_eq!(
+        validate_payload(&admission_budget_mutant),
+        Err(AdmissionError::AdmissionReceiptMismatch {
+            field: "total-budget"
+        })
+    );
+    admission_budget_mutant.fixture = fixture_identity(
+        admission_budget_mutant.input_seed,
+        &admission_budget_mutant.admission,
+    );
+    admission_budget_mutant.result = result_identity(
+        &admission_budget_mutant.fixture,
+        &admission_budget_mutant.report,
+        &admission_budget_mutant.evaluations,
+    );
+    assert_eq!(
+        validate_payload(&admission_budget_mutant),
+        Err(AdmissionError::AdmissionReceiptMismatch {
+            field: "total-budget"
+        }),
+        "self-consistently resealing the wrong public receipt cannot bypass input admission"
+    );
+
+    let mut jacobi_receipt_mutant = first.clone();
+    jacobi_receipt_mutant.admission = admit_bipop(
+        &[0.0; DIMENSION + 1],
+        SIGMA0,
+        TOTAL_BUDGET,
+        Some(F_TARGET),
+        INPUT_SEED,
+    )
+    .expect("adjacent-dimension admission remains structurally valid");
+    assert_eq!(
+        validate_payload(&jacobi_receipt_mutant),
+        Err(AdmissionError::AdmissionReceiptMismatch {
+            field: "jacobi.dimension"
+        })
+    );
+
+    let mut jacobi_presence_mutant = first.clone();
+    jacobi_presence_mutant.admission = admit_bipop(
+        &X0,
+        SIGMA0,
+        expected_base_lambda(),
+        Some(F_TARGET),
+        INPUT_SEED,
+    )
+    .expect("callback-only BIPOP fixture admits without Jacobi authority");
+    assert_eq!(jacobi_presence_mutant.admission.jacobi_admission(), None);
+    assert_eq!(
+        validate_payload(&jacobi_presence_mutant),
+        Err(AdmissionError::AdmissionReceiptMismatch {
+            field: "jacobi.presence"
+        })
+    );
+    let canonical_fixture_hash = strong_identity_hash(&first.fixture);
+    jacobi_presence_mutant.fixture = fixture_identity(
+        jacobi_presence_mutant.input_seed,
+        &jacobi_presence_mutant.admission,
+    );
+    jacobi_presence_mutant.result = result_identity(
+        &jacobi_presence_mutant.fixture,
+        &jacobi_presence_mutant.report,
+        &jacobi_presence_mutant.evaluations,
+    );
+    assert_ne!(
+        strong_identity_hash(&jacobi_presence_mutant.fixture),
+        canonical_fixture_hash,
+        "Jacobi authority presence is semantic fixture provenance"
+    );
+    assert_eq!(
+        validate_payload(&jacobi_presence_mutant),
+        Err(AdmissionError::AdmissionReceiptMismatch {
+            field: "jacobi.presence"
+        }),
+        "resealing the absent authority cannot bypass fixed-input admission"
+    );
+
+    let (alternate_budget_report, alternate_budget_evaluations) =
+        execute_study_payload(INPUT_SEED, TOTAL_BUDGET + 1);
+    let mut report_budget_mutant = first.clone();
+    report_budget_mutant.report = alternate_budget_report;
+    report_budget_mutant.evaluations = alternate_budget_evaluations;
+    assert_resealed_semantic_refusal(report_budget_mutant, &green_verdict, "report-total-budget");
+
     // Public records are intentionally immutable, so mutate the complete
     // ledger by substituting a separately generated report from a different
     // causal seed while retaining the canonical fixture and callback trace.
@@ -2029,10 +2907,23 @@ fn bipop_full_study_replays_and_seeded_failure_is_refused() {
         validate_payload(&causal_seed_mutant),
         Err(AdmissionError::FixtureIdentityMismatch { declared, computed })
             if declared == first.fixture.root()
-                && computed == fixture_identity(causal_seed_mutant.input_seed).root()
+                && computed == fixture_identity(
+                    causal_seed_mutant.input_seed,
+                    &causal_seed_mutant.admission,
+                )
+                .root()
     ));
-    causal_seed_mutant.fixture = fixture_identity(causal_seed_mutant.input_seed);
+    causal_seed_mutant.fixture =
+        fixture_identity(causal_seed_mutant.input_seed, &causal_seed_mutant.admission);
     assert_resealed_semantic_refusal(causal_seed_mutant, &green_verdict, "restart[");
 
-    exercise_disclosed_corruption(&first, &replay);
+    let red_event_blake3 = exercise_disclosed_corruption(&first, &replay);
+    println!(
+        "BIPOP_STUDY_FREEZE fixture_blake3={} result_blake3={} green_receipt_event_blake3={} green_verdict_event_blake3={} red_event_blake3={}",
+        strong_identity_hash(&first.fixture),
+        strong_identity_hash(&first.result),
+        strong_event_identity_hash(&green_receipt),
+        strong_event_identity_hash(&green_verdict),
+        red_event_blake3,
+    );
 }

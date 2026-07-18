@@ -12,6 +12,9 @@ Derivative-free optimization engines (plan §9.3). Layer: **L4 ASCENT**.
 Deps: fs-rand (keyed sampling), fs-la (eigendecomposition), fs-math, fs-obs
 (canonical conformance evidence), and fs-robust (canonical empirical risk
 algebra).
+The G5 evidence target additionally uses the development-only fs-blake3 path
+for domain-separated 256-bit replay sentinels; it is not a production runtime
+dependency of fs-dfo.
 Engines are IR-agnostic (closure objectives) BY DESIGN — routing from
 the fs-opt problem IR is a wiring bead once that crate stabilizes
 (deliberate collision avoidance, bead 7tv.4 trail).
@@ -25,11 +28,37 @@ the fs-opt problem IR is a wiring bead once that crate stabilizes
   maintenance). Stagnation stops: TolX (σ·√λmax < 1e-12·σ₀) OR TolFun
   (no f_best improvement > 1e-12 relative for 120 generations) — the
   TolFun rule is what frees budget for restart ladders (measured).
-- `bipop_cmaes(...) -> BipopReport` — large/small alternation with
-  population doubling; per-run budgets scale with λ (≈250 generations);
-  the ladder cap counts LARGE runs only; restarts launch from
-  deterministic Philox-perturbed starts. The report carries the
-  schedule (evidence).
+- `admit_bipop(...) -> Result<BipopAdmission, BipopError>` — callback-free
+  schema-v3 authority over one proposed BIPOP run. It checks the finite,
+  nonempty root point,
+  strictly positive finite sigma, finite optional target, positive hard budget,
+  derived seed range, dense-matrix/population storage arithmetic, population
+  ladder, local budgets, scheduler ordinal, and both Philox counter domains
+  before scheduler allocation or objective invocation. The receipt retains the
+  actual fs-rand stream-semantics version and all admitted maxima. Its nested
+  fs-la `JacobiEighAdmission` is deliberately optional: it is `Some` exactly
+  when `total_budget > base_lambda`, the first boundary at which a complete CMA
+  generation (and hence eigendecomposition) is reachable, and is `None` for an
+  initial-callback-only schedule.
+- `try_bipop_cmaes(...) -> Result<BipopReport, BipopError>` — the fallible
+  execution surface. It first obtains the exact `BipopAdmission`, then runs
+  large/small alternation with population doubling and deterministic
+  Philox-perturbed restart starts. Per-run allocation is
+  `min(lambda*250, remaining)` and CMA consumes one initial callback followed
+  only by complete lambda-sized generations. Raw-input/dependency/envelope
+  refusals invoke no callback; a later generated-start or generated-candidate
+  refusal may follow already completed work but never exposes the affected
+  non-finite decision point to the objective.
+- `bipop_cmaes(...) -> BipopReport` — compatibility projection of
+  `try_bipop_cmaes`: finite targets become `Some`, the historical
+  `f64::NEG_INFINITY` sentinel becomes `None`, and typed refusals panic at this
+  legacy boundary.
+  Its report exposes an immutable schema-versioned `BipopRestartRecord` for
+  every run, the retained hard `total_budget`, the exact named `best_restart`,
+  and legacy best/schedule/total-evaluation projections. Each record binds lane,
+  population, local cap, derived seed, start, aggregate trace interval,
+  `CmaStopReason`, and its complete `CmaReport`; `validate_ledger` returns a
+  typed first-invariant refusal.
 - `nelder_mead(...)` — deterministic simplex polish (no randomness).
 - `wasserstein_worst_case(losses, costs, n, rho) -> DroReport` —
   exact dual evaluation for a discrete-support Wasserstein-DRO inner
@@ -64,12 +93,54 @@ the fs-opt problem IR is a wiring bead once that crate stabilizes
    machine-precision convergence, measured during bring-up).
 3. Translation equivariance (behavioral, tested).
 4. Covariance stays SPD (symmetrize + floor at each refresh).
-5. BIPOP schedule = doublings of the base population (shape-tested).
+5. BIPOP admission uses two independent restart bounds. With base population
+   `b`, the maximum zero-based restart ordinal is
+   `min(total_budget - 1, 8 + ceil((8 + 249*b*(2^8 - 1))/(b + 1)) + b)`.
+   Nine large rungs (`0..=8`) may execute, but rung eight terminates the
+   scheduler and cannot finance another small run; only rungs `0..=7` contribute
+   to the pre-terminal large-spend proof. At most `b` further launches are
+   possible once no more than `b` callbacks remain, and a zero-callback
+   generated-start refusal terminates immediately; both cases are accounted for
+   explicitly rather than hidden behind an unbounded budget surrogate.
+6. A schema-v3 receipt also bounds `n*n` dense covariance entries and their
+   addressable byte span, `n*max_large_lambda` population coordinates, the
+   `lambda*250` local envelope, derived-seed range, restart-normal blocks
+   `2*n*max_restart_ordinal`, and the maximum per-restart candidate-normal
+   blocks `2*n*lambda*generations`. These are representability/counter-uniqueness
+   proofs, not promises that the allocator has enough physical memory.
+7. BIPOP records are ordinal and interval-contiguous; large/small lane choice
+   follows retained cumulative spend; large populations double without
+   overflow; each allocated cap is exactly `min(lambda*250, remaining)`; local
+   `evals = 1 + generations*lambda` and do not exceed that cap; target
+   convergence is terminal; incomplete nonterminal prefixes are refused; the
+   named best is the earliest `total_cmp` minimum; and legacy
+   best/schedule/total-evaluation fields are bit-exact projections of the
+   ordered ledger. Validator reachability mirrors preflight, so an early target
+   cannot retroactively bypass a Jacobi authority required by the retained hard
+   budget.
 
 ## Error model
-Structured panics for modeling errors (empty dimension). Convergence
-failure is DATA: `converged: false` with best-found + diagnostics. Empirical
-CVaR instead returns the canonical structured `RobustError` and does not panic.
+Direct `cmaes` retains its compatibility panic boundary for an empty dimension
+or a non-finite generated decision. Convergence failure is DATA:
+`converged: false` with best-found + diagnostics. Empirical CVaR returns the
+canonical structured `RobustError` and does not panic.
+
+`admit_bipop` and `try_bipop_cmaes` return the non-exhaustive `BipopError` for
+malformed roots, dependency refusal, unrepresentable storage/population/budget/
+seed/counter envelopes, generated non-finite starts or candidates, internal
+accounting violations, and a generated ledger that fails validation. Preflight
+refusals are callback-free; an execution-time refusal does not undo already
+observed callbacks, but it returns no partial `BipopReport`. `bipop_cmaes`
+intentionally projects those errors to a panic for source compatibility.
+Objective panics and non-finite objective outputs are not caught or normalized
+in this tranche.
+
+`BipopReport::validate_ledger` returns `BipopLedgerError { restart, invariant }`
+for schema, ordinal, population/lane, checked arithmetic, interval, exact local
+allocation, dependency reachability, counter range, terminal completeness,
+best-selection, or compatibility-projection violations. It is a structural
+validator over retained evidence, not authentication of the external root
+point, root seed, sigma, target, or callback semantics.
 
 ## Determinism class
 Bit-deterministic per seed, cross-ISA (golden hash
@@ -90,6 +161,26 @@ None.
 ## Conformance tests
 tests/dfo_battery.rs (benchmarks incl. condition-1e6 ellipsoid,
 determinism, invariance, BIPOP schedule, NM polish, golden hash);
+tests/bipop_admission.rs (G0/G3/G4) proves callback-free malformed-input,
+zero-budget, conservative derived-seed, and shared fs-la Jacobi-capability
+refusal; exact schema-v3 receipt fields; Jacobi `None`/`Some` reachability at
+the last callback-only and first complete-generation budgets; exact scheduler,
+seed, and Philox-counter boundaries; one-callback terminal behavior; live
+two-block `next_normal` consumption; containment of generated non-finite CMA
+candidates and restart starts before the affected callback; typed target
+semantics; and complete bitwise parity with the legacy compatibility spelling.
+The `cma` G0 unit lane separately proves the exact dense-covariance byte and
+`isize` address boundary, plus u128 counter-product overflow and first stream
+coordinate reuse;
+tests/bipop_restart_ledger.rs (G0/G3 typed restart-ledger partition, local and
+aggregate budget edges, causal target/stagnation/budget terminal reasons,
+earliest exact/signed-zero tie selection, legacy-projection refusal,
+and large-small-large schedule replay); the `cma` G0 unit lane independently
+requires refusal of a post-ninth-large suffix, allocation above `lambda*250`, a
+truncated nonterminal prefix, continuation after target convergence, early-
+target evasion of reachable Jacobi authority, non-finite retained start/best/
+sigma state, and an otherwise exact near-`usize::MAX` terminal record whose
+next-generation arithmetic wraps;
 tests/probe_tmp.rs (success-rate + stagnation-stop regression; filename
 is bring-up history); tests/ot_battery.rs (4 cases): Sinkhorn
 marginal feasibility ≤ 1e−8 and cost symmetry ≤ 1e−8; the ε-ladder
@@ -165,21 +256,117 @@ failures such as an empty front remain ordinary Rust diagnostics before aggregat
 emission; gate failures after a front exists retain structured red evidence.
 tests/bipop_study_replay.rs adds one G5 study-scale replay receipt for the
 production `bipop_cmaes` path on a finite four-dimensional shifted-Rastrigin
-fixture. Two independent runs at the recorded seed bind and compare every
-public `BipopReport` field, every nested best-run `CmaReport` field, the complete
-restart-population schedule, and every closure-counted objective input/value bit.
-The fixture identity records units, initial point and shift, budget, target,
-base-population and per-restart rules, logical CMA/restart stream coordinates,
-stream-semantics version, dependency versions, capabilities, and the exact input
-seed. The result identity binds that fixture plus the full public report and
-ordered evaluation trace; the validated fs-obs receipt retains both roots and
-the actual evaluation/restart counts. A disclosed corruption seed selects one
-returned `x_best` coordinate and mantissa bit, produces two identical wire-valid
-red `ConformanceCase` records with stable content identities and first-mismatch
-diagnostics, and is refused by the test-local merge gate. This battery claims
-only exact same-build replay for that recorded fixture: it does not claim
-optimizer quality, other objectives/dimensions/budgets/seeds, refreshed
-cross-ISA equality, cancellation, checkpoint/resume, or performance.
+fixture. Two separately executed production runs at the recorded seed must
+reproduce the actual schema-v3 `BipopAdmission`, every public `BipopReport`
+field (including retained `total_budget`), every nested `CmaReport`, the
+complete ordered callback trace, and the canonical result frame. The fixture-v4
+and result-v4 identities bind `best_restart()` and every ordered
+`BipopRestartRecord`: schema/ordinal, large-or-small lane, population, allocated
+budget, derived seed, exact start, half-open aggregate trace interval, causal
+stop reason, and complete nested report. The fixture binds every public
+admission field, actual and supported BIPOP/fs-rand/Jacobi schema or semantics
+versions, explicit Jacobi presence, all nested Jacobi authority fields when
+present, the supported fs-rand checkpoint version and checkpoint identity
+domain, both strong-hash domain identifiers, target architecture/operating
+system/pointer width/endianness, and full-width `u128` counter maxima as
+high/low limbs. Under `SOURCE_FILE_IDENTITY_DOMAIN`, it also binds an ordered
+path plus path-domain-separated BLAKE3 for exactly fifteen `include_bytes!` inputs:
+`crates/fs-dfo/Cargo.toml`, `crates/fs-dfo/src/lib.rs`,
+`crates/fs-dfo/src/cma.rs`, `crates/fs-la/src/lib.rs`,
+`crates/fs-la/src/eigen.rs`, `crates/fs-rand/src/lib.rs`,
+`crates/fs-rand/src/philox.rs`, `crates/fs-math/src/lib.rs`,
+`crates/fs-math/src/det.rs`,
+`crates/fs-math/src/dd.rs`, `crates/fs-math/src/eft.rs`,
+`crates/fs-math/src/payne.rs`, `crates/fs-obs/src/ident.rs`,
+`crates/fs-obs/src/lib.rs`, and `crates/fs-blake3/src/lib.rs`. This is the
+relevant-source snapshot claimed by the study, not an identity for the whole
+workspace or build toolchain. A fixed-study KAT independently requires
+dimension 4, budget 6,000, base population 8,
+maximum large population 2,048, local envelope 512,000, restart ordinal 5,999,
+matrix/population entries 16/8,192, restart/CMA counter maxima 47,992/47,872,
+and Jacobi work 76 under the 67,108,864-element authority cap.
+An algebraically distinct shifted-Rastrigin oracle independently recomputes all
+recorded objective values; it deliberately shares the deterministic cosine
+primitive and therefore claims algebraic, not implementation-total,
+independence under its identity-bound roundoff gate. The fixture identity
+records units, initial point and shift, budget, target and improvement rule,
+base population, large/small restart ledger and lambda ladder, whole-generation
+budget semantics, candidate/global first-stable tie rules, logical
+CMA/restart stream coordinates, semantic-oracle-v4 and stream-semantics versions,
+dependency versions, capabilities, and the causal input seed. The semantic
+gate runs an independent trace-driven CMA shadow from the root inputs: it
+reconstructs every sample, distribution transition, sigma, terminal reason,
+start, seed, interval, budget/evaluation/generation count, and nested report.
+It uses live `StreamCheckpoint` witnesses to prove the exact restart formula
+`2*n*(records-1)` and each CMA formula
+`2*n*lambda*generations`. Both the restart and per-CMA witnesses require the
+current `STREAM_CHECKPOINT_VERSION`, exact stream key, admitted stream-semantics
+version, and exact terminal index; the fixture binds the supported checkpoint
+version and `STREAM_CHECKPOINT_IDENTITY_DOMAIN`. Every realized count must
+remain within the admitted schema-v3 cap. The gate also requires contiguous
+intervals, exact legacy schedule/total/best projections,
+report-budget/admission-budget equality, complete terminal history, and the
+earliest `total_cmp` winner rather than an existentially compatible restart.
+
+The result-v4 identity binds that fixture plus the complete report, restart
+ledger, and trace. `IdentityBuilder::child` retains a compact legacy 64-bit
+FNV64 fixture root, so v4 additionally embeds the complete canonical fixture
+bytes and their domain-separated fixture BLAKE3. The 256-bit result digest is
+therefore transitively committed to every fixture byte rather than relying on
+only the legacy child projection. In addition to the compact replay roots, the
+test computes two domain-separated BLAKE3 families: the replay-identity domain
+hashes the exact canonical fixture and result bytes, while a distinct
+event-content domain hashes the canonical fs-obs content identities of the green
+Custom receipt, green `ConformanceCase` verdict, and deterministic red
+corruption event. Because the result embeds the complete fixture preimage, its
+strong hash transitively binds the ordered fifteen-file source snapshot as well as
+the target and admission provenance.
+
+The Custom receipt passes structural fs-obs wire validation and exposes the
+actual and supported authority versions, admitted and realized stream counters,
+stream-position and checkpoint identity domains, actual and supported
+checkpoint versions, both strong-hash domains, source-file identity domain and
+count, complete Jacobi receipt, retained budget, record count, best restart,
+target tuple, versions, and explicit no-claims. The green verdict also retains
+the checkpoint version, target tuple, source-file count, and an explicit
+compiler-fingerprint no-claim. Mutation lanes cover the receipt's BIPOP schema,
+fs-rand semantics, checkpoint version/domain, total budget, Jacobi
+presence/schema, admitted CMA cap, both realized-counter fields, replay/event/
+source identity domains, and target architecture. Each mutant remains
+structurally wire-valid under `fs_obs::validate_line` but stales the retained
+event content identity.
+
+**None of the five 256-bit BLAKE3 values is frozen yet.** The first central run
+prints one `BIPOP_STUDY_FREEZE` line containing the fixture, result, green-receipt
+event, green-verdict event, and deterministic-red-event digests. That exact
+five-value tuple must be captured into explicit fixed-value assertions and the
+same central test rerun successfully before any member is a regression KAT.
+Until that freeze-and-reverification pass, all five are strong emitted sentinels
+and replay diagnostics, not immutable goldens. Because fixture, receipt, and
+verdict bind architecture, operating system, pointer width, and endianness, the
+forthcoming tuple is target-specific; it must not be reused as a cross-target or
+cross-ISA golden without separately captured, labeled evidence for that target.
+It is also specific to the ordered fifteen-file source snapshot and the executing
+test binary. Neither the source hashes nor the target tuple binds compiler
+version/executable, flags, profile, or broader build identity; the fixture and
+receipt explicitly record that compiler fingerprint as `not-bound-no-claim`.
+
+A disclosed corruption seed drives stable one-field red evidence over a
+returned coordinate. Its deterministic red-event detail retains both compact
+and strong identities for the fixture, canonical result, and corrupted result,
+alongside the exact bit mutation and refusal diagnostics. Independent mutation
+lanes cover trace objective, schedule, retained total evaluations, admission
+budget, Jacobi dimension and presence, a separately executed adjacent-budget
+production report, complete ledger substitution, causal seed, and every
+green-verdict envelope/payload field. Stale, correctly resealed,
+retained-reference, and semantic-self-reference admission paths all fail closed.
+This battery claims exact replay only for the same ordered relevant-source
+snapshot, same target tuple, and same executing test binary on that bounded
+fixture. It does not claim compiler/build identity, optimizer quality,
+arbitrary-input admission success, allocation recovery, retained production
+callback payloads, other objectives/dimensions/budgets/seeds, refreshed
+cross-target or cross-ISA equality, cancellation, checkpoint/resume,
+authenticated or signed evidence, or performance.
 tests/nelder_mead_study_replay.rs adds the corresponding standalone-family
 receipt for production `nelder_mead`. It reuses the fixed two-dimensional
 Rosenbrock leg from the crate golden (`x0 = [0.3, -0.2]`, simplex scale `0.2`,
@@ -306,6 +493,14 @@ remain assertion-only and silent.
 ## No-claim boundaries
 - No published-ERT-table parity claims yet (in-repo BBOB-class fixtures
   only; the external COCO battery is follow-up).
+- Schema-v3 `BipopAdmission` certifies the checked formulas and dependency
+  authority represented in its fields for the supplied root inputs. It is not
+  an authenticated root-input identity, a physical-memory-availability promise,
+  a callback-panic boundary, an objective-output-finiteness guarantee, or a
+  production cancellation/checkpoint capability. The versioned
+  `StreamCheckpoint` in the G5 shadow is a counter-consumption witness under the
+  recorded checkpoint domain, not evidence that BIPOP execution can pause and
+  resume.
 - The four `fs-dfo` aggregate rows attest only to their completed in-repo
   assertions at the recorded input roots. They do not promote the frozen hash
   measurement to a verdict or claim coverage of other seeds, external benchmark
