@@ -20,6 +20,7 @@ pub mod moo;
 pub mod neldermead;
 pub mod ot;
 pub mod steer;
+pub mod wfg;
 
 pub use fs_robust::{EmpiricalCvarReport, RobustError, empirical_cvar};
 
