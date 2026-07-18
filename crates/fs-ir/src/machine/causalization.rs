@@ -18,13 +18,14 @@ use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::num::NonZeroU64;
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use fs_blake3::identity::{
-    CanonicalEncoder, CanonicalError, CanonicalLimits, CanonicalSchema, ChildSpec, EntityId,
-    EvidenceNodeId, Field, FieldSpec, IdentityReceipt, LimitKind, NeverCancel, ProblemSemanticId,
-    StrongIdentity, WireType,
+    CancellationProbe, CanonicalEncoder, CanonicalError, CanonicalLimits, CanonicalSchema,
+    ChildSpec, EntityId, EvidenceNodeId, Field, FieldSpec, IdentityReceipt, LimitKind, NeverCancel,
+    OrderedBytesStreamError, ProblemSemanticId, StrongIdentity, WireType,
 };
 use fs_exec::Cx;
 use fs_qty::Dims;
@@ -4141,68 +4142,73 @@ fn causal_structure_identity(
     machine: &AdmittedMachineGraph,
     cx: &Cx<'_>,
 ) -> Result<IdentityReceipt<CausalStructureIdV1>, CanonicalError> {
-    let equation_rows = collect_identity_rows(&draft.equations, cx, equation_structure_row)?;
-    let variable_rows = collect_identity_rows(&draft.variables, cx, variable_structure_row)?;
-    let condition_rows = collect_identity_rows(&draft.conditions, cx, condition_row)?;
-    let incidence_receipt_rows = collect_identity_rows(&draft.incidences, cx, |incidence, _| {
-        let mut row = Vec::with_capacity(IDENTITY_RECEIPT_ADJUDICATION_BYTES);
-        push_identity_receipt_adjudication(&mut row, incidence.id.identity_receipt());
-        Ok(row)
-    })?;
     let mut machine_receipt_row = Vec::with_capacity(IDENTITY_RECEIPT_ADJUDICATION_BYTES);
     push_identity_receipt_adjudication(&mut machine_receipt_row, machine.identity_receipt());
     // Typed children retain recursive role/schema binding; their sibling
     // receipt rows keep digest collisions adjudicable across independently
     // admitted graphs without materializing the potentially huge child
     // canonical preimages themselves.
-    CanonicalEncoder::<CausalStructureIdV1, _>::new(CAUSAL_GRAPH_IDENTITY_LIMITS, || {
-        cx.checkpoint().is_err()
-    })?
-    .u64(
-        Field::new(0, "causal-structure-schema-version"),
-        u64::from(CAUSAL_STRUCTURE_IDENTITY_SCHEMA_VERSION_V1),
-    )?
-    .child(Field::new(1, "machine-graph-id"), machine.identity())?
-    .bytes(
-        Field::new(2, "machine-graph-receipt-adjudication"),
-        &machine_receipt_row,
-    )?
-    .variant(
-        Field::new(3, "unit-convention"),
-        u32::from(unit_convention_tag(draft.units)),
-        &[],
-    )?
-    .bytes(
-        Field::new(4, "extraction-scope"),
-        &extraction_scope_row(&draft.scope),
-    )?
-    .ordered_bytes(
+    let encoder =
+        CanonicalEncoder::<CausalStructureIdV1, _>::new(CAUSAL_GRAPH_IDENTITY_LIMITS, || {
+            cx.checkpoint().is_err()
+        })?
+        .u64(
+            Field::new(0, "causal-structure-schema-version"),
+            u64::from(CAUSAL_STRUCTURE_IDENTITY_SCHEMA_VERSION_V1),
+        )?
+        .child(Field::new(1, "machine-graph-id"), machine.identity())?
+        .bytes(
+            Field::new(2, "machine-graph-receipt-adjudication"),
+            &machine_receipt_row,
+        )?
+        .variant(
+            Field::new(3, "unit-convention"),
+            u32::from(unit_convention_tag(draft.units)),
+            &[],
+        )?
+        .bytes(
+            Field::new(4, "extraction-scope"),
+            &extraction_scope_row(&draft.scope),
+        )?;
+    let encoder = stream_identity_rows(
+        encoder,
         Field::new(5, "equations"),
-        equation_rows.len() as u64,
-        equation_rows.iter().map(Vec::as_slice),
-    )?
-    .ordered_bytes(
+        &draft.equations,
+        cx,
+        equation_structure_row,
+    )?;
+    let encoder = stream_identity_rows(
+        encoder,
         Field::new(6, "variables"),
-        variable_rows.len() as u64,
-        variable_rows.iter().map(Vec::as_slice),
-    )?
-    .ordered_bytes(
+        &draft.variables,
+        cx,
+        variable_structure_row,
+    )?;
+    let encoder = stream_identity_rows(
+        encoder,
         Field::new(7, "activation-conditions"),
-        condition_rows.len() as u64,
-        condition_rows.iter().map(Vec::as_slice),
-    )?
-    .ordered_children(
+        &draft.conditions,
+        cx,
+        condition_row,
+    )?;
+    let encoder = encoder.ordered_children(
         Field::new(8, "incidences"),
-        draft.incidences.len() as u64,
+        u64::try_from(draft.incidences.len()).map_err(|_| CanonicalError::LengthOverflow)?,
         draft
             .incidences
             .iter()
             .map(|incidence| incidence.id.identity()),
-    )?
-    .ordered_bytes(
+    )?;
+    stream_identity_rows(
+        encoder,
         Field::new(9, "incidence-receipt-adjudications"),
-        incidence_receipt_rows.len() as u64,
-        incidence_receipt_rows.iter().map(Vec::as_slice),
+        &draft.incidences,
+        cx,
+        |incidence, _| {
+            let mut row = Vec::with_capacity(IDENTITY_RECEIPT_ADJUDICATION_BYTES);
+            push_identity_receipt_adjudication(&mut row, incidence.id.identity_receipt());
+            Ok(row)
+        },
     )?
     .finish()
 }
@@ -4213,56 +4219,55 @@ fn causal_artifact_identity(
     behavior: Option<IdentityReceipt<MachineBehaviorIdV1>>,
     cx: &Cx<'_>,
 ) -> Result<IdentityReceipt<CausalGraphArtifactIdV1>, CanonicalError> {
-    let equation_rows = collect_identity_rows(&draft.equations, cx, |equation, cx| {
-        node_artifact_row_equation(&equation.id, &equation.lineage, cx)
-    })?;
-    let variable_rows = collect_identity_rows(&draft.variables, cx, node_artifact_row_variable)?;
-    let incidence_rows = collect_identity_rows(&draft.incidences, cx, |incidence, _| {
-        Ok(incidence_artifact_row(incidence))
-    })?;
-    let condition_rows = collect_identity_rows(&draft.conditions, cx, |condition, _| {
-        Ok(condition_artifact_row(condition))
-    })?;
     let extraction = extraction_context_row(&draft.extraction);
     let behavior_row = behavior.map(machine_behavior_identity_row);
     let mut structure_row = Vec::with_capacity(IDENTITY_RECEIPT_ADJUDICATION_BYTES);
     push_identity_receipt_adjudication(&mut structure_row, structure);
-    CanonicalEncoder::<CausalGraphArtifactIdV1, _>::new(CAUSAL_GRAPH_IDENTITY_LIMITS, || {
-        cx.checkpoint().is_err()
-    })?
-    .u64(
-        Field::new(0, "causal-graph-artifact-schema-version"),
-        u64::from(CAUSAL_GRAPH_ARTIFACT_IDENTITY_SCHEMA_VERSION_V1),
-    )?
-    .child(Field::new(1, "causal-structure-id"), structure.id())?
-    .bytes(
-        Field::new(2, "causal-structure-receipt-adjudication"),
-        &structure_row,
-    )?
-    .optional_bytes(
-        Field::new(3, "machine-behavior-receipt-adjudication"),
-        behavior_row.as_deref(),
-    )?
-    .bytes(Field::new(4, "extraction-context"), &extraction)?
-    .ordered_bytes(
+    let encoder =
+        CanonicalEncoder::<CausalGraphArtifactIdV1, _>::new(CAUSAL_GRAPH_IDENTITY_LIMITS, || {
+            cx.checkpoint().is_err()
+        })?
+        .u64(
+            Field::new(0, "causal-graph-artifact-schema-version"),
+            u64::from(CAUSAL_GRAPH_ARTIFACT_IDENTITY_SCHEMA_VERSION_V1),
+        )?
+        .child(Field::new(1, "causal-structure-id"), structure.id())?
+        .bytes(
+            Field::new(2, "causal-structure-receipt-adjudication"),
+            &structure_row,
+        )?
+        .optional_bytes(
+            Field::new(3, "machine-behavior-receipt-adjudication"),
+            behavior_row.as_deref(),
+        )?
+        .bytes(Field::new(4, "extraction-context"), &extraction)?;
+    let encoder = stream_identity_rows(
+        encoder,
         Field::new(5, "equation-lineage"),
-        equation_rows.len() as u64,
-        equation_rows.iter().map(Vec::as_slice),
-    )?
-    .ordered_bytes(
+        &draft.equations,
+        cx,
+        |equation, cx| node_artifact_row_equation(&equation.id, &equation.lineage, cx),
+    )?;
+    let encoder = stream_identity_rows(
+        encoder,
         Field::new(6, "variable-lineage"),
-        variable_rows.len() as u64,
-        variable_rows.iter().map(Vec::as_slice),
-    )?
-    .ordered_bytes(
+        &draft.variables,
+        cx,
+        node_artifact_row_variable,
+    )?;
+    let encoder = stream_identity_rows(
+        encoder,
         Field::new(7, "activation-condition-provenance"),
-        condition_rows.len() as u64,
-        condition_rows.iter().map(Vec::as_slice),
-    )?
-    .ordered_bytes(
+        &draft.conditions,
+        cx,
+        |condition, _| Ok(condition_artifact_row(condition)),
+    )?;
+    stream_identity_rows(
+        encoder,
         Field::new(8, "incidence-provenance"),
-        incidence_rows.len() as u64,
-        incidence_rows.iter().map(Vec::as_slice),
+        &draft.incidences,
+        cx,
+        |incidence, _| Ok(incidence_artifact_row(incidence)),
     )?
     .finish()
 }
@@ -4287,21 +4292,53 @@ fn identity_materialization_poll(
     Ok(())
 }
 
-fn collect_identity_rows<T>(
+fn stream_identity_rows<I, C, T>(
+    encoder: CanonicalEncoder<I, C>,
+    field: Field,
     values: &[T],
     cx: &Cx<'_>,
     mut row: impl FnMut(&T, &Cx<'_>) -> Result<Vec<u8>, CanonicalError>,
-) -> Result<Vec<Vec<u8>>, CanonicalError> {
-    let mut rows = Vec::with_capacity(values.len());
-    let mut absorbed_bytes = 0usize;
-    for (index, value) in values.iter().enumerate() {
-        identity_materialization_poll(cx, index, absorbed_bytes)?;
-        let next = row(value, cx)?;
-        absorbed_bytes = absorbed_bytes.saturating_add(next.len());
-        rows.push(next);
+) -> Result<CanonicalEncoder<I, C>, CanonicalError>
+where
+    C: CancellationProbe,
+{
+    let declared_count = u64::try_from(values.len()).map_err(|_| CanonicalError::LengthOverflow)?;
+    let pending = RefCell::new(None::<(u64, Vec<u8>)>);
+    let row_lengths = values.iter().enumerate().map(|(index, value)| {
+        if pending.borrow().is_some() {
+            return Err(CanonicalError::InvalidSchemaDescriptor(
+                "ordered row adapter retained an unconsumed row",
+            ));
+        }
+        identity_materialization_poll(cx, index, 0)?;
+        let bytes = row(value, cx)?;
+        let length = u64::try_from(bytes.len()).map_err(|_| CanonicalError::LengthOverflow)?;
+        let index = u64::try_from(index).map_err(|_| CanonicalError::LengthOverflow)?;
+        *pending.borrow_mut() = Some((index, bytes));
+        Ok(length)
+    });
+    encoder
+        .ordered_bytes_stream(field, declared_count, row_lengths, |row_index, mut sink| {
+            let Some((pending_index, bytes)) = pending.borrow_mut().take() else {
+                return Err(CanonicalError::InvalidSchemaDescriptor(
+                    "ordered row adapter lost its declared row",
+                ));
+            };
+            if pending_index != row_index {
+                return Err(CanonicalError::InvalidSchemaDescriptor(
+                    "ordered row adapter changed row order",
+                ));
+            }
+            sink.write(&bytes)
+        })
+        .map_err(ordered_stream_source)
+}
+
+fn ordered_stream_source(error: OrderedBytesStreamError<CanonicalError>) -> CanonicalError {
+    match error {
+        OrderedBytesStreamError::Canonical { source, .. }
+        | OrderedBytesStreamError::Producer { source, .. } => source,
     }
-    identity_materialization_checkpoint(cx, absorbed_bytes)?;
-    Ok(rows)
 }
 
 fn machine_behavior_identity_row(receipt: IdentityReceipt<MachineBehaviorIdV1>) -> Vec<u8> {
@@ -7737,23 +7774,6 @@ fn causal_outcome_identity(
     structure: IdentityReceipt<CausalStructureIdV1>,
     cx: &Cx<'_>,
 ) -> Result<IdentityReceipt<CausalOutcomeIdV1>, CanonicalError> {
-    let matching_rows =
-        collect_identity_rows(&draft.matching, cx, |pair, _| Ok(matching_row(pair)))?;
-    let unmatched_equation_rows =
-        collect_identity_rows(&draft.unmatched_equations, cx, |equation, _| {
-            let mut row = Vec::with_capacity(116);
-            push_identity_receipt_adjudication(&mut row, equation.identity_receipt());
-            Ok(row)
-        })?;
-    let unmatched_variable_rows =
-        collect_identity_rows(&draft.unmatched_variables, cx, |variable, _| {
-            Ok(derivative_variable_row(variable))
-        })?;
-    let conditional_rows = collect_identity_rows(
-        &draft.conditional_outcomes,
-        cx,
-        normalized_conditional_outcome_row_cancellable,
-    )?;
     let domain = receipt_domain_row_cancellable(&draft.domain, cx)?;
     let axes = [
         determination_tag(draft.determination),
@@ -7762,39 +7782,52 @@ fn causal_outcome_identity(
     ];
     let mut structure_row = Vec::with_capacity(116);
     push_identity_receipt_adjudication(&mut structure_row, structure);
-    CanonicalEncoder::<CausalOutcomeIdV1, _>::new(CAUSAL_RECEIPT_IDENTITY_LIMITS, || {
-        cx.checkpoint().is_err()
-    })?
-    .u64(
-        Field::new(0, "causal-outcome-schema-version"),
-        u64::from(CAUSAL_OUTCOME_IDENTITY_SCHEMA_VERSION_V1),
-    )?
-    .child(Field::new(1, "causal-structure-id"), structure.id())?
-    .bytes(
-        Field::new(2, "causal-structure-receipt-adjudication"),
-        &structure_row,
-    )?
-    .bytes(Field::new(3, "analysis-domain"), &domain)?
-    .bytes(Field::new(4, "outcome-axes"), &axes)?
-    .ordered_bytes(
+    let encoder =
+        CanonicalEncoder::<CausalOutcomeIdV1, _>::new(CAUSAL_RECEIPT_IDENTITY_LIMITS, || {
+            cx.checkpoint().is_err()
+        })?
+        .u64(
+            Field::new(0, "causal-outcome-schema-version"),
+            u64::from(CAUSAL_OUTCOME_IDENTITY_SCHEMA_VERSION_V1),
+        )?
+        .child(Field::new(1, "causal-structure-id"), structure.id())?
+        .bytes(
+            Field::new(2, "causal-structure-receipt-adjudication"),
+            &structure_row,
+        )?
+        .bytes(Field::new(3, "analysis-domain"), &domain)?
+        .bytes(Field::new(4, "outcome-axes"), &axes)?;
+    let encoder = stream_identity_rows(
+        encoder,
         Field::new(5, "matching"),
-        matching_rows.len() as u64,
-        matching_rows.iter().map(Vec::as_slice),
-    )?
-    .ordered_bytes(
+        &draft.matching,
+        cx,
+        |pair, _| Ok(matching_row(pair)),
+    )?;
+    let encoder = stream_identity_rows(
+        encoder,
         Field::new(6, "unmatched-equations"),
-        unmatched_equation_rows.len() as u64,
-        unmatched_equation_rows.iter().map(Vec::as_slice),
-    )?
-    .ordered_bytes(
+        &draft.unmatched_equations,
+        cx,
+        |equation, _| {
+            let mut row = Vec::with_capacity(116);
+            push_identity_receipt_adjudication(&mut row, equation.identity_receipt());
+            Ok(row)
+        },
+    )?;
+    let encoder = stream_identity_rows(
+        encoder,
         Field::new(7, "unmatched-variables"),
-        unmatched_variable_rows.len() as u64,
-        unmatched_variable_rows.iter().map(Vec::as_slice),
-    )?
-    .ordered_bytes(
+        &draft.unmatched_variables,
+        cx,
+        |variable, _| Ok(derivative_variable_row(variable)),
+    )?;
+    stream_identity_rows(
+        encoder,
         Field::new(8, "conditional-outcome-semantics"),
-        conditional_rows.len() as u64,
-        conditional_rows.iter().map(Vec::as_slice),
+        &draft.conditional_outcomes,
+        cx,
+        normalized_conditional_outcome_row_cancellable,
     )?
     .finish()
 }
@@ -7806,23 +7839,6 @@ fn causalization_receipt_identity(
     outcome: IdentityReceipt<CausalOutcomeIdV1>,
     cx: &Cx<'_>,
 ) -> Result<IdentityReceipt<CausalizationReceiptIdV1>, CanonicalError> {
-    let matching_rows =
-        collect_identity_rows(&draft.matching, cx, |pair, _| Ok(matching_row(pair)))?;
-    let unmatched_equation_rows =
-        collect_identity_rows(&draft.unmatched_equations, cx, |equation, _| {
-            let mut row = Vec::with_capacity(116);
-            push_identity_receipt_adjudication(&mut row, equation.identity_receipt());
-            Ok(row)
-        })?;
-    let unmatched_variable_rows =
-        collect_identity_rows(&draft.unmatched_variables, cx, |variable, _| {
-            Ok(derivative_variable_row(variable))
-        })?;
-    let outcome_rows = collect_identity_rows(
-        &draft.conditional_outcomes,
-        cx,
-        conditional_outcome_row_cancellable,
-    )?;
     let axes = [
         determination_tag(draft.determination),
         structural_rank_tag(draft.structural_rank),
@@ -7830,9 +7846,6 @@ fn causalization_receipt_identity(
     ];
     let analysis = analysis_context_row(&draft.analysis);
     let domain = receipt_domain_row_cancellable(&draft.domain, cx)?;
-    let unknown_axis_rows = collect_identity_rows(&draft.unknown_axes, cx, |state, _| {
-        Ok(unknown_axis_row(state))
-    })?;
     let maximum_matching_certificate = match draft.maximum_matching_certificate.as_ref() {
         Some(binding) => Some(maximum_matching_binding_row_cancellable(binding, cx)?),
         None => None,
@@ -7856,9 +7869,10 @@ fn causalization_receipt_identity(
     let mut outcome_row = Vec::with_capacity(116);
     push_identity_receipt_adjudication(&mut outcome_row, outcome);
 
-    CanonicalEncoder::<CausalizationReceiptIdV1, _>::new(CAUSAL_RECEIPT_IDENTITY_LIMITS, || {
-        cx.checkpoint().is_err()
-    })?
+    let encoder = CanonicalEncoder::<CausalizationReceiptIdV1, _>::new(
+        CAUSAL_RECEIPT_IDENTITY_LIMITS,
+        || cx.checkpoint().is_err(),
+    )?
     .u64(
         Field::new(0, "causalization-receipt-schema-version"),
         u64::from(CAUSALIZATION_RECEIPT_IDENTITY_SCHEMA_VERSION_V1),
@@ -7875,51 +7889,67 @@ fn causalization_receipt_identity(
     )?
     .bytes(Field::new(5, "analysis-context"), &analysis)?
     .bytes(Field::new(6, "analysis-domain"), &domain)?
-    .bytes(Field::new(7, "outcome-axes"), &axes)?
-    .ordered_bytes(
+    .bytes(Field::new(7, "outcome-axes"), &axes)?;
+    let encoder = stream_identity_rows(
+        encoder,
         Field::new(8, "matching"),
-        matching_rows.len() as u64,
-        matching_rows.iter().map(Vec::as_slice),
-    )?
-    .ordered_bytes(
+        &draft.matching,
+        cx,
+        |pair, _| Ok(matching_row(pair)),
+    )?;
+    let encoder = stream_identity_rows(
+        encoder,
         Field::new(9, "unmatched-equations"),
-        unmatched_equation_rows.len() as u64,
-        unmatched_equation_rows.iter().map(Vec::as_slice),
-    )?
-    .ordered_bytes(
+        &draft.unmatched_equations,
+        cx,
+        |equation, _| {
+            let mut row = Vec::with_capacity(116);
+            push_identity_receipt_adjudication(&mut row, equation.identity_receipt());
+            Ok(row)
+        },
+    )?;
+    let encoder = stream_identity_rows(
+        encoder,
         Field::new(10, "unmatched-variables"),
-        unmatched_variable_rows.len() as u64,
-        unmatched_variable_rows.iter().map(Vec::as_slice),
-    )?
-    .ordered_bytes(
+        &draft.unmatched_variables,
+        cx,
+        |variable, _| Ok(derivative_variable_row(variable)),
+    )?;
+    let encoder = stream_identity_rows(
+        encoder,
         Field::new(11, "conditional-outcomes"),
-        outcome_rows.len() as u64,
-        outcome_rows.iter().map(Vec::as_slice),
-    )?
-    .optional_bytes(
-        Field::new(12, "maximum-matching-certificate"),
-        maximum_matching_certificate.as_deref(),
-    )?
-    .optional_bytes(
-        Field::new(13, "conditional-coverage"),
-        conditional_coverage.as_deref(),
-    )?
-    .ordered_bytes(
+        &draft.conditional_outcomes,
+        cx,
+        conditional_outcome_row_cancellable,
+    )?;
+    let encoder = encoder
+        .optional_bytes(
+            Field::new(12, "maximum-matching-certificate"),
+            maximum_matching_certificate.as_deref(),
+        )?
+        .optional_bytes(
+            Field::new(13, "conditional-coverage"),
+            conditional_coverage.as_deref(),
+        )?;
+    let encoder = stream_identity_rows(
+        encoder,
         Field::new(14, "unknown-axes"),
-        unknown_axis_rows.len() as u64,
-        unknown_axis_rows.iter().map(Vec::as_slice),
-    )?
-    .variant(
-        Field::new(15, "evidence-state"),
-        evidence_tag,
-        &evidence_payload,
-    )?
-    .child(Field::new(16, "normalized-causal-outcome-id"), outcome.id())?
-    .bytes(
-        Field::new(17, "normalized-causal-outcome-receipt-adjudication"),
-        &outcome_row,
-    )?
-    .finish()
+        &draft.unknown_axes,
+        cx,
+        |state, _| Ok(unknown_axis_row(state)),
+    )?;
+    encoder
+        .variant(
+            Field::new(15, "evidence-state"),
+            evidence_tag,
+            &evidence_payload,
+        )?
+        .child(Field::new(16, "normalized-causal-outcome-id"), outcome.id())?
+        .bytes(
+            Field::new(17, "normalized-causal-outcome-receipt-adjudication"),
+            &outcome_row,
+        )?
+        .finish()
 }
 
 fn receipt_domain_row_cancellable(
@@ -8017,14 +8047,16 @@ fn causal_matching_set_identity_cancellable(
     canonical_matching: &[CausalMatchingPair],
     cx: &Cx<'_>,
 ) -> Result<IdentityReceipt<CausalMatchingSetIdV1>, CanonicalError> {
-    let rows = collect_identity_rows(canonical_matching, cx, |pair, _| Ok(matching_row(pair)))?;
-    CanonicalEncoder::<CausalMatchingSetIdV1, _>::new(CAUSAL_RECEIPT_IDENTITY_LIMITS, || {
-        cx.checkpoint().is_err()
-    })?
-    .ordered_bytes(
+    let encoder =
+        CanonicalEncoder::<CausalMatchingSetIdV1, _>::new(CAUSAL_RECEIPT_IDENTITY_LIMITS, || {
+            cx.checkpoint().is_err()
+        })?;
+    stream_identity_rows(
+        encoder,
         Field::new(0, "matching-pairs"),
-        rows.len() as u64,
-        rows.iter().map(Vec::as_slice),
+        canonical_matching,
+        cx,
+        |pair, _| Ok(matching_row(pair)),
     )?
     .finish()
 }
@@ -8112,14 +8144,16 @@ fn conditional_outcome_set_identity_cancellable(
     canonical_outcomes: &[ConditionalCausalOutcome],
     cx: &Cx<'_>,
 ) -> Result<IdentityReceipt<ConditionalOutcomeSetIdV1>, CanonicalError> {
-    let rows = collect_identity_rows(canonical_outcomes, cx, conditional_outcome_row_cancellable)?;
-    CanonicalEncoder::<ConditionalOutcomeSetIdV1, _>::new(CAUSAL_RECEIPT_IDENTITY_LIMITS, || {
-        cx.checkpoint().is_err()
-    })?
-    .ordered_bytes(
+    let encoder = CanonicalEncoder::<ConditionalOutcomeSetIdV1, _>::new(
+        CAUSAL_RECEIPT_IDENTITY_LIMITS,
+        || cx.checkpoint().is_err(),
+    )?;
+    stream_identity_rows(
+        encoder,
         Field::new(0, "mode-cell-outcomes"),
-        rows.len() as u64,
-        rows.iter().map(Vec::as_slice),
+        canonical_outcomes,
+        cx,
+        conditional_outcome_row_cancellable,
     )?
     .finish()
 }
@@ -8759,6 +8793,116 @@ const fn migration_artifact_kind_tag(kind: CausalMigrationArtifactKind) -> u8 {
 #[cfg(test)]
 mod internal_tests {
     use super::*;
+    use fs_exec::{Budget, CancelGate, ExecMode, StreamKey};
+
+    enum StreamParitySchemaV1 {}
+
+    impl CanonicalSchema for StreamParitySchemaV1 {
+        const DOMAIN: &'static str = "org.frankensim.fs-ir.test.causal-stream-parity.v1";
+        const NAME: &'static str = "causal-stream-parity";
+        const VERSION: u32 = 1;
+        const CONTEXT: &'static str = "G3 eager-versus-streamed causal row identity parity";
+        const FIELDS: &'static [FieldSpec] = &[FieldSpec::required("rows", WireType::OrderedBytes)];
+    }
+
+    fn with_internal_cx<R>(f: impl FnOnce(&Cx<'_>) -> R) -> R {
+        let gate = CancelGate::new();
+        let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+        pool.scope(|arena| {
+            let cx = Cx::new(
+                &gate,
+                arena,
+                StreamKey {
+                    seed: 0x57ea_0001,
+                    kernel_id: 2,
+                    tile: 0,
+                    iteration: 0,
+                },
+                Budget::INFINITE,
+                ExecMode::Deterministic,
+            );
+            f(&cx)
+        })
+    }
+
+    #[test]
+    fn g3_streamed_identity_rows_match_eager_canonical_bytes_and_roots() {
+        let rows = vec![
+            Vec::new(),
+            b"one".to_vec(),
+            vec![0, 1, 2, 0xff, 0x80],
+            (0_u16..1_025)
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>(),
+        ];
+        let limits = CanonicalLimits::new(32 * 1_024, 8 * 1_024, 1, 4, 16);
+        let eager =
+            CanonicalEncoder::<EvidenceNodeId<StreamParitySchemaV1>, _>::new(limits, NeverCancel)
+                .expect("valid eager encoder")
+                .ordered_bytes(
+                    Field::new(0, "rows"),
+                    u64::try_from(rows.len()).expect("fixture cardinality fits u64"),
+                    rows.iter().map(Vec::as_slice),
+                )
+                .expect("eager rows admit")
+                .finish()
+                .expect("eager identity publishes");
+
+        let streamed = with_internal_cx(|cx| {
+            let encoder = CanonicalEncoder::<EvidenceNodeId<StreamParitySchemaV1>, _>::new(
+                limits,
+                NeverCancel,
+            )
+            .expect("valid streamed encoder");
+            stream_identity_rows(encoder, Field::new(0, "rows"), &rows, cx, |row, _| {
+                Ok(row.clone())
+            })
+            .expect("streamed rows admit")
+            .finish()
+            .expect("streamed identity publishes")
+        });
+
+        assert_eq!(streamed, eager);
+        assert_eq!(streamed.id(), eager.id());
+        assert_eq!(streamed.canonical_preimage(), eager.canonical_preimage());
+        assert_eq!(streamed.canonical_bytes(), eager.canonical_bytes());
+        assert_eq!(streamed.collection_items(), eager.collection_items());
+    }
+
+    #[test]
+    fn g0_streamed_identity_rows_refuse_one_over_before_row_production() {
+        let rows = [
+            b"zero".to_vec(),
+            b"one".to_vec(),
+            b"two".to_vec(),
+            b"three".to_vec(),
+        ];
+        let limits = CanonicalLimits::new(4 * 1_024, 1_024, 1, 3, 16);
+        let produced = core::cell::Cell::new(0usize);
+
+        let refusal = with_internal_cx(|cx| {
+            let encoder = CanonicalEncoder::<EvidenceNodeId<StreamParitySchemaV1>, _>::new(
+                limits,
+                NeverCancel,
+            )
+            .expect("valid bounded encoder");
+            stream_identity_rows(encoder, Field::new(0, "rows"), &rows, cx, |row, _| {
+                produced.set(produced.get() + 1);
+                Ok(row.clone())
+            })
+            .expect_err("four rows must refuse a three-row envelope")
+        });
+
+        assert_eq!(
+            refusal,
+            CanonicalError::LimitExceeded {
+                kind: LimitKind::CollectionItems,
+                requested: 4,
+                limit: 3,
+            }
+        );
+        assert_eq!(produced.get(), 0, "field admission precedes row allocation");
+    }
 
     #[test]
     fn g0_determination_order_tracks_preserved_wire_tags() {

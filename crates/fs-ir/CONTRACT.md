@@ -154,15 +154,27 @@ admitted derived-geometry boundary.
   incidence rows. Complete receipts remain attached to their public handles;
   parent identities never duplicate a potentially huge child canonical
   preimage, but they also do not collapse composition to a child digest alone.
-- The canonical byte/count caps are not yet a peak-memory certificate. The
-  current encoder callers retain `Vec<Vec<u8>>` rows and deterministic
-  map/set/sort workspaces, and those temporary allocations are not yet
-  fallibly admitted against the active operation-memory lease. A legal
-  maximum-incidence graph can therefore exceed available process memory before
-  returning a typed refusal. I02.1 remains blocked on the allocation-free
-  encoder leaf `frankensim-sj31i.52.1.1` and lease-admitted causal workspace
-  leaf `frankensim-leapfrog-2026-program-i94v.1.2.9`; neither this contract nor
-  an intermediate receipt claims bounded peak memory until those leaves are
+- Causal structure, graph-artifact, normalized-outcome, conditional-outcome,
+  matching-set, and complete-receipt identity collections use the
+  transactional `fs-blake3` ordered-row stream. A row is declared, retained as
+  the sole pending row, written through the encoder-owned exact-length sink,
+  and dropped before the next row is produced. The former collection-wide
+  `Vec<Vec<u8>>` batches no longer multiply retained canonical payload by row
+  cardinality; a length/row-order/cancellation/encoder refusal consumes the
+  encoder and publishes no partial identity. G3 pins the streamed receipt,
+  semantic root, independent canonical-preimage root, canonical byte count,
+  and collection count to the eager canonical reference.
+- This streaming step is not yet a peak-memory certificate. One canonical row
+  is still materialized in an infallible `Vec`, and deterministic map/set/sort
+  workspaces are neither fallibly reserved nor charged to the active
+  operation-memory lease. The logical row-byte count also excludes allocator
+  capacity rounding, container/node metadata, `Arc` bookkeeping, allocator
+  arenas, and process RSS. A legal maximum-incidence graph can therefore still
+  exceed available process memory before returning a typed refusal. I02.1
+  remains blocked on the remaining lease-admitted causal workspace and
+  fallible row-storage work in
+  `frankensim-leapfrog-2026-program-i94v.1.2.9`; neither this contract nor an
+  intermediate receipt claims allocator or RSS closure until that leaf is
   green. The target public envelope is unchanged.
 - Canonical graph and receipt ordering uses a deterministic stable index-map
   sort with cancellation checkpoints through index initialization, cumulative
@@ -1092,7 +1104,10 @@ constructor-boundary assertions retain their exact typed error variants.
 Private G0 laws also prove receipt-adjudication Eq/Ord/Hash consistency and
 admission revalidation when encoder limits differ only as evidence, while the
 inclusive graph/receipt finding-budget boundaries collapse one-over inputs to
-a single `ResourceLimit` row.
+a single `ResourceLimit` row. A private G3 law compares eager and transactional
+ordered-row encoding over empty, binary, and multi-kilobyte rows and requires
+identical typed receipts, semantic roots, canonical-preimage roots, canonical
+byte counts, and collection counts.
 
 `tests/machine_semantics.rs` (Machine-IR E0 PR-3, G0/G3): fully populated
 behavior-overlay admission; complete state/initial/boundary/body-motion closure;
