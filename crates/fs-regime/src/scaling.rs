@@ -98,16 +98,19 @@ impl ScalingMap {
 /// systems (n ≲ 32) — this is a measurement probe, not an LA kernel.
 ///
 /// # Errors
-/// [`RegimeError::BadValue`] for empty/singular-to-working-precision
-/// input.
+/// [`RegimeError::BadValue`] for empty, mismatched, unrepresentable, or
+/// singular-to-working-precision input.
 pub fn condition_number(a: &[f64], n: usize) -> Result<f64, RegimeError> {
-    if n == 0 || a.len() != n * n {
+    let square = n.checked_mul(n).ok_or_else(|| RegimeError::BadValue {
+        what: format!("matrix dimension {n} overflows the n² element count"),
+    })?;
+    if n == 0 || a.len() != square {
         return Err(RegimeError::BadValue {
-            what: format!("matrix shape {} vs n²={}", a.len(), n * n),
+            what: format!("matrix shape {} vs n²={square}", a.len()),
         });
     }
     // G = AᵀA (symmetric positive semidefinite).
-    let mut g = vec![0.0f64; n * n];
+    let mut g = vec![0.0f64; square];
     for i in 0..n {
         for j in 0..n {
             let mut s = 0.0;
@@ -183,6 +186,16 @@ mod tests {
         let d = [100.0, 0.0, 0.0, 0.5];
         let c = condition_number(&d, 2).expect("cond");
         assert!((c - 200.0).abs() < 1e-9, "got {c}");
+    }
+
+    #[test]
+    fn condition_rejects_unrepresentable_square_shape_without_allocating() {
+        let n = 1usize << (usize::BITS / 2);
+        let error = condition_number(&[], n).expect_err("n² must be representable");
+        assert!(
+            matches!(error, RegimeError::BadValue { ref what } if what.contains("overflows the n² element count")),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
