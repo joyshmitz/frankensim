@@ -24,9 +24,12 @@ pub mod steer;
 pub use fs_robust::{EmpiricalCvarReport, RobustError, empirical_cvar};
 
 pub use cma::{
-    BIPOP_ADMISSION_SCHEMA_VERSION, BIPOP_RESTART_SCHEMA_VERSION, BipopAdmission, BipopError,
-    BipopLane, BipopLedgerError, BipopReport, BipopRestartRecord, CmaParams, CmaReport,
-    CmaStopReason, admit_bipop, bipop_cmaes, cmaes, try_bipop_cmaes,
+    BIPOP_ADMISSION_SCHEMA_VERSION, BIPOP_EVALUATION_SCHEMA_VERSION, BIPOP_REPORT_SCHEMA_VERSION,
+    BIPOP_RESTART_SCHEMA_VERSION, BIPOP_ROOT_IDENTITY_KIND, BIPOP_TRACE_IDENTITY_DOMAIN,
+    BIPOP_TRACE_IDENTITY_SCHEMA_VERSION, BipopAdmission, BipopError, BipopEvaluationRecord,
+    BipopLane, BipopLedgerError, BipopReport, BipopRestartRecord, BipopRootInputs,
+    BipopTraceIdentity, CmaParams, CmaReport, CmaStopReason, admit_bipop, bipop_cmaes, cmaes,
+    try_bipop_cmaes,
 };
 pub use dro::{DroReport, wasserstein_worst_case};
 pub use moo::{

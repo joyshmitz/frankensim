@@ -11,14 +11,12 @@ description = "Derivative-free optimization engines: CMA-ES (IGO form), BIPOP re
 layer = "L4"
 
 [dependencies]
+fs-blake3 = { path = "../fs-blake3" }
 fs-la = { path = "../fs-la" }
 fs-obs = { path = "../fs-obs" }
 fs-math = { path = "../fs-math" }
 fs-rand = { path = "../fs-rand" }
 fs-robust = { path = "../fs-robust" }
-
-[dev-dependencies]
-fs-blake3 = { path = "../fs-blake3" }
 
 [lints]
 workspace = true

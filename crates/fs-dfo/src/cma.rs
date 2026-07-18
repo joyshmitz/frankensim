@@ -11,7 +11,9 @@
 //! the landed cyclic Jacobi — the trajectory is a pure function of the
 //! seed.
 
+use fs_blake3::Blake3;
 use fs_la::eigen::jacobi_eigh;
+use fs_obs::ident::{IdentityBuilder, ReplayIdentity};
 use fs_rand::StreamKey;
 
 /// Kernel id for CMA sampling streams (stable registry).
@@ -48,6 +50,22 @@ pub const BIPOP_ADMISSION_SCHEMA_VERSION: u32 = 3;
 
 /// Schema version for [`BipopRestartRecord`].
 pub const BIPOP_RESTART_SCHEMA_VERSION: u32 = 1;
+
+/// Schema version for the root inputs and callback trace retained by
+/// [`BipopReport`].
+pub const BIPOP_REPORT_SCHEMA_VERSION: u32 = 1;
+
+/// Schema version for each borrowed [`BipopEvaluationRecord`].
+pub const BIPOP_EVALUATION_SCHEMA_VERSION: u32 = 1;
+
+/// Canonical fs-obs identity kind for one exact BIPOP root-input preimage.
+pub const BIPOP_ROOT_IDENTITY_KIND: &str = "fs-dfo-bipop-root-v1";
+
+/// Schema version for the allocation-free streaming trace identity.
+pub const BIPOP_TRACE_IDENTITY_SCHEMA_VERSION: u32 = 1;
+
+/// Domain prefix for the production BIPOP callback-trace BLAKE3.
+pub const BIPOP_TRACE_IDENTITY_DOMAIN: &str = "frankensim.fs-dfo.bipop-callback-trace.v1";
 
 /// Sealed result of callback-free BIPOP input and arithmetic admission.
 ///
@@ -202,6 +220,20 @@ pub enum BipopError {
         /// Stable formula label.
         what: &'static str,
     },
+    /// A native field cannot be represented by the canonical identity
+    /// schema's unsigned 64-bit integer encoding.
+    IdentityFieldOverflow {
+        /// Stable field label.
+        what: &'static str,
+    },
+    /// Capacity for the complete retained callback trace could not be
+    /// reserved before the first objective invocation.
+    TraceAllocationFailed {
+        /// Evaluation rows requested by the hard budget.
+        evaluations: usize,
+        /// Decision-coordinate entries requested by dimension times budget.
+        point_entries: usize,
+    },
     /// The budget/ladder restart envelope cannot be represented as a u64 ordinal.
     RestartOrdinalOverflow {
         /// Requested aggregate budget.
@@ -324,6 +356,17 @@ impl core::fmt::Display for BipopError {
             Self::DimensionOverflow { what } => {
                 write!(formatter, "BIPOP dimension formula `{what}` overflowed")
             }
+            Self::IdentityFieldOverflow { what } => write!(
+                formatter,
+                "BIPOP identity field `{what}` does not fit its u64 encoding"
+            ),
+            Self::TraceAllocationFailed {
+                evaluations,
+                point_entries,
+            } => write!(
+                formatter,
+                "BIPOP could not reserve retained trace capacity for {evaluations} evaluations and {point_entries} decision coordinates"
+            ),
             Self::RestartOrdinalOverflow { total_budget } => write!(
                 formatter,
                 "BIPOP restart envelope for budget {total_budget} cannot be represented by the u64 ordinal"
@@ -1022,11 +1065,272 @@ pub enum BipopLane {
     Small,
 }
 
+/// Exact causal inputs for one BIPOP study.
+///
+/// The nested [`ReplayIdentity`] is a canonical, typed fs-obs preimage over
+/// every field. It authenticates the retained fields against accidental or
+/// stale mutation; callers that require an external study identity must still
+/// compare it with their separately retained expected root.
+#[derive(Debug, Clone)]
+pub struct BipopRootInputs {
+    start: Vec<f64>,
+    sigma: f64,
+    total_budget: usize,
+    target: Option<f64>,
+    seed: u64,
+    identity: ReplayIdentity,
+}
+
+impl BipopRootInputs {
+    /// Exact initial point supplied to BIPOP.
+    #[must_use]
+    pub fn start(&self) -> &[f64] {
+        &self.start
+    }
+
+    /// Initial CMA step size, retained by exact IEEE-754 bits.
+    #[must_use]
+    pub fn sigma(&self) -> f64 {
+        self.sigma
+    }
+
+    /// Hard aggregate callback budget.
+    #[must_use]
+    pub fn total_budget(&self) -> usize {
+        self.total_budget
+    }
+
+    /// Typed finite target, or `None` when target stopping is disabled.
+    #[must_use]
+    pub fn target(&self) -> Option<f64> {
+        self.target
+    }
+
+    /// Root seed from which restart and CMA streams are derived.
+    #[must_use]
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
+    /// Canonical identity binding every retained root-input bit.
+    #[must_use]
+    pub fn identity(&self) -> &ReplayIdentity {
+        &self.identity
+    }
+}
+
+/// Strong streaming identity over the exact root-bound callback trace.
+///
+/// The BLAKE3 preimage is domain-separated and includes the trace schema,
+/// canonical root-input identity preimage, dimension, row count, every row's
+/// restart ownership/local offset/objective bits, and every decision bit in
+/// global callback order. The preimage is streamed and is not duplicated in
+/// memory beside the retained trace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BipopTraceIdentity {
+    schema_version: u32,
+    rows: usize,
+    dimension: usize,
+    digest: [u8; 32],
+}
+
+impl BipopTraceIdentity {
+    /// Trace-identity schema version.
+    #[must_use]
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    /// Number of callbacks committed by the identity.
+    #[must_use]
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    /// Decision dimension committed for every row.
+    #[must_use]
+    pub fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    /// Raw 256-bit BLAKE3 digest.
+    #[must_use]
+    pub fn digest(&self) -> &[u8; 32] {
+        &self.digest
+    }
+}
+
+fn build_bipop_root_inputs(
+    start: &[f64],
+    sigma: f64,
+    total_budget: usize,
+    target: Option<f64>,
+    seed: u64,
+) -> Result<BipopRootInputs, BipopError> {
+    let dimension = u64::try_from(start.len())
+        .map_err(|_| BipopError::IdentityFieldOverflow { what: "dimension" })?;
+    let identity_budget =
+        u64::try_from(total_budget).map_err(|_| BipopError::IdentityFieldOverflow {
+            what: "total budget",
+        })?;
+    let mut builder = IdentityBuilder::new(BIPOP_ROOT_IDENTITY_KIND)
+        .u64(
+            "report-schema-version",
+            u64::from(BIPOP_REPORT_SCHEMA_VERSION),
+        )
+        .u64(
+            "admission-schema-version",
+            u64::from(BIPOP_ADMISSION_SCHEMA_VERSION),
+        )
+        .u64("dimension", dimension)
+        .u64("total-budget", identity_budget)
+        .u64("root-seed", seed)
+        .f64_bits("initial-sigma", sigma)
+        .flag("target-present", target.is_some());
+    if let Some(target) = target {
+        builder = builder.f64_bits("target", target);
+    }
+    for coordinate in start {
+        builder = builder.f64_bits("start-coordinate", *coordinate);
+    }
+    Ok(BipopRootInputs {
+        start: start.to_vec(),
+        sigma,
+        total_budget,
+        target,
+        seed,
+        identity: builder.finish(),
+    })
+}
+
+#[derive(Debug, Clone)]
+struct BipopEvaluationRow {
+    schema_version: u32,
+    restart: u64,
+    local_offset: usize,
+    objective: f64,
+}
+
+fn build_bipop_trace_identity(
+    root: &BipopRootInputs,
+    rows: &[BipopEvaluationRow],
+    points: &[f64],
+) -> Result<BipopTraceIdentity, BipopError> {
+    let dimension = root.start.len();
+    let encoded_dimension =
+        u64::try_from(dimension).map_err(|_| BipopError::IdentityFieldOverflow {
+            what: "trace dimension",
+        })?;
+    let encoded_rows =
+        u64::try_from(rows.len()).map_err(|_| BipopError::IdentityFieldOverflow {
+            what: "trace row count",
+        })?;
+    let root_bytes = root.identity.canonical_bytes();
+    let encoded_root_bytes =
+        u64::try_from(root_bytes.len()).map_err(|_| BipopError::IdentityFieldOverflow {
+            what: "root identity byte length",
+        })?;
+    let expected_points =
+        rows.len()
+            .checked_mul(dimension)
+            .ok_or(BipopError::DimensionOverflow {
+                what: "callback trace coordinate entries",
+            })?;
+    if points.len() != expected_points {
+        return Err(BipopError::InternalInvariant {
+            what: "callback trace points must form a dense row-major matrix",
+        });
+    }
+
+    let mut hasher = Blake3::new();
+    hasher.update(BIPOP_TRACE_IDENTITY_DOMAIN.as_bytes());
+    hasher.update(&BIPOP_TRACE_IDENTITY_SCHEMA_VERSION.to_le_bytes());
+    hasher.update(&encoded_dimension.to_le_bytes());
+    hasher.update(&encoded_rows.to_le_bytes());
+    hasher.update(&encoded_root_bytes.to_le_bytes());
+    hasher.update(root_bytes);
+    for (row, point) in rows.iter().zip(points.chunks_exact(dimension)) {
+        let encoded_local =
+            u64::try_from(row.local_offset).map_err(|_| BipopError::IdentityFieldOverflow {
+                what: "trace local offset",
+            })?;
+        hasher.update(&row.schema_version.to_le_bytes());
+        hasher.update(&row.restart.to_le_bytes());
+        hasher.update(&encoded_local.to_le_bytes());
+        hasher.update(&row.objective.to_bits().to_le_bytes());
+        for coordinate in point {
+            hasher.update(&coordinate.to_bits().to_le_bytes());
+        }
+    }
+    Ok(BipopTraceIdentity {
+        schema_version: BIPOP_TRACE_IDENTITY_SCHEMA_VERSION,
+        rows: rows.len(),
+        dimension,
+        digest: *hasher.finalize().as_bytes(),
+    })
+}
+
+/// Borrowed view of one exact production objective invocation.
+///
+/// Global ordering is the row order in [`BipopReport::evaluations`]. The
+/// decision slice borrows the report's flat coordinate store, avoiding one
+/// allocation per callback while retaining every queried bit.
+#[derive(Debug, Clone, Copy)]
+pub struct BipopEvaluationRecord<'a> {
+    schema_version: u32,
+    global_offset: usize,
+    restart: u64,
+    local_offset: usize,
+    point: &'a [f64],
+    objective: f64,
+}
+
+impl BipopEvaluationRecord<'_> {
+    /// Evaluation-record schema version.
+    #[must_use]
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    /// Zero-based position in the complete study trace.
+    #[must_use]
+    pub fn global_offset(&self) -> usize {
+        self.global_offset
+    }
+
+    /// Restart ordinal that owns this callback.
+    #[must_use]
+    pub fn restart(&self) -> u64 {
+        self.restart
+    }
+
+    /// Zero-based callback offset inside the owning restart.
+    #[must_use]
+    pub fn local_offset(&self) -> usize {
+        self.local_offset
+    }
+
+    /// Exact finite decision point supplied to the objective.
+    #[must_use]
+    pub fn point(&self) -> &[f64] {
+        self.point
+    }
+
+    /// Exact objective-result bits returned by user code.
+    ///
+    /// Non-finite objective outputs remain data in the current CMA contract;
+    /// they are retained without normalization or a false finiteness claim.
+    #[must_use]
+    pub fn objective(&self) -> f64 {
+        self.objective
+    }
+}
+
 /// One immutable, versioned BIPOP restart receipt.
 ///
 /// Point and objective values retain their exact `f64` bits. The aggregate
-/// trace interval is half-open and counts objective invocations even though
-/// this first ledger tranche does not retain the objective payloads themselves.
+/// trace interval is half-open and indexes the exact retained production
+/// callback records exposed by [`BipopReport::evaluations`].
 #[derive(Debug, Clone)]
 pub struct BipopRestartRecord {
     schema_version: u32,
@@ -1174,6 +1478,14 @@ fn cma_reports_match_bits(left: &CmaReport, right: &CmaReport) -> bool {
             .all(|(left, right)| left.to_bits() == right.to_bits())
 }
 
+fn f64_slices_match_bits(left: &[f64], right: &[f64]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| left.to_bits() == right.to_bits())
+}
+
 /// BIPOP restart evidence.
 #[derive(Debug, Clone)]
 pub struct BipopReport {
@@ -1183,12 +1495,28 @@ pub struct BipopReport {
     pub schedule: Vec<usize>,
     /// Compatibility projection of the terminal aggregate trace offset.
     pub total_evals: usize,
-    total_budget: usize,
+    schema_version: u32,
+    root: BipopRootInputs,
     records: Vec<BipopRestartRecord>,
     best_restart: usize,
+    trace_rows: Vec<BipopEvaluationRow>,
+    trace_points: Vec<f64>,
+    trace_identity: BipopTraceIdentity,
 }
 
 impl BipopReport {
+    /// Production report schema governing the root, restart ledger, and trace.
+    #[must_use]
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    /// Exact, canonically identified inputs that caused this study.
+    #[must_use]
+    pub fn root_inputs(&self) -> &BipopRootInputs {
+        &self.root
+    }
+
     /// Ordered immutable restart ledger.
     #[must_use]
     pub fn records(&self) -> &[BipopRestartRecord] {
@@ -1199,7 +1527,7 @@ impl BipopReport {
     /// local allocation and the ledger's terminal completeness.
     #[must_use]
     pub fn total_budget(&self) -> usize {
-        self.total_budget
+        self.root.total_budget
     }
 
     /// Index of the earliest restart attaining the best objective under
@@ -1215,17 +1543,55 @@ impl BipopReport {
         self.records.get(self.best_restart)
     }
 
+    /// One retained objective invocation by global trace offset.
+    #[must_use]
+    pub fn evaluation(&self, global_offset: usize) -> Option<BipopEvaluationRecord<'_>> {
+        let row = self.trace_rows.get(global_offset)?;
+        let dimension = self.root.start.len();
+        let point_start = global_offset.checked_mul(dimension)?;
+        let point_end = point_start.checked_add(dimension)?;
+        let point = self.trace_points.get(point_start..point_end)?;
+        Some(BipopEvaluationRecord {
+            schema_version: row.schema_version,
+            global_offset,
+            restart: row.restart,
+            local_offset: row.local_offset,
+            point,
+            objective: row.objective,
+        })
+    }
+
+    /// Complete ordered production callback trace.
+    #[must_use]
+    pub fn evaluations(&self) -> impl ExactSizeIterator<Item = BipopEvaluationRecord<'_>> + '_ {
+        (0..self.trace_rows.len()).map(|index| {
+            self.evaluation(index)
+                .expect("private BIPOP trace layout must remain contiguous")
+        })
+    }
+
+    /// Strong identity over the exact root-bound callback trace.
+    #[must_use]
+    pub fn trace_identity(&self) -> BipopTraceIdentity {
+        self.trace_identity
+    }
+
     /// Recheck the ordered ledger and every compatibility projection.
     ///
-    /// This is a structural validator over retained evidence. It does not yet
-    /// authenticate the first start, root seed, sigma, target, or callback
-    /// semantics against an external input identity.
+    /// This is a structural validator over retained evidence. It recomputes the
+    /// canonical root identity, restart derivations, complete callback-trace
+    /// projection, and strong trace identity. A consumer asserting one specific
+    /// study must additionally compare [`BipopRootInputs::identity`] with its
+    /// separately retained expected root.
     ///
     /// # Errors
     /// Returns a [`BipopLedgerError`] naming the first deterministic invariant
     /// violation.
     #[allow(clippy::too_many_lines)] // one ordered pass mirrors the versioned record schema
     pub fn validate_ledger(&self) -> Result<(), BipopLedgerError> {
+        if self.schema_version != BIPOP_REPORT_SCHEMA_VERSION {
+            return Err(BipopLedgerError::global("report-schema-version"));
+        }
         let first = self
             .records
             .first()
@@ -1233,14 +1599,37 @@ impl BipopReport {
         if self.schedule.len() != self.records.len() {
             return Err(BipopLedgerError::global("schedule-length"));
         }
-        if self.total_budget == 0 {
+        if self.root.total_budget == 0 {
             return Err(BipopLedgerError::global("positive-total-budget"));
         }
         let base_lambda = first.lambda;
-        let base_seed = first.seed;
-        let point_dim = first.start.len();
+        let base_seed = self.root.seed;
+        let point_dim = self.root.start.len();
         if point_dim == 0 {
             return Err(BipopLedgerError::at(0, "positive-point-dimension"));
+        }
+        if self.root.start.iter().any(|value| !value.is_finite()) {
+            return Err(BipopLedgerError::global("finite-root-start"));
+        }
+        if !self.root.sigma.is_finite() || self.root.sigma <= 0.0 {
+            return Err(BipopLedgerError::global("positive-finite-root-sigma"));
+        }
+        if self.root.target.is_some_and(|target| !target.is_finite()) {
+            return Err(BipopLedgerError::global("finite-root-target"));
+        }
+        let expected_root = build_bipop_root_inputs(
+            &self.root.start,
+            self.root.sigma,
+            self.root.total_budget,
+            self.root.target,
+            self.root.seed,
+        )
+        .map_err(|_| BipopLedgerError::global("root-identity-encoding"))?;
+        if self.root.identity != expected_root.identity {
+            return Err(BipopLedgerError::global("root-identity"));
+        }
+        if !f64_slices_match_bits(&first.start, &self.root.start) {
+            return Err(BipopLedgerError::at(0, "root-start-projection"));
         }
         let matrix_entries = point_dim
             .checked_mul(point_dim)
@@ -1259,12 +1648,13 @@ impl BipopReport {
         // Mirror callback-free admission, not merely the realized trace. An
         // early target hit cannot retroactively authenticate a problem whose
         // hard budget could have entered the refused Jacobi dependency.
-        if self.total_budget > expected_base_lambda {
+        if self.root.total_budget > expected_base_lambda {
             fs_la::eigen::admit_jacobi_eigh(point_dim)
                 .map_err(|_| BipopLedgerError::at(0, "eigensolver-admission"))?;
         }
-        let admitted_max_ordinal = scheduler_max_restart_ordinal(base_lambda, self.total_budget)
-            .map_err(|_| BipopLedgerError::global("restart-envelope"))?;
+        let admitted_max_ordinal =
+            scheduler_max_restart_ordinal(base_lambda, self.root.total_budget)
+                .map_err(|_| BipopLedgerError::global("restart-envelope"))?;
         let last_ordinal = u64::try_from(self.records.len() - 1)
             .map_err(|_| BipopLedgerError::global("restart-envelope"))?;
         if last_ordinal > admitted_max_ordinal {
@@ -1280,6 +1670,12 @@ impl BipopReport {
         let mut large_budget_used = 0usize;
         let mut small_budget_used = 0usize;
         let mut large_runs = 0u32;
+        let mut expected_restart_stream = StreamKey {
+            seed: self.root.seed,
+            kernel: K_CMA,
+            tile: 1,
+        }
+        .stream();
 
         for (index, record) in self.records.iter().enumerate() {
             // Production stops immediately after publishing rung eight, so no
@@ -1308,6 +1704,17 @@ impl BipopReport {
             }
             if record.start.iter().any(|value| !value.is_finite()) {
                 return Err(BipopLedgerError::at(index, "finite-start"));
+            }
+            if index > 0 {
+                for (component, actual) in record.start.iter().enumerate() {
+                    let expected = self.root.sigma.mul_add(
+                        expected_restart_stream.next_normal(),
+                        self.root.start[component],
+                    );
+                    if actual.to_bits() != expected.to_bits() {
+                        return Err(BipopLedgerError::at(index, "restart-start"));
+                    }
+                }
             }
             if record.report.x_best.iter().any(|value| !value.is_finite()) {
                 return Err(BipopLedgerError::at(index, "finite-best-point"));
@@ -1360,7 +1767,12 @@ impl BipopReport {
             }
             match record.stop_reason {
                 CmaStopReason::TargetReached => {
-                    if !record.report.converged {
+                    if !record.report.converged
+                        || !self
+                            .root
+                            .target
+                            .is_some_and(|target| record.report.f_best <= target)
+                    {
                         return Err(BipopLedgerError::at(index, "terminal-reason"));
                     }
                 }
@@ -1370,12 +1782,24 @@ impl BipopReport {
                         .evals
                         .checked_add(record.lambda)
                         .ok_or_else(|| BipopLedgerError::at(index, "evaluation-overflow"))?;
-                    if record.report.converged || next_generation <= record.allocated_budget {
+                    if record.report.converged
+                        || self
+                            .root
+                            .target
+                            .is_some_and(|target| record.report.f_best <= target)
+                        || next_generation <= record.allocated_budget
+                    {
                         return Err(BipopLedgerError::at(index, "terminal-reason"));
                     }
                 }
                 CmaStopReason::Stagnated => {
-                    if record.report.converged || record.report.generations == 0 {
+                    if record.report.converged
+                        || self
+                            .root
+                            .target
+                            .is_some_and(|target| record.report.f_best <= target)
+                        || record.report.generations == 0
+                    {
                         return Err(BipopLedgerError::at(index, "terminal-reason"));
                     }
                 }
@@ -1392,6 +1816,7 @@ impl BipopReport {
                 .checked_mul(BIPOP_GENERATIONS_PER_RESTART)
                 .ok_or_else(|| BipopLedgerError::at(index, "local-budget-overflow"))?;
             let remaining = self
+                .root
                 .total_budget
                 .checked_sub(cursor)
                 .ok_or_else(|| BipopLedgerError::at(index, "aggregate-budget"))?;
@@ -1427,7 +1852,9 @@ impl BipopReport {
             .records
             .last()
             .ok_or_else(|| BipopLedgerError::global("nonempty"))?;
-        if cursor < self.total_budget && !last.report.converged && large_runs <= BIPOP_LARGE_RUN_CAP
+        if cursor < self.root.total_budget
+            && !last.report.converged
+            && large_runs <= BIPOP_LARGE_RUN_CAP
         {
             return Err(BipopLedgerError::global("nonterminal-prefix"));
         }
@@ -1447,6 +1874,85 @@ impl BipopReport {
         }
         if !cma_reports_match_bits(&self.best, &self.records[expected_best].report) {
             return Err(BipopLedgerError::global("best-projection"));
+        }
+        if self.trace_rows.len() != self.total_evals {
+            return Err(BipopLedgerError::global("trace-length"));
+        }
+        let expected_point_entries = self
+            .total_evals
+            .checked_mul(point_dim)
+            .ok_or_else(|| BipopLedgerError::global("trace-point-overflow"))?;
+        if self.trace_points.len() != expected_point_entries {
+            return Err(BipopLedgerError::global("trace-point-layout"));
+        }
+        for (restart_index, record) in self.records.iter().enumerate() {
+            let rows = self
+                .trace_rows
+                .get(record.trace_start..record.trace_end)
+                .ok_or_else(|| BipopLedgerError::at(restart_index, "trace-row-range"))?;
+            let mut local_best = 0usize;
+            for (local_offset, row) in rows.iter().enumerate() {
+                let global_offset = record
+                    .trace_start
+                    .checked_add(local_offset)
+                    .ok_or_else(|| BipopLedgerError::at(restart_index, "trace-overflow"))?;
+                if row.schema_version != BIPOP_EVALUATION_SCHEMA_VERSION {
+                    return Err(BipopLedgerError::at(restart_index, "trace-schema-version"));
+                }
+                if row.restart != record.ordinal {
+                    return Err(BipopLedgerError::at(restart_index, "trace-restart"));
+                }
+                if row.local_offset != local_offset {
+                    return Err(BipopLedgerError::at(restart_index, "trace-local-offset"));
+                }
+                let point_start = global_offset
+                    .checked_mul(point_dim)
+                    .ok_or_else(|| BipopLedgerError::at(restart_index, "trace-point-overflow"))?;
+                let point_end = point_start
+                    .checked_add(point_dim)
+                    .ok_or_else(|| BipopLedgerError::at(restart_index, "trace-point-overflow"))?;
+                let point = self
+                    .trace_points
+                    .get(point_start..point_end)
+                    .ok_or_else(|| BipopLedgerError::at(restart_index, "trace-point-range"))?;
+                if point.iter().any(|coordinate| !coordinate.is_finite()) {
+                    return Err(BipopLedgerError::at(restart_index, "finite-trace-point"));
+                }
+                if local_offset == 0 && !f64_slices_match_bits(point, &record.start) {
+                    return Err(BipopLedgerError::at(
+                        restart_index,
+                        "trace-start-projection",
+                    ));
+                }
+                if row.objective < rows[local_best].objective {
+                    local_best = local_offset;
+                }
+            }
+            let best_global = record
+                .trace_start
+                .checked_add(local_best)
+                .ok_or_else(|| BipopLedgerError::at(restart_index, "trace-overflow"))?;
+            let best_point_start = best_global
+                .checked_mul(point_dim)
+                .ok_or_else(|| BipopLedgerError::at(restart_index, "trace-point-overflow"))?;
+            let best_point_end = best_point_start
+                .checked_add(point_dim)
+                .ok_or_else(|| BipopLedgerError::at(restart_index, "trace-point-overflow"))?;
+            let best_point = self
+                .trace_points
+                .get(best_point_start..best_point_end)
+                .ok_or_else(|| BipopLedgerError::at(restart_index, "trace-point-range"))?;
+            if rows[local_best].objective.to_bits() != record.report.f_best.to_bits()
+                || !f64_slices_match_bits(best_point, &record.report.x_best)
+            {
+                return Err(BipopLedgerError::at(restart_index, "trace-best-projection"));
+            }
+        }
+        let expected_trace_identity =
+            build_bipop_trace_identity(&self.root, &self.trace_rows, &self.trace_points)
+                .map_err(|_| BipopLedgerError::global("trace-identity-encoding"))?;
+        if self.trace_identity != expected_trace_identity {
+            return Err(BipopLedgerError::global("trace-identity"));
         }
         Ok(())
     }
@@ -1513,6 +2019,42 @@ fn run_admitted_bipop<F: FnMut(&[f64]) -> f64>(
     let base_lambda = admission.base_lambda;
     let total_budget = admission.total_budget;
     let dimension = admission.dimension;
+    let root = build_bipop_root_inputs(x0, sigma0, total_budget, target, seed)?;
+    let trace_point_capacity =
+        total_budget
+            .checked_mul(dimension)
+            .ok_or(BipopError::DimensionOverflow {
+                what: "callback trace coordinate entries",
+            })?;
+    let trace_point_bytes = trace_point_capacity
+        .checked_mul(core::mem::size_of::<f64>())
+        .ok_or(BipopError::DimensionOverflow {
+            what: "callback trace coordinate bytes",
+        })?;
+    let trace_row_bytes = total_budget
+        .checked_mul(core::mem::size_of::<BipopEvaluationRow>())
+        .ok_or(BipopError::DimensionOverflow {
+            what: "callback trace row bytes",
+        })?;
+    if trace_point_bytes > isize::MAX as usize || trace_row_bytes > isize::MAX as usize {
+        return Err(BipopError::DimensionOverflow {
+            what: "callback trace address space",
+        });
+    }
+    let mut trace_rows: Vec<BipopEvaluationRow> = Vec::new();
+    let mut trace_points: Vec<f64> = Vec::new();
+    trace_rows
+        .try_reserve_exact(total_budget)
+        .map_err(|_| BipopError::TraceAllocationFailed {
+            evaluations: total_budget,
+            point_entries: trace_point_capacity,
+        })?;
+    trace_points
+        .try_reserve_exact(trace_point_capacity)
+        .map_err(|_| BipopError::TraceAllocationFailed {
+            evaluations: total_budget,
+            point_entries: trace_point_capacity,
+        })?;
     let mut records: Vec<BipopRestartRecord> = Vec::new();
     let mut total_evals = 0usize;
     let mut best_restart: Option<usize> = None;
@@ -1686,14 +2228,58 @@ fn run_admitted_bipop<F: FnMut(&[f64]) -> f64>(
                 seed,
                 max_restart_ordinal: restart,
             })?;
-        let (rep, stop_reason) = cmaes_with_stop_target(f, &start, &params, derived_seed, target)
-            .map_err(|error| BipopError::GeneratedCandidateNonFinite {
-            restart,
-            generation: error.generation,
-            candidate: error.candidate,
-            component: error.component,
-            bits: error.bits,
-        })?;
+        if trace_rows.len() != trace_start
+            || trace_points.len()
+                != trace_start
+                    .checked_mul(dimension)
+                    .ok_or(BipopError::ArithmeticOverflow {
+                        restart,
+                        what: "callback trace point offset",
+                    })?
+        {
+            return Err(BipopError::InternalInvariant {
+                what: "retained callback trace must precede its restart record",
+            });
+        }
+        let trace_row_start = trace_rows.len();
+        let trace_point_start = trace_points.len();
+        let result = {
+            let mut traced_objective = |point: &[f64]| {
+                let local_offset = trace_rows.len() - trace_row_start;
+                let objective = f(point);
+                trace_points.extend_from_slice(point);
+                trace_rows.push(BipopEvaluationRow {
+                    schema_version: BIPOP_EVALUATION_SCHEMA_VERSION,
+                    restart,
+                    local_offset,
+                    objective,
+                });
+                objective
+            };
+            cmaes_with_stop_target(&mut traced_objective, &start, &params, derived_seed, target)
+        };
+        let (rep, stop_reason) =
+            result.map_err(|error| BipopError::GeneratedCandidateNonFinite {
+                restart,
+                generation: error.generation,
+                candidate: error.candidate,
+                component: error.component,
+                bits: error.bits,
+            })?;
+        let retained_rows = trace_rows.len() - trace_row_start;
+        let retained_points = trace_points.len() - trace_point_start;
+        let expected_retained_points =
+            rep.evals
+                .checked_mul(dimension)
+                .ok_or(BipopError::ArithmeticOverflow {
+                    restart,
+                    what: "callback trace point count",
+                })?;
+        if retained_rows != rep.evals || retained_points != expected_retained_points {
+            return Err(BipopError::InternalInvariant {
+                what: "CMA report must project the retained callback trace",
+            });
+        }
         let actual_cma_stream_blocks = cma_stream_block_bound(dimension, lambda, rep.generations)?;
         if actual_cma_stream_blocks > planned_cma_stream_blocks {
             return Err(BipopError::InternalInvariant {
@@ -1795,13 +2381,18 @@ fn run_admitted_bipop<F: FnMut(&[f64]) -> f64>(
     })?;
     let schedule = records.iter().map(BipopRestartRecord::lambda).collect();
     let best = records[best_restart].report.clone();
+    let trace_identity = build_bipop_trace_identity(&root, &trace_rows, &trace_points)?;
     let report = BipopReport {
         best,
         schedule,
         total_evals,
-        total_budget,
+        schema_version: BIPOP_REPORT_SCHEMA_VERSION,
+        root,
         records,
         best_restart,
+        trace_rows,
+        trace_points,
+        trace_identity,
     };
     report
         .validate_ledger()
@@ -1815,6 +2406,58 @@ fn run_admitted_bipop<F: FnMut(&[f64]) -> f64>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_root(
+        start: &[f64],
+        sigma: f64,
+        total_budget: usize,
+        target: Option<f64>,
+        seed: u64,
+    ) -> BipopRootInputs {
+        build_bipop_root_inputs(start, sigma, total_budget, target, seed)
+            .expect("test root must be identity-representable")
+    }
+
+    fn report_without_trace(
+        best: CmaReport,
+        schedule: Vec<usize>,
+        total_evals: usize,
+        root: BipopRootInputs,
+        records: Vec<BipopRestartRecord>,
+        best_restart: usize,
+    ) -> BipopReport {
+        let trace_rows = Vec::new();
+        let trace_points = Vec::new();
+        let trace_identity = build_bipop_trace_identity(&root, &trace_rows, &trace_points)
+            .expect("empty test trace identity must be representable");
+        BipopReport {
+            best,
+            schedule,
+            total_evals,
+            schema_version: BIPOP_REPORT_SCHEMA_VERSION,
+            root,
+            records,
+            best_restart,
+            trace_rows,
+            trace_points,
+            trace_identity,
+        }
+    }
+
+    fn reseal_private_identities(report: &mut BipopReport) {
+        report.root.identity = build_bipop_root_inputs(
+            &report.root.start,
+            report.root.sigma,
+            report.root.total_budget,
+            report.root.target,
+            report.root.seed,
+        )
+        .expect("mutated test root remains representable")
+        .identity;
+        report.trace_identity =
+            build_bipop_trace_identity(&report.root, &report.trace_rows, &report.trace_points)
+                .expect("mutated test trace remains representable");
+    }
 
     /// G0: both random domains count every semantic axis, accept exactly the
     /// full `2^64` Philox coordinate set once, and refuse the first reuse. The
@@ -1929,6 +2572,12 @@ mod tests {
         let mut records = Vec::new();
         let mut schedule = Vec::new();
         let mut cursor = 0usize;
+        let mut restart_stream = StreamKey {
+            seed: 0,
+            kernel: K_CMA,
+            tile: 1,
+        }
+        .stream();
         let mut push_record =
             |lane: BipopLane, lambda: usize, allocated_budget: usize, generations: usize| {
                 let index = records.len();
@@ -1958,7 +2607,11 @@ mod tests {
                     lambda,
                     allocated_budget,
                     seed,
-                    start: vec![0.0],
+                    start: if index == 0 {
+                        vec![0.0]
+                    } else {
+                        vec![restart_stream.next_normal()]
+                    },
                     trace_start: cursor,
                     trace_end,
                     stop_reason: CmaStopReason::Stagnated,
@@ -2007,14 +2660,14 @@ mod tests {
         );
         assert_eq!(records.len(), 18);
         assert_eq!(cursor, 3_086);
-        let report = BipopReport {
-            best: records[0].report.clone(),
+        let report = report_without_trace(
+            records[0].report.clone(),
             schedule,
-            total_evals: cursor,
-            total_budget,
+            cursor,
+            test_root(&[0.0], 1.0, total_budget, None, 0),
             records,
-            best_restart: 0,
-        };
+            0,
+        );
 
         let error = report
             .validate_ledger()
@@ -2053,14 +2706,14 @@ mod tests {
             stop_reason: CmaStopReason::BudgetExhausted,
             report: run.clone(),
         };
-        let report = BipopReport {
-            best: run.clone(),
-            schedule: vec![lambda],
-            total_evals: allocated_budget,
-            total_budget: allocated_budget,
-            records: vec![record],
-            best_restart: 0,
-        };
+        let report = report_without_trace(
+            run.clone(),
+            vec![lambda],
+            allocated_budget,
+            test_root(&[0.0], 1.0, allocated_budget, None, 0),
+            vec![record],
+            0,
+        );
 
         let error = report
             .validate_ledger()
@@ -2124,17 +2777,17 @@ mod tests {
             stop_reason: CmaStopReason::TargetReached,
             report: run.clone(),
         };
-        let report = BipopReport {
-            best: run.clone(),
-            schedule: vec![lambda, lambda],
-            total_evals: 2,
-            total_budget,
-            records: vec![
+        let report = report_without_trace(
+            run.clone(),
+            vec![lambda, lambda],
+            2,
+            test_root(&[0.0], 1.0, total_budget, Some(0.0), 0),
+            vec![
                 make_record(0, BipopLane::Large),
                 make_record(1, BipopLane::Small),
             ],
-            best_restart: 0,
-        };
+            0,
+        );
 
         let error = report
             .validate_ledger()
@@ -2172,14 +2825,14 @@ mod tests {
             stop_reason: CmaStopReason::TargetReached,
             report: run.clone(),
         };
-        let report = BipopReport {
-            best: run,
-            schedule: vec![lambda],
-            total_evals: 1,
-            total_budget,
-            records: vec![record],
-            best_restart: 0,
-        };
+        let report = report_without_trace(
+            run,
+            vec![lambda],
+            1,
+            test_root(&vec![0.0; dimension], 1.0, total_budget, Some(0.0), 0),
+            vec![record],
+            0,
+        );
 
         let error = report
             .validate_ledger()
@@ -2232,6 +2885,149 @@ mod tests {
         assert_eq!(error.invariant(), "finite-nonnegative-sigma");
     }
 
+    /// G3: stale and structurally reassigned callback evidence cannot survive
+    /// the production validator, even when every value remains finite.
+    #[test]
+    fn ledger_refuses_trace_truncation_reordering_reassignment_and_bit_mutation() {
+        let make_report = || {
+            let mut objective =
+                |point: &[f64]| point.iter().map(|value| value * value).sum::<f64>();
+            try_bipop_cmaes(&mut objective, &[2.0, -1.0], 0.75, 20, None, 7)
+                .expect("trace mutation fixture admits")
+        };
+
+        let mut truncated = make_report();
+        truncated.trace_rows.pop();
+        let error = truncated
+            .validate_ledger()
+            .expect_err("truncated trace must refuse");
+        assert_eq!(error.invariant(), "trace-length");
+
+        let mut reordered = make_report();
+        reordered.trace_rows.swap(0, 1);
+        let error = reordered
+            .validate_ledger()
+            .expect_err("reordered trace rows must refuse");
+        assert_eq!(error.restart(), Some(0));
+        assert_eq!(error.invariant(), "trace-local-offset");
+
+        let mut duplicated = make_report();
+        duplicated.trace_rows[1] = duplicated.trace_rows[0].clone();
+        let error = duplicated
+            .validate_ledger()
+            .expect_err("duplicated trace metadata must refuse");
+        assert_eq!(error.restart(), Some(0));
+        assert_eq!(error.invariant(), "trace-local-offset");
+
+        let mut reassigned = make_report();
+        reassigned.trace_rows[0].restart = 1;
+        let error = reassigned
+            .validate_ledger()
+            .expect_err("reassigned trace row must refuse");
+        assert_eq!(error.restart(), Some(0));
+        assert_eq!(error.invariant(), "trace-restart");
+
+        let mut changed_point = make_report();
+        let first_record = &changed_point.records[0];
+        let first_noninitial = first_record
+            .trace_start
+            .checked_add(1)
+            .expect("fixture trace offset fits");
+        let nonbest_global = (first_noninitial..first_record.trace_end)
+            .find(|global| {
+                changed_point.trace_rows[*global].objective.to_bits()
+                    != first_record.report.f_best.to_bits()
+            })
+            .expect("fixture retains a non-best callback");
+        let coordinate = nonbest_global
+            .checked_mul(changed_point.root.start.len())
+            .expect("fixture point offset fits");
+        let original = changed_point.trace_points[coordinate];
+        changed_point.trace_points[coordinate] = f64::from_bits(original.to_bits() ^ 1);
+        let error = changed_point
+            .validate_ledger()
+            .expect_err("stale trace identity must catch a non-best point mutation");
+        assert_eq!(error.restart(), None);
+        assert_eq!(error.invariant(), "trace-identity");
+
+        let mut changed_objective = make_report();
+        let first_record = &changed_objective.records[0];
+        let nonbest_global = (first_record.trace_start..first_record.trace_end)
+            .find(|global| {
+                changed_objective.trace_rows[*global].objective > first_record.report.f_best
+            })
+            .expect("fixture retains a strictly non-best callback");
+        let original = changed_objective.trace_rows[nonbest_global].objective;
+        changed_objective.trace_rows[nonbest_global].objective = f64::from_bits(
+            original
+                .to_bits()
+                .checked_add(1)
+                .expect("finite fixture ULP"),
+        );
+        let error = changed_objective
+            .validate_ledger()
+            .expect_err("stale trace identity must catch a non-best objective mutation");
+        assert_eq!(error.restart(), None);
+        assert_eq!(error.invariant(), "trace-identity");
+    }
+
+    /// G3: recomputing the nested identities does not make semantically
+    /// incompatible root fields authentic for the retained run.
+    #[test]
+    fn ledger_refuses_resealed_root_start_sigma_budget_target_and_seed_mutations() {
+        let make_report = || {
+            let mut objective =
+                |point: &[f64]| point.iter().map(|value| value * value).sum::<f64>();
+            try_bipop_cmaes(&mut objective, &[2.0, -1.0], 0.75, 20, Some(-1.0), 7)
+                .expect("root mutation fixture admits")
+        };
+
+        let mut changed_start = make_report();
+        changed_start.root.start[0] = f64::from_bits(changed_start.root.start[0].to_bits() ^ 1);
+        reseal_private_identities(&mut changed_start);
+        let error = changed_start
+            .validate_ledger()
+            .expect_err("resealed root start mutation must refuse");
+        assert_eq!(error.restart(), Some(0));
+        assert_eq!(error.invariant(), "root-start-projection");
+
+        let mut changed_sigma = make_report();
+        changed_sigma.root.sigma *= 2.0;
+        reseal_private_identities(&mut changed_sigma);
+        let error = changed_sigma
+            .validate_ledger()
+            .expect_err("resealed root sigma mutation must refuse");
+        assert_eq!(error.restart(), Some(1));
+        assert_eq!(error.invariant(), "restart-start");
+
+        let mut changed_budget = make_report();
+        changed_budget.root.total_budget += 1;
+        reseal_private_identities(&mut changed_budget);
+        let error = changed_budget
+            .validate_ledger()
+            .expect_err("resealed root budget mutation must refuse");
+        assert_eq!(error.restart(), Some(0));
+        assert_eq!(error.invariant(), "allocated-budget");
+
+        let mut changed_target = make_report();
+        changed_target.root.target = Some(f64::MAX);
+        reseal_private_identities(&mut changed_target);
+        let error = changed_target
+            .validate_ledger()
+            .expect_err("resealed root target mutation must refuse");
+        assert_eq!(error.restart(), Some(0));
+        assert_eq!(error.invariant(), "terminal-reason");
+
+        let mut changed_seed = make_report();
+        changed_seed.root.seed ^= 1;
+        reseal_private_identities(&mut changed_seed);
+        let error = changed_seed
+            .validate_ledger()
+            .expect_err("resealed root seed mutation must refuse");
+        assert_eq!(error.restart(), Some(0));
+        assert_eq!(error.invariant(), "derived-seed");
+    }
+
     /// G0: an overflowing hypothetical next generation is not evidence that a
     /// run exhausted its local budget. The validator must refuse the arithmetic
     /// boundary instead of treating `checked_add(None)` as "no generation fits."
@@ -2263,14 +3059,14 @@ mod tests {
             stop_reason: CmaStopReason::BudgetExhausted,
             report: run.clone(),
         };
-        let report = BipopReport {
-            best: run,
-            schedule: vec![lambda],
-            total_evals: evals,
-            total_budget: usize::MAX,
-            records: vec![record],
-            best_restart: 0,
-        };
+        let report = report_without_trace(
+            run,
+            vec![lambda],
+            evals,
+            test_root(&[0.0, 0.0], 1.0, usize::MAX, None, 7),
+            vec![record],
+            0,
+        );
 
         let error = report
             .validate_ledger()

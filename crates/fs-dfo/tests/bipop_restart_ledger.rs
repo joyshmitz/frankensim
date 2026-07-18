@@ -1,17 +1,17 @@
-//! G0/G3 coverage for the typed BIPOP restart ledger (7tv.23.1).
+//! G0/G3 coverage for the typed BIPOP restart ledger and production callback
+//! trace (7tv.23.1, 7tv.23.3).
 //!
-//! This first production tranche binds each completed CMA restart and makes the
-//! legacy summary fields checked projections of that ordered evidence. It does
-//! not yet claim fallible input admission, zero-budget support, cancellation,
-//! pause/resume, checked seed-overflow refusal, retained objective payloads, or
-//! authentication of the root start/seed/sigma/target/callback semantics, or a
-//! G5 artifact identity.
+//! The report binds each completed CMA restart, exact root-input identity, and
+//! every objective query/result bit while keeping legacy summary fields checked
+//! projections. Cancellation and pause/resume/fork remain separate scope.
 
 #![deny(unsafe_code)]
 
 use fs_dfo::{
-    BIPOP_RESTART_SCHEMA_VERSION, BipopLane, BipopReport, BipopRestartRecord, CmaReport,
-    CmaStopReason, bipop_cmaes,
+    BIPOP_EVALUATION_SCHEMA_VERSION, BIPOP_REPORT_SCHEMA_VERSION, BIPOP_RESTART_SCHEMA_VERSION,
+    BIPOP_ROOT_IDENTITY_KIND, BIPOP_TRACE_IDENTITY_DOMAIN, BIPOP_TRACE_IDENTITY_SCHEMA_VERSION,
+    BipopLane, BipopReport, BipopRestartRecord, CmaReport, CmaStopReason, bipop_cmaes,
+    try_bipop_cmaes,
 };
 
 const ROOT_SEED: u64 = 0xB1_90_00_01;
@@ -56,6 +56,34 @@ fn assert_record_bits(left: &BipopRestartRecord, right: &BipopRestartRecord) {
     assert_report_bits(left.report(), right.report());
 }
 
+fn assert_complete_evidence_bits(left: &BipopReport, right: &BipopReport) {
+    assert_eq!(left.schema_version(), right.schema_version());
+    let left_root = left.root_inputs();
+    let right_root = right.root_inputs();
+    assert_slice_bits(left_root.start(), right_root.start());
+    assert_eq!(left_root.sigma().to_bits(), right_root.sigma().to_bits());
+    assert_eq!(left_root.total_budget(), right_root.total_budget());
+    assert_eq!(
+        left_root.target().map(f64::to_bits),
+        right_root.target().map(f64::to_bits)
+    );
+    assert_eq!(left_root.seed(), right_root.seed());
+    assert_eq!(left_root.identity(), right_root.identity());
+    assert_eq!(left.trace_identity(), right.trace_identity());
+
+    let left_trace = left.evaluations().collect::<Vec<_>>();
+    let right_trace = right.evaluations().collect::<Vec<_>>();
+    assert_eq!(left_trace.len(), right_trace.len());
+    for (left, right) in left_trace.iter().zip(right_trace) {
+        assert_eq!(left.schema_version(), right.schema_version());
+        assert_eq!(left.global_offset(), right.global_offset());
+        assert_eq!(left.restart(), right.restart());
+        assert_eq!(left.local_offset(), right.local_offset());
+        assert_slice_bits(left.point(), right.point());
+        assert_eq!(left.objective().to_bits(), right.objective().to_bits());
+    }
+}
+
 /// G0: ordered intervals partition the aggregate evaluation trace, every run
 /// obeys its local cap and population accounting, and the public best report is
 /// a bit-exact projection of the explicitly named restart.
@@ -67,8 +95,39 @@ fn g0_restart_records_partition_the_trace_and_name_the_best_run() {
         .expect("generated ledger validates");
 
     assert_eq!(report.total_evals, 20);
+    assert_eq!(report.schema_version(), BIPOP_REPORT_SCHEMA_VERSION);
     assert_eq!(report.records().len(), 2);
     assert_eq!(report.schedule, vec![6, 6]);
+    let root = report.root_inputs();
+    assert_slice_bits(root.start(), &[2.0, -1.0]);
+    assert_eq!(root.sigma().to_bits(), 0.75_f64.to_bits());
+    assert_eq!(root.total_budget(), 20);
+    assert_eq!(root.target().map(f64::to_bits), Some((-1.0_f64).to_bits()));
+    assert_eq!(root.seed(), ROOT_SEED);
+    assert_eq!(root.identity().kind(), BIPOP_ROOT_IDENTITY_KIND);
+
+    let trace_identity = report.trace_identity();
+    assert_eq!(
+        trace_identity.schema_version(),
+        BIPOP_TRACE_IDENTITY_SCHEMA_VERSION
+    );
+    assert_eq!(trace_identity.rows(), report.total_evals);
+    assert_eq!(trace_identity.dimension(), 2);
+    assert_eq!(
+        BIPOP_TRACE_IDENTITY_DOMAIN,
+        "frankensim.fs-dfo.bipop-callback-trace.v1"
+    );
+    let trace = report.evaluations().collect::<Vec<_>>();
+    assert_eq!(trace.len(), report.total_evals);
+    for (global_offset, evaluation) in trace.iter().enumerate() {
+        assert_eq!(evaluation.schema_version(), BIPOP_EVALUATION_SCHEMA_VERSION);
+        assert_eq!(evaluation.global_offset(), global_offset);
+        assert_eq!(evaluation.point().len(), 2);
+        assert_eq!(
+            evaluation.objective().to_bits(),
+            sphere(evaluation.point()).to_bits()
+        );
+    }
 
     let first = &report.records()[0];
     assert_eq!(first.schema_version(), BIPOP_RESTART_SCHEMA_VERSION);
@@ -255,4 +314,22 @@ fn g3_same_seed_replays_the_complete_restart_ledger() {
     for (left, right) in first.records().iter().zip(second.records()) {
         assert_record_bits(left, right);
     }
+    assert_complete_evidence_bits(&first, &second);
+}
+
+/// G0: objective non-finiteness is retained by exact bits without weakening
+/// the finite-query invariant or inventing a finiteness claim.
+#[test]
+fn g0_trace_retains_nonfinite_objective_bits_as_data() {
+    let payload_nan = f64::from_bits(0x7ff8_0000_0000_0042);
+    let mut objective = |_point: &[f64]| payload_nan;
+    let report = try_bipop_cmaes(&mut objective, &[1.0], 0.5, 1, None, ROOT_SEED)
+        .expect("non-finite objective output remains retained data");
+    report
+        .validate_ledger()
+        .expect("exact non-finite objective trace validates");
+    let evaluation = report.evaluation(0).expect("one callback retained");
+    assert_eq!(evaluation.objective().to_bits(), payload_nan.to_bits());
+    assert_eq!(report.best.f_best.to_bits(), payload_nan.to_bits());
+    assert!(evaluation.point().iter().all(|value| value.is_finite()));
 }
