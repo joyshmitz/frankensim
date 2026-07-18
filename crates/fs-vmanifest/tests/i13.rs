@@ -4754,8 +4754,8 @@ fn i13_terminal_v2_authority_is_acyclic_closed_and_capacity_complete() {
     assert_eq!(34 + 2 * 8 + 4 * 32, 178);
     assert_eq!(26 + 2 * 8 + 32 + 8 + 2 * 2 + 3 + 512 + 32, 633);
     assert_eq!(45 + 2 * 8 + 32 + 1 + 2 * 2 + 5 * 32, 258);
-    assert_eq!(42 + 32 + 2 * 8 + 8 + 32 + 2 + 32, 164);
-    assert_eq!(46 + 32 + 2 * 32 + 2 * 8 + 2 * 32 + 3 * 32 + 1 + 2 * 8, 335);
+    assert_eq!(42 + 32 + 2 * 8 + 8 + 32 + 2 + 32 + 32 + 8, 204);
+    assert_eq!(46 + 32 + 2 * 32 + 2 * 8 + 3 * 32 + 1 + 2 * 8, 271);
     assert_eq!(35 + 2 * 8 + 1 + 8 + 8 * 32 + 4 * 8, 348);
     assert_eq!(
         5_324_902u64 + 2_801_937 + 1_572_964 + 659_555 + 126_402,
@@ -5180,10 +5180,8 @@ fn i13_terminal_v2_authority_is_acyclic_closed_and_capacity_complete() {
         "exactly 633 bytes",
         "LogicalAppendSlotAllocationIntentBytesV3 uses header I13_LOGICAL_APPEND_SLOT_ALLOCATION_INTENT_V3 plus NUL",
         "exactly 258 bytes",
-        "LogicalAppendSlotAuthorityHeadBytesV3 uses header I13_LOGICAL_APPEND_SLOT_AUTHORITY_HEAD_V3 plus NUL",
-        "exactly 164 bytes",
-        "LogicalAppendSlotAllocationReceiptBytesV3 uses header I13_LOGICAL_APPEND_SLOT_ALLOCATION_RECEIPT_V3 plus NUL",
-        "exactly 335 bytes",
+        "LogicalAppendSlotAuthorityHeadBytesV3 uses header I13_LOGICAL_APPEND_SLOT_AUTHORITY_HEAD_V3 plus NUL,slot-authority service,attempt,epoch,generation,slot-ledger root,burned count,latest allocation receipt-or-zero,logical-slot-history artifact root,and allocation count, exactly 204 bytes under 'org.frankensim.i13.logical-append-slot-authority-head.v3'",
+        "LogicalAppendSlotAllocationReceiptBytesV3 uses header I13_LOGICAL_APPEND_SLOT_ALLOCATION_RECEIPT_V3 plus NUL,intent,expected/committed slot-ledger roots,old/new generations,capability,idempotency,signature,CAS,and interval, exactly 271 bytes under 'org.frankensim.i13.logical-append-slot-allocation-receipt.v3'",
         "One replicated verifier-owned CAS allocates each logical slot pair exactly once before either lane Acquire",
         "both lane leases byte-equal the same allocation receipt",
         "A one-lane Acquire failure leaves the global slot burned and forces deterministic paired abort/quarantine reconciliation",
