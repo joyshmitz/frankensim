@@ -73,13 +73,17 @@ fn revision(statement: &str, domain: &str) -> ClaimRevision {
     }
 }
 
+fn revision_id(revision: &ClaimRevision) -> ContentHash {
+    revision.revision_id().expect("test revision admits")
+}
+
 fn claim_record() -> ClaimRecord {
     let revision = revision(
         "relative energy drift is at most 1e-10",
         "bounded elastic fixture corpus",
     );
     ClaimRecord {
-        subject: revision.revision_id(),
+        subject: revision_id(&revision),
         revisions: vec![revision],
         relations: Vec::new(),
     }
@@ -357,11 +361,11 @@ fn restricted_surviving_claim_is_a_new_exact_revision() {
         "relative energy drift is at most 1e-10",
         "admitted elastic fixtures with condition number below 1e6",
     );
-    assert_ne!(broad.revision_id(), restricted.revision_id());
+    assert_ne!(revision_id(&broad), revision_id(&restricted));
     let relation = ClaimRelationReceipt {
         kind: RelationKind::Restriction,
-        from: broad.revision_id(),
-        to: restricted.revision_id(),
+        from: revision_id(&broad),
+        to: revision_id(&restricted),
         checker: "fs-vmanifest/restriction-v1".to_owned(),
         tcb: "rustc+fs-blake3".to_owned(),
         variance: QuantifierVariance::Weakened,
@@ -369,7 +373,7 @@ fn restricted_surviving_claim_is_a_new_exact_revision() {
         policy_version: 1,
     };
     let record = ClaimRecord {
-        subject: restricted.revision_id(),
+        subject: revision_id(&restricted),
         revisions: vec![restricted.clone(), broad],
         relations: vec![relation],
     };

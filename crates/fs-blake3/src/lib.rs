@@ -380,6 +380,39 @@ pub fn hash_bytes(bytes: &[u8]) -> ContentHash {
     hasher.finalize()
 }
 
+/// Streaming material hasher for one public BLAKE3 derive-key domain.
+///
+/// This facade exposes only the standard domain-separated identity mode: the
+/// caller chooses a public protocol domain and may stream payload chunks, but
+/// cannot select raw BLAKE3 mode flags or secret-keyed hashing. Chunk
+/// partitioning is nonsemantic and [`DomainHasher::finalize`] matches
+/// [`hash_domain`] over the concatenated payload exactly.
+pub struct DomainHasher {
+    inner: Blake3,
+}
+
+impl DomainHasher {
+    /// Start hashing payload bytes under `domain`.
+    #[must_use]
+    pub fn new(domain: &str) -> Self {
+        Self {
+            inner: derive_key_hasher(domain),
+        }
+    }
+
+    /// Absorb one payload chunk. Empty chunks are permitted and nonsemantic.
+    pub fn update(&mut self, chunk: &[u8]) {
+        self.inner.update(chunk);
+    }
+
+    /// Return the domain-separated 32-byte root of all absorbed payload bytes.
+    /// This borrows immutably and may be repeated or followed by more updates.
+    #[must_use]
+    pub fn finalize(&self) -> ContentHash {
+        self.inner.finalize()
+    }
+}
+
 /// Hash `payload` under a BLAKE3 derive-key context: the canonical
 /// domain-separation scheme for every typed 32-byte root in the workspace.
 ///
@@ -389,7 +422,7 @@ pub fn hash_bytes(bytes: &[u8]) -> ContentHash {
 /// [`hash_bytes`] artifacts as well as from other domains.
 #[must_use]
 pub fn hash_domain(domain: &str, payload: &[u8]) -> ContentHash {
-    let mut material_hasher = derive_key_hasher(domain);
+    let mut material_hasher = DomainHasher::new(domain);
     material_hasher.update(payload);
     material_hasher.finalize()
 }
@@ -539,6 +572,20 @@ mod tests {
             hash_domain("domain", b"payload"),
             hash_bytes(&former_encoding)
         );
+    }
+
+    #[test]
+    fn streaming_domain_hasher_matches_one_shot_for_every_split() {
+        let data: Vec<u8> = (0..4099u32).map(|i| (i % 251) as u8).collect();
+        let expected = hash_domain("org.frankensim.streaming-parity.v1", &data);
+        for split in [0usize, 1, 63, 64, 65, 1023, 1024, 1025, 2048, 4098, 4099] {
+            let mut hasher = DomainHasher::new("org.frankensim.streaming-parity.v1");
+            hasher.update(&data[..split]);
+            hasher.update(&[]);
+            hasher.update(&data[split..]);
+            assert_eq!(hasher.finalize(), expected, "split at {split}");
+            assert_eq!(hasher.finalize(), expected, "repeat finalize at {split}");
+        }
     }
 
     #[test]

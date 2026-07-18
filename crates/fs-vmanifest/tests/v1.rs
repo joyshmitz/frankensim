@@ -8,10 +8,12 @@
 //! classification, the per-field registry, and semantic parity of the
 //! human/JSON/ledger projections.
 
+use fs_blake3::{ContentHash, hash_domain};
 use fs_vmanifest::v1::{
     ClaimId, ClaimKind, ClaimRelationReceipt, ClaimRevision, MANIFEST_RECORD_FIELDS,
-    MANIFEST_V1_SCHEMA_VERSION, QuantifierVariance, RelationKind, SourceAuthority, SourcePin,
-    admit_graph, classify_migration, resolve_authority,
+    MANIFEST_V1_SCHEMA_VERSION, MAX_V1_TEXT_BYTES, QuantifierVariance, RelationKind,
+    SourceAuthority, SourcePin, V1AdmissionLimits, V1Error, admit_graph, admit_graph_with_limits,
+    classify_migration, resolve_authority,
 };
 use std::collections::BTreeSet;
 
@@ -30,6 +32,117 @@ fn revision(lineage: &str, statement: &str) -> ClaimRevision {
     }
 }
 
+fn revision_id(revision: &ClaimRevision) -> ContentHash {
+    revision.revision_id().expect("test revision admits")
+}
+
+fn push_reference_field(bytes: &mut Vec<u8>, value: &str) {
+    bytes.extend_from_slice(
+        &u32::try_from(value.len())
+            .expect("valid v1 field fits u32")
+            .to_be_bytes(),
+    );
+    bytes.extend_from_slice(value.as_bytes());
+}
+
+fn reference_revision_id(revision: &ClaimRevision) -> ContentHash {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&MANIFEST_V1_SCHEMA_VERSION.to_be_bytes());
+    push_reference_field(&mut bytes, revision.claim.as_str());
+    bytes.push(match revision.kind {
+        ClaimKind::Behavioral => 1,
+        ClaimKind::QuantitativeBound => 2,
+        ClaimKind::Determinism => 3,
+        ClaimKind::Refusal => 4,
+        ClaimKind::Theorem => 5,
+        _ => panic!("test reference must be updated for a new claim kind"),
+    });
+    for value in [
+        revision.statement.as_str(),
+        revision.quantifiers.as_str(),
+        revision.units_conventions.as_str(),
+        revision.hypotheses.as_str(),
+        revision.domain.as_str(),
+        revision.surface.as_str(),
+        revision.no_claim.as_str(),
+    ] {
+        push_reference_field(&mut bytes, value);
+    }
+    match revision.supersedes {
+        None => bytes.push(0),
+        Some(previous) => {
+            bytes.push(1);
+            bytes.extend_from_slice(previous.as_bytes());
+        }
+    }
+    hash_domain("org.frankensim.fs-vmanifest.claim-revision.v1", &bytes)
+}
+
+fn reference_graph_digest(graph: &fs_vmanifest::v1::NormalizedGraph) -> ContentHash {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&MANIFEST_V1_SCHEMA_VERSION.to_be_bytes());
+    bytes.extend_from_slice(
+        &u32::try_from(graph.revisions().len())
+            .expect("valid graph revision count fits u32")
+            .to_be_bytes(),
+    );
+    for revision in graph.revisions() {
+        bytes.extend_from_slice(revision.as_bytes());
+    }
+    bytes.extend_from_slice(
+        &u32::try_from(graph.edges().len())
+            .expect("valid graph receipt count fits u32")
+            .to_be_bytes(),
+    );
+    for edge in graph.edges() {
+        bytes.push(match edge.kind {
+            RelationKind::Implication => 1,
+            RelationKind::Refinement => 2,
+            RelationKind::Restriction => 3,
+            RelationKind::Counterexample => 4,
+            RelationKind::CertifiedEquivalence => 5,
+            _ => panic!("test reference must be updated for a new relation kind"),
+        });
+        bytes.extend_from_slice(edge.from.as_bytes());
+        bytes.extend_from_slice(edge.to.as_bytes());
+        push_reference_field(&mut bytes, &edge.checker);
+        push_reference_field(&mut bytes, &edge.tcb);
+        bytes.push(match edge.variance {
+            QuantifierVariance::Preserved => 1,
+            QuantifierVariance::Weakened => 2,
+            QuantifierVariance::Strengthened => 3,
+            _ => panic!("test reference must be updated for new quantifier variance"),
+        });
+        push_reference_field(&mut bytes, &edge.domain_note);
+        bytes.extend_from_slice(&edge.policy_version.to_be_bytes());
+    }
+    for (member, representative) in graph.representatives() {
+        bytes.extend_from_slice(member.as_bytes());
+        bytes.extend_from_slice(representative.as_bytes());
+    }
+    hash_domain("org.frankensim.fs-vmanifest.manifest-graph.v1", &bytes)
+}
+
+fn assert_resource_refusal(
+    error: &V1Error,
+    quantity: &'static str,
+    required: u64,
+    admitted: u64,
+    unit: &'static str,
+) {
+    assert_eq!(error.rule(), "v1-resource-limit");
+    let resource = error
+        .resource_refusal()
+        .expect("resource refusal carries typed evidence");
+    assert_eq!(resource.quantity, quantity);
+    assert_eq!(resource.required, required);
+    assert_eq!(resource.admitted, admitted);
+    assert_eq!(resource.unit, unit);
+    assert!(error.detail().contains(&required.to_string()));
+    assert!(error.detail().contains(&admitted.to_string()));
+    assert!(error.detail().contains(unit));
+}
+
 fn edge(
     kind: RelationKind,
     from: &ClaimRevision,
@@ -38,8 +151,8 @@ fn edge(
 ) -> ClaimRelationReceipt {
     ClaimRelationReceipt {
         kind,
-        from: from.revision_id(),
-        to: to.revision_id(),
+        from: revision_id(from),
+        to: revision_id(to),
         checker: "fs-checker/relation-v1".to_owned(),
         tcb: "rustc+fs-blake3".to_owned(),
         variance,
@@ -58,15 +171,15 @@ fn identical_content_is_idempotent_and_distinct_content_cannot_collide() {
     let a = revision("claim/energy-balance", "energy balances to 1e-12");
     let b = revision("claim/energy-balance", "energy balances to 1e-12");
     assert_eq!(
-        a.revision_id(),
-        b.revision_id(),
+        revision_id(&a),
+        revision_id(&b),
         "content addressing is idempotent"
     );
 
     let c = revision("claim/energy-balance", "energy balances to 1e-11");
     assert_ne!(
-        a.revision_id(),
-        c.revision_id(),
+        revision_id(&a),
+        revision_id(&c),
         "one character = new revision"
     );
 
@@ -74,24 +187,319 @@ fn identical_content_is_idempotent_and_distinct_content_cannot_collide() {
     // content, never folded.
     let latin = revision("claim/units", "tolerance is 5 µm");
     let confusable = revision("claim/units", "tolerance is 5 μm");
-    assert_ne!(latin.revision_id(), confusable.revision_id());
+    assert_ne!(revision_id(&latin), revision_id(&confusable));
 }
 
 #[test]
 fn supersession_appends_and_never_mutates_the_old_revision() {
     let old = revision("claim/energy-balance", "energy balances to 1e-11");
-    let old_id = old.revision_id();
+    let old_id = revision_id(&old);
     let mut new = revision("claim/energy-balance", "energy balances to 1e-12");
     new.supersedes = Some(old_id);
-    let new_id = new.revision_id();
+    let new_id = revision_id(&new);
     assert_ne!(old_id, new_id);
     // The old revision's identity is untouched by being superseded.
-    assert_eq!(old.revision_id(), old_id);
+    assert_eq!(revision_id(&old), old_id);
     // Supersession participates in identity: the same statement WITHOUT
     // the supersession pointer is a different revision.
     let mut orphan = new.clone();
     orphan.supersedes = None;
-    assert_ne!(orphan.revision_id(), new_id);
+    assert_ne!(revision_id(&orphan), new_id);
+}
+
+#[test]
+fn authoritative_revision_identity_is_fallible_and_stream_matches_reference() {
+    for length in [1usize, 63, 64, 65, 1023, 1024, MAX_V1_TEXT_BYTES] {
+        let candidate = revision("claim/streaming", &"x".repeat(length));
+        assert_eq!(
+            revision_id(&candidate),
+            reference_revision_id(&candidate),
+            "streamed identity preserves the legacy preimage at length {length}"
+        );
+    }
+
+    let mut superseding = revision("claim/streaming", "successor");
+    superseding.supersedes = Some(revision_id(&revision("claim/streaming", "predecessor")));
+    assert_eq!(
+        revision_id(&superseding),
+        reference_revision_id(&superseding)
+    );
+
+    let mut empty = revision("claim/invalid", "valid before mutation");
+    empty.statement.clear();
+    let error = empty
+        .revision_id()
+        .expect_err("empty raw draft cannot mint authority");
+    assert_eq!(error.rule(), "v1-field-bounds");
+
+    let mut oversized = revision("claim/invalid", "valid before mutation");
+    oversized.statement = "x".repeat(MAX_V1_TEXT_BYTES + 1);
+    let error = oversized
+        .revision_id()
+        .expect_err("oversized raw draft cannot mint authority");
+    assert_eq!(error.rule(), "v1-field-bounds");
+}
+
+#[test]
+fn revision_text_limits_count_utf8_bytes_not_scalar_values() {
+    let exact = revision("claim/utf8", &"é".repeat(MAX_V1_TEXT_BYTES / 2));
+    assert_eq!(exact.statement.len(), MAX_V1_TEXT_BYTES);
+    exact.revision_id().expect("exact UTF-8 byte cap admits");
+
+    let mut over = exact;
+    over.statement.push('x');
+    let error = over
+        .revision_id()
+        .expect_err("one UTF-8 byte over the cap refuses");
+    assert_eq!(error.rule(), "v1-field-bounds");
+    assert!(
+        error
+            .detail()
+            .contains(&(MAX_V1_TEXT_BYTES + 1).to_string())
+    );
+}
+
+#[test]
+fn graph_resource_limits_admit_zero_and_exact_then_refuse_one_more() {
+    let zero_limits = V1AdmissionLimits {
+        max_revisions: 0,
+        max_receipts: 0,
+        max_semantic_bytes: 0,
+        max_working_bytes: 0,
+        max_projection_rows: 1,
+        max_projection_bytes: 1024,
+    };
+    let empty = admit_graph_with_limits(&[], &[], zero_limits).expect("zero-sized graph admits");
+    let empty_resources = empty.resource_envelope();
+    assert_eq!(empty_resources.revision_count(), 0);
+    assert_eq!(empty_resources.receipt_count(), 0);
+    assert_eq!(empty_resources.semantic_bytes(), 0);
+    assert_eq!(empty_resources.logical_working_bytes(), 0);
+    assert_eq!(empty_resources.projection_rows(), 1);
+    assert_eq!(empty_resources.projection_bytes_upper_bound(), 1024);
+    assert_eq!(empty.digest(), reference_graph_digest(&empty));
+
+    let a = revision("claim/a", "a holds");
+    let one = admit_graph(&[a.clone()], &[]).expect("one revision admits");
+    let one_resources = one.resource_envelope();
+    let exact_one = V1AdmissionLimits {
+        max_revisions: 1,
+        max_receipts: 0,
+        max_semantic_bytes: one_resources.semantic_bytes(),
+        max_working_bytes: one_resources.logical_working_bytes(),
+        max_projection_rows: one_resources.projection_rows(),
+        max_projection_bytes: one_resources.projection_bytes_upper_bound(),
+    };
+    let exact = admit_graph_with_limits(&[a.clone()], &[], exact_one)
+        .expect("equality with every resource limit admits");
+    assert_eq!(exact.digest(), one.digest());
+    assert_eq!(exact.resource_envelope(), one_resources);
+
+    let b = revision("claim/b", "b holds");
+    let error = admit_graph_with_limits(&[a.clone(), b.clone()], &[], exact_one)
+        .expect_err("revision limit plus one refuses");
+    assert_resource_refusal(&error, "revision count", 2, 1, "revisions");
+
+    let receipt = edge(
+        RelationKind::Implication,
+        &a,
+        &b,
+        QuantifierVariance::Preserved,
+    );
+    let graph =
+        admit_graph(&[a.clone(), b.clone()], &[receipt.clone()]).expect("one-receipt graph admits");
+    let resources = graph.resource_envelope();
+    let exact_limits = V1AdmissionLimits {
+        max_revisions: resources.revision_count(),
+        max_receipts: resources.receipt_count(),
+        max_semantic_bytes: resources.semantic_bytes(),
+        max_working_bytes: resources.logical_working_bytes(),
+        max_projection_rows: resources.projection_rows(),
+        max_projection_bytes: resources.projection_bytes_upper_bound(),
+    };
+    let exact = admit_graph_with_limits(&[a.clone(), b.clone()], &[receipt.clone()], exact_limits)
+        .expect("complete exact graph envelope admits");
+    assert_eq!(exact.digest(), graph.digest());
+    assert_eq!(exact.resource_envelope(), resources);
+
+    let mut parallel = receipt.clone();
+    parallel.policy_version += 1;
+    let error =
+        admit_graph_with_limits(&[a.clone(), b.clone()], &[receipt, parallel], exact_limits)
+            .expect_err("receipt limit plus one refuses");
+    assert_resource_refusal(&error, "receipt count", 2, 1, "receipts");
+
+    for (quantity, limits, required, admitted, unit) in [
+        (
+            "aggregate semantic bytes",
+            V1AdmissionLimits {
+                max_semantic_bytes: resources.semantic_bytes() - 1,
+                ..exact_limits
+            },
+            resources.semantic_bytes(),
+            resources.semantic_bytes() - 1,
+            "UTF-8 bytes",
+        ),
+        (
+            "logical graph working bytes",
+            V1AdmissionLimits {
+                max_working_bytes: resources.logical_working_bytes() - 1,
+                ..exact_limits
+            },
+            resources.logical_working_bytes(),
+            resources.logical_working_bytes() - 1,
+            "logical bytes",
+        ),
+        (
+            "projection row count",
+            V1AdmissionLimits {
+                max_projection_rows: resources.projection_rows() - 1,
+                ..exact_limits
+            },
+            u64::from(resources.projection_rows()),
+            u64::from(resources.projection_rows() - 1),
+            "rows",
+        ),
+        (
+            "projection byte upper bound",
+            V1AdmissionLimits {
+                max_projection_bytes: resources.projection_bytes_upper_bound() - 1,
+                ..exact_limits
+            },
+            resources.projection_bytes_upper_bound(),
+            resources.projection_bytes_upper_bound() - 1,
+            "logical bytes",
+        ),
+    ] {
+        let error = admit_graph_with_limits(
+            &[a.clone(), b.clone()],
+            &[edge(
+                RelationKind::Implication,
+                &a,
+                &b,
+                QuantifierVariance::Preserved,
+            )],
+            limits,
+        )
+        .expect_err("one unit below the required envelope refuses");
+        assert_resource_refusal(&error, quantity, required, admitted, unit);
+    }
+}
+
+#[test]
+fn resource_preflight_precedes_hostile_payload_work_and_cannot_be_loosened() {
+    let mut malformed = revision("claim/malformed", "initially valid");
+    malformed.statement.clear();
+    let other = revision("claim/other", "other holds");
+    let error = admit_graph_with_limits(
+        &[malformed, other],
+        &[],
+        V1AdmissionLimits {
+            max_revisions: 1,
+            ..V1AdmissionLimits::DEFAULT
+        },
+    )
+    .expect_err("count refusal wins before malformed element scan");
+    assert_resource_refusal(&error, "revision count", 2, 1, "revisions");
+
+    let a = revision("claim/a", "a holds");
+    let b = revision("claim/b", "b holds");
+    let mut hostile = edge(
+        RelationKind::Implication,
+        &a,
+        &b,
+        QuantifierVariance::Preserved,
+    );
+    hostile.checker = "x".repeat(MAX_V1_TEXT_BYTES + 1);
+    let mut second = hostile.clone();
+    second.policy_version += 1;
+    let error = admit_graph_with_limits(
+        &[a.clone(), b.clone()],
+        &[hostile.clone(), second],
+        V1AdmissionLimits {
+            max_receipts: 1,
+            ..V1AdmissionLimits::DEFAULT
+        },
+    )
+    .expect_err("receipt count refuses before hostile text scan or clone");
+    assert_resource_refusal(&error, "receipt count", 2, 1, "receipts");
+
+    let error = admit_graph_with_limits(
+        &[a, b],
+        &[hostile],
+        V1AdmissionLimits {
+            max_semantic_bytes: 1,
+            ..V1AdmissionLimits::DEFAULT
+        },
+    )
+    .expect_err("aggregate bytes refuse before per-field semantics");
+    assert_eq!(error.rule(), "v1-resource-limit");
+    assert_eq!(
+        error.resource_refusal().expect("typed evidence").quantity,
+        "aggregate semantic bytes"
+    );
+
+    let error = admit_graph_with_limits(
+        &[],
+        &[],
+        V1AdmissionLimits {
+            max_revisions: V1AdmissionLimits::DEFAULT.max_revisions + 1,
+            ..V1AdmissionLimits::DEFAULT
+        },
+    )
+    .expect_err("local policy cannot loosen the v1 protocol ceiling");
+    assert_resource_refusal(
+        &error,
+        "configured revision ceiling",
+        u64::from(V1AdmissionLimits::DEFAULT.max_revisions) + 1,
+        u64::from(V1AdmissionLimits::DEFAULT.max_revisions),
+        "revisions",
+    );
+}
+
+#[test]
+fn streamed_graph_digest_matches_reference_and_projection_envelope() {
+    let a = revision("claim/a", "a holds");
+    let b = revision("claim/b", "b holds");
+    let c = revision("claim/c", "c holds");
+    let mut implication = edge(
+        RelationKind::Implication,
+        &a,
+        &b,
+        QuantifierVariance::Preserved,
+    );
+    implication.checker = "checker\"\\\ncontrol".to_owned();
+    let refinement = edge(
+        RelationKind::Refinement,
+        &b,
+        &c,
+        QuantifierVariance::Weakened,
+    );
+    let graph = admit_graph(&[c, a, b], &[refinement, implication]).expect("seed graph admits");
+
+    assert_eq!(graph.digest(), reference_graph_digest(&graph));
+    assert_eq!(graph.digest(), graph.digest(), "cached identity is stable");
+    let resources = graph.resource_envelope();
+    let human = graph.render_human();
+    let json = graph.render_json_lines();
+    let ledger = graph.render_ledger_rows();
+    let json_bytes = json.iter().map(String::len).sum::<usize>() + json.len().saturating_sub(1);
+    let ledger_bytes = ledger
+        .iter()
+        .map(|(kind, payload)| kind.len() + payload.len() + 1)
+        .sum::<usize>();
+    for actual in [human.len(), json_bytes, ledger_bytes] {
+        assert!(
+            u64::try_from(actual).expect("projection length fits u64")
+                <= resources.projection_bytes_upper_bound(),
+            "actual projection {actual} exceeds retained upper bound {}",
+            resources.projection_bytes_upper_bound()
+        );
+    }
+    assert_eq!(
+        resources.projection_rows(),
+        1 + resources.revision_count() + resources.receipt_count()
+    );
 }
 
 #[test]
@@ -123,6 +531,8 @@ fn normalization_digest_is_stable_under_input_reordering() {
         g2.digest(),
         "equivalent semantic manifests normalize to the same digest"
     );
+    assert_eq!(g1.resource_envelope(), g2.resource_envelope());
+    assert_eq!(g1.digest(), reference_graph_digest(&g1));
 }
 
 #[test]
@@ -139,8 +549,8 @@ fn certified_equivalence_normalizes_endpoint_orientation_everywhere() {
     let revisions = [a, b];
     let forward = admit_graph(&revisions, &[receipt]).expect("forward equivalence admits");
     let backward = admit_graph(&revisions, &[reverse]).expect("reverse equivalence admits");
-    let minimum = revisions[0].revision_id().min(revisions[1].revision_id());
-    let maximum = revisions[0].revision_id().max(revisions[1].revision_id());
+    let minimum = revision_id(&revisions[0]).min(revision_id(&revisions[1]));
+    let maximum = revision_id(&revisions[0]).max(revision_id(&revisions[1]));
 
     assert_eq!(forward.edges(), backward.edges());
     assert_eq!(forward.edges()[0].from, minimum);
@@ -189,7 +599,7 @@ fn certified_equivalence_normalizes_before_dangling_endpoint_diagnostics() {
     assert!(
         forward
             .detail()
-            .contains(&a.revision_id().min(b.revision_id()).to_hex())
+            .contains(&revision_id(&a).min(revision_id(&b)).to_hex())
     );
 }
 
@@ -487,6 +897,7 @@ fn equivalence_subset_reversal_and_permutation_are_full_projection_invariants() 
             .expect("reoriented and permuted graph admits");
             assert_eq!(graph.edges(), reference.edges());
             assert_eq!(graph.representatives(), reference.representatives());
+            assert_eq!(graph.resource_envelope(), reference.resource_envelope());
             assert_eq!(graph.digest(), reference.digest());
             assert_eq!(graph.render_human(), reference.render_human());
             assert_eq!(graph.render_json_lines(), reference.render_json_lines());
@@ -588,8 +999,8 @@ fn directed_cycles_refuse_unless_certified_equivalent() {
         QuantifierVariance::Preserved,
     );
     let graph = admit_graph(&[a.clone(), b.clone()], &[ab, eq]).expect("SCC admits");
-    let ida = a.revision_id();
-    let idb = b.revision_id();
+    let ida = revision_id(&a);
+    let idb = revision_id(&b);
     let representative = ida.min(idb);
     assert_eq!(graph.representative_of(&ida), Some(representative));
     assert_eq!(graph.representative_of(&idb), Some(representative));
@@ -768,7 +1179,7 @@ fn json_lines_are_an_exact_complete_canonical_projection() {
     receipt.policy_version = 17;
     let from = receipt.from.to_hex();
     let to = receipt.to.to_hex();
-    let mut revision_ids = [a.revision_id(), b.revision_id()];
+    let mut revision_ids = [revision_id(&a), revision_id(&b)];
     revision_ids.sort();
     let graph = admit_graph(&[a, b], &[receipt]).expect("graph admits");
     let digest = graph.digest().to_hex();
@@ -869,11 +1280,11 @@ fn every_receipt_identity_field_is_bound_and_breaks_canonical_ties() {
     assert_receipt_field_is_bound_and_canonical("kind", &revisions, base.clone(), changed);
 
     let mut changed = base.clone();
-    changed.from = c.revision_id();
+    changed.from = revision_id(&c);
     assert_receipt_field_is_bound_and_canonical("from", &revisions, base.clone(), changed);
 
     let mut changed = base.clone();
-    changed.to = c.revision_id();
+    changed.to = revision_id(&c);
     assert_receipt_field_is_bound_and_canonical("to", &revisions, base.clone(), changed);
 
     let mut changed = base.clone();

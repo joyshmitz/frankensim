@@ -34,15 +34,170 @@
 use core::fmt::{self, Write as _};
 use std::collections::{BTreeMap, BTreeSet};
 
-use fs_blake3::{ContentHash, hash_domain};
+use fs_blake3::{ContentHash, DomainHasher};
 
 /// Version stamped into every v1 record and digest domain.
 pub const MANIFEST_V1_SCHEMA_VERSION: u32 = 1;
 
 const REVISION_DOMAIN: &str = "org.frankensim.fs-vmanifest.claim-revision.v1";
 const GRAPH_DOMAIN: &str = "org.frankensim.fs-vmanifest.manifest-graph.v1";
-const MAX_V1_TEXT_BYTES: usize = 4096;
-const MAX_V1_ID_BYTES: usize = 128;
+/// Maximum UTF-8 bytes in one v1 semantic text field.
+pub const MAX_V1_TEXT_BYTES: usize = 4096;
+/// Maximum ASCII bytes in one admitted v1 lineage/case/journey id.
+pub const MAX_V1_ID_BYTES: usize = 128;
+const V1_LOGICAL_BYTES_PER_REVISION: u64 = 256;
+const V1_LOGICAL_BYTES_PER_RECEIPT: u64 = 512;
+const V1_PROJECTION_FIXED_BYTES_PER_ROW: u64 = 1024;
+const V1_PROJECTION_ESCAPE_EXPANSION: u64 = 6;
+
+/// Version-1 resource ceilings for claim-graph admission.
+///
+/// Callers may tighten any field through [`admit_graph_with_limits`], but may
+/// not loosen these protocol ceilings. Byte fields are deterministic logical
+/// charges, not allocator metadata or resident-set measurements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct V1AdmissionLimits {
+    /// Maximum exact claim revisions.
+    pub max_revisions: u32,
+    /// Maximum relation receipts.
+    pub max_receipts: u32,
+    /// Maximum UTF-8 bytes across claim ids, revision semantics, and receipt
+    /// checker/TCB/domain text.
+    pub max_semantic_bytes: u64,
+    /// Maximum conservative logical graph-construction bytes.
+    pub max_working_bytes: u64,
+    /// Maximum rows in any complete graph projection, including its header.
+    pub max_projection_rows: u32,
+    /// Maximum conservative bytes in any one human, JSON-lines, or ledger
+    /// projection.
+    pub max_projection_bytes: u64,
+}
+
+impl V1AdmissionLimits {
+    /// The fixed VerificationManifest-v1 protocol envelope.
+    pub const DEFAULT: Self = Self {
+        max_revisions: 4096,
+        max_receipts: 8192,
+        max_semantic_bytes: 16 * 1024 * 1024,
+        max_working_bytes: 32 * 1024 * 1024,
+        max_projection_rows: 1 + 4096 + 8192,
+        max_projection_bytes: 128 * 1024 * 1024,
+    };
+
+    fn validate_protocol_ceiling(self) -> Result<(), V1Error> {
+        for (quantity, required, admitted, unit) in [
+            (
+                "configured revision ceiling",
+                u64::from(self.max_revisions),
+                u64::from(Self::DEFAULT.max_revisions),
+                "revisions",
+            ),
+            (
+                "configured receipt ceiling",
+                u64::from(self.max_receipts),
+                u64::from(Self::DEFAULT.max_receipts),
+                "receipts",
+            ),
+            (
+                "configured semantic-byte ceiling",
+                self.max_semantic_bytes,
+                Self::DEFAULT.max_semantic_bytes,
+                "bytes",
+            ),
+            (
+                "configured working-byte ceiling",
+                self.max_working_bytes,
+                Self::DEFAULT.max_working_bytes,
+                "logical bytes",
+            ),
+            (
+                "configured projection-row ceiling",
+                u64::from(self.max_projection_rows),
+                u64::from(Self::DEFAULT.max_projection_rows),
+                "rows",
+            ),
+            (
+                "configured projection-byte ceiling",
+                self.max_projection_bytes,
+                Self::DEFAULT.max_projection_bytes,
+                "logical bytes",
+            ),
+        ] {
+            if required > admitted {
+                return Err(resource_refusal(quantity, required, admitted, unit));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Default for V1AdmissionLimits {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// Deterministic resource charges retained by an admitted v1 graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct V1ResourceEnvelope {
+    revision_count: u32,
+    receipt_count: u32,
+    semantic_bytes: u64,
+    logical_working_bytes: u64,
+    projection_rows: u32,
+    projection_bytes_upper_bound: u64,
+}
+
+impl V1ResourceEnvelope {
+    /// Exact admitted revision count.
+    #[must_use]
+    pub const fn revision_count(self) -> u32 {
+        self.revision_count
+    }
+
+    /// Exact admitted receipt count.
+    #[must_use]
+    pub const fn receipt_count(self) -> u32 {
+        self.receipt_count
+    }
+
+    /// Exact aggregate semantic UTF-8 bytes charged at admission.
+    #[must_use]
+    pub const fn semantic_bytes(self) -> u64 {
+        self.semantic_bytes
+    }
+
+    /// Conservative logical graph-construction bytes.
+    #[must_use]
+    pub const fn logical_working_bytes(self) -> u64 {
+        self.logical_working_bytes
+    }
+
+    /// Exact rows in each complete projection, including its header.
+    #[must_use]
+    pub const fn projection_rows(self) -> u32 {
+        self.projection_rows
+    }
+
+    /// Conservative bytes for any one complete projection.
+    #[must_use]
+    pub const fn projection_bytes_upper_bound(self) -> u64 {
+        self.projection_bytes_upper_bound
+    }
+}
+
+/// Machine-readable resource-limit evidence carried by a v1 refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct V1ResourceRefusal {
+    /// Stable quantity name.
+    pub quantity: &'static str,
+    /// Exact amount required by the rejected input or configured ceiling.
+    pub required: u64,
+    /// Amount admitted by the active v1 envelope.
+    pub admitted: u64,
+    /// Stable unit label for both numeric values.
+    pub unit: &'static str,
+}
 
 /// A typed refusal with a stable rule slug and RANKED candidate fixes —
 /// the "stable diagnostics and ranked fixes" the success criteria demand.
@@ -51,6 +206,7 @@ pub struct V1Error {
     rule: &'static str,
     detail: String,
     fixes: Vec<String>,
+    resource: Option<V1ResourceRefusal>,
 }
 
 impl V1Error {
@@ -59,11 +215,17 @@ impl V1Error {
             rule,
             detail: detail.into(),
             fixes: Vec::new(),
+            resource: None,
         }
     }
 
     fn with_fix(mut self, fix: impl Into<String>) -> V1Error {
         self.fixes.push(fix.into());
+        self
+    }
+
+    fn with_resource(mut self, resource: V1ResourceRefusal) -> V1Error {
+        self.resource = Some(resource);
         self
     }
 
@@ -77,6 +239,7 @@ impl V1Error {
             rule,
             detail: detail.into(),
             fixes: fixes.iter().map(|f| (*f).to_owned()).collect(),
+            resource: None,
         }
     }
 
@@ -97,6 +260,12 @@ impl V1Error {
     pub fn ranked_fixes(&self) -> &[String] {
         &self.fixes
     }
+
+    /// Machine-readable required/admitted/unit evidence for resource refusals.
+    #[must_use]
+    pub const fn resource_refusal(&self) -> Option<V1ResourceRefusal> {
+        self.resource
+    }
 }
 
 impl fmt::Display for V1Error {
@@ -110,6 +279,75 @@ impl fmt::Display for V1Error {
 }
 
 impl std::error::Error for V1Error {}
+
+fn resource_refusal(
+    quantity: &'static str,
+    required: u64,
+    admitted: u64,
+    unit: &'static str,
+) -> V1Error {
+    V1Error::new(
+        "v1-resource-limit",
+        format!("{quantity} requires {required} {unit}, admitted {admitted} {unit}"),
+    )
+    .with_resource(V1ResourceRefusal {
+        quantity,
+        required,
+        admitted,
+        unit,
+    })
+    .with_fix(format!(
+        "reduce {quantity} to at most {admitted} {unit} or split the graph"
+    ))
+}
+
+fn resource_overflow(quantity: &'static str, unit: &'static str) -> V1Error {
+    V1Error::new(
+        "v1-resource-overflow",
+        format!("{quantity} cannot be represented in v1 {unit}"),
+    )
+    .with_fix("reduce the graph before admission; wrapped resource accounting is forbidden")
+}
+
+fn allocation_refusal(payload: &'static str, required_bytes: u64) -> V1Error {
+    V1Error::new(
+        "v1-allocation-refused",
+        format!(
+            "{payload} requires {required_bytes} admitted logical bytes, but the allocator refused the reservation"
+        ),
+    )
+    .with_fix("release memory pressure and retry the same bounded input")
+}
+
+fn checked_add_resource(left: u64, right: u64, quantity: &'static str) -> Result<u64, V1Error> {
+    left.checked_add(right)
+        .ok_or_else(|| resource_overflow(quantity, "u64 bytes"))
+}
+
+fn checked_mul_resource(left: u64, right: u64, quantity: &'static str) -> Result<u64, V1Error> {
+    left.checked_mul(right)
+        .ok_or_else(|| resource_overflow(quantity, "u64 bytes"))
+}
+
+fn checked_u32_length(field: &'static str, length: usize) -> Result<u32, V1Error> {
+    u32::try_from(length).map_err(|_| {
+        V1Error::new(
+            "v1-identity-length-overflow",
+            format!("{field} length {length} cannot be encoded as a v1 u32 length"),
+        )
+        .with_fix("admit a bounded value before requesting authoritative identity")
+    })
+}
+
+fn hash_framed_text(
+    hasher: &mut DomainHasher,
+    field: &'static str,
+    value: &str,
+) -> Result<(), V1Error> {
+    hasher.update(&checked_u32_length(field, value.len())?.to_be_bytes());
+    hasher.update(value.as_bytes());
+    Ok(())
+}
 
 fn bounded_id(kind: &'static str, value: &str) -> Result<String, V1Error> {
     if value.is_empty() || value.len() > MAX_V1_ID_BYTES {
@@ -283,11 +521,6 @@ pub struct ClaimRevision {
 /// Content-addressed identity of one exact claim revision.
 pub type ClaimRevisionId = ContentHash;
 
-fn push_field(bytes: &mut Vec<u8>, value: &str) {
-    bytes.extend_from_slice(&(value.len() as u32).to_be_bytes());
-    bytes.extend_from_slice(value.as_bytes());
-}
-
 impl ClaimRevision {
     /// Validate every semantic field (empty fields sever evidence).
     pub fn validate(&self) -> Result<(), V1Error> {
@@ -301,30 +534,34 @@ impl ClaimRevision {
         Ok(())
     }
 
-    /// The content-addressed revision identity: a domain-separated hash
-    /// over every semantic field in fixed order. Distinct content cannot
-    /// collide; identical content is idempotent.
-    #[must_use]
-    pub fn revision_id(&self) -> ClaimRevisionId {
-        let mut bytes = Vec::with_capacity(256);
-        bytes.extend_from_slice(&MANIFEST_V1_SCHEMA_VERSION.to_be_bytes());
-        push_field(&mut bytes, self.claim.as_str());
-        bytes.push(claim_kind_code(self.kind));
-        push_field(&mut bytes, &self.statement);
-        push_field(&mut bytes, &self.quantifiers);
-        push_field(&mut bytes, &self.units_conventions);
-        push_field(&mut bytes, &self.hypotheses);
-        push_field(&mut bytes, &self.domain);
-        push_field(&mut bytes, &self.surface);
-        push_field(&mut bytes, &self.no_claim);
+    fn revision_id_after_validation(&self) -> Result<ClaimRevisionId, V1Error> {
+        let mut hasher = DomainHasher::new(REVISION_DOMAIN);
+        hasher.update(&MANIFEST_V1_SCHEMA_VERSION.to_be_bytes());
+        hash_framed_text(&mut hasher, "claim", self.claim.as_str())?;
+        hasher.update(&[claim_kind_code(self.kind)]);
+        hash_framed_text(&mut hasher, "statement", &self.statement)?;
+        hash_framed_text(&mut hasher, "quantifiers", &self.quantifiers)?;
+        hash_framed_text(&mut hasher, "units_conventions", &self.units_conventions)?;
+        hash_framed_text(&mut hasher, "hypotheses", &self.hypotheses)?;
+        hash_framed_text(&mut hasher, "domain", &self.domain)?;
+        hash_framed_text(&mut hasher, "surface", &self.surface)?;
+        hash_framed_text(&mut hasher, "no_claim", &self.no_claim)?;
         match &self.supersedes {
-            None => bytes.push(0),
+            None => hasher.update(&[0]),
             Some(prev) => {
-                bytes.push(1);
-                bytes.extend_from_slice(prev.as_bytes());
+                hasher.update(&[1]);
+                hasher.update(prev.as_bytes());
             }
         }
-        hash_domain(REVISION_DOMAIN, &bytes)
+        Ok(hasher.finalize())
+    }
+
+    /// The authoritative content-addressed revision identity: a streamed,
+    /// domain-separated hash over every validated semantic field in fixed
+    /// order. Invalid raw drafts refuse and cannot mint a revision id.
+    pub fn revision_id(&self) -> Result<ClaimRevisionId, V1Error> {
+        self.validate()?;
+        self.revision_id_after_validation()
     }
 }
 
@@ -492,6 +729,10 @@ pub struct NormalizedGraph {
     /// Certified-equivalence component representative per member
     /// (identity for revisions outside any component).
     representatives: BTreeMap<ClaimRevisionId, ClaimRevisionId>,
+    /// Cached streamed identity over the canonical graph.
+    digest: ContentHash,
+    /// Deterministic admission charges (not identity-forming).
+    resources: V1ResourceEnvelope,
 }
 
 impl NormalizedGraph {
@@ -520,31 +761,16 @@ impl NormalizedGraph {
         self.representatives.get(revision).copied()
     }
 
-    /// The domain-separated digest of the normalized graph.
+    /// The resource envelope retained from successful admission.
+    #[must_use]
+    pub const fn resource_envelope(&self) -> V1ResourceEnvelope {
+        self.resources
+    }
+
+    /// The cached domain-separated digest of the normalized graph.
     #[must_use]
     pub fn digest(&self) -> ContentHash {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&MANIFEST_V1_SCHEMA_VERSION.to_be_bytes());
-        bytes.extend_from_slice(&(self.revisions.len() as u32).to_be_bytes());
-        for r in &self.revisions {
-            bytes.extend_from_slice(r.as_bytes());
-        }
-        bytes.extend_from_slice(&(self.edges.len() as u32).to_be_bytes());
-        for e in &self.edges {
-            bytes.push(relation_code(e.kind));
-            bytes.extend_from_slice(e.from.as_bytes());
-            bytes.extend_from_slice(e.to.as_bytes());
-            push_field(&mut bytes, &e.checker);
-            push_field(&mut bytes, &e.tcb);
-            bytes.push(variance_code(e.variance));
-            push_field(&mut bytes, &e.domain_note);
-            bytes.extend_from_slice(&e.policy_version.to_be_bytes());
-        }
-        for (member, repr) in &self.representatives {
-            bytes.extend_from_slice(member.as_bytes());
-            bytes.extend_from_slice(repr.as_bytes());
-        }
-        hash_domain(GRAPH_DOMAIN, &bytes)
+        self.digest
     }
 
     /// Human projection: one physical line per revision and edge. Every
@@ -689,10 +915,246 @@ fn directed(kind: RelationKind) -> bool {
     !matches!(kind, RelationKind::CertifiedEquivalence)
 }
 
-fn canonicalize_equivalence_endpoints(receipt: &mut ClaimRelationReceipt) {
-    if receipt.kind == RelationKind::CertifiedEquivalence && receipt.to < receipt.from {
-        core::mem::swap(&mut receipt.from, &mut receipt.to);
+fn canonical_endpoints(
+    kind: RelationKind,
+    mut from: ClaimRevisionId,
+    mut to: ClaimRevisionId,
+) -> (ClaimRevisionId, ClaimRevisionId) {
+    if kind == RelationKind::CertifiedEquivalence && to < from {
+        core::mem::swap(&mut from, &mut to);
     }
+    (from, to)
+}
+
+fn canonicalize_equivalence_endpoints(receipt: &mut ClaimRelationReceipt) {
+    (receipt.from, receipt.to) = canonical_endpoints(receipt.kind, receipt.from, receipt.to);
+}
+
+fn charge_semantic_bytes(total: &mut u64, value: &str) -> Result<(), V1Error> {
+    let bytes = u64::try_from(value.len())
+        .map_err(|_| resource_overflow("aggregate semantic bytes", "u64 bytes"))?;
+    *total = checked_add_resource(*total, bytes, "aggregate semantic bytes")?;
+    Ok(())
+}
+
+fn preflight_graph(
+    revisions: &[ClaimRevision],
+    receipts: &[ClaimRelationReceipt],
+    limits: V1AdmissionLimits,
+) -> Result<V1ResourceEnvelope, V1Error> {
+    limits.validate_protocol_ceiling()?;
+
+    let revision_count_required = u64::try_from(revisions.len())
+        .map_err(|_| resource_overflow("revision count", "u64 revisions"))?;
+    if revision_count_required > u64::from(limits.max_revisions) {
+        return Err(resource_refusal(
+            "revision count",
+            revision_count_required,
+            u64::from(limits.max_revisions),
+            "revisions",
+        ));
+    }
+    let receipt_count_required = u64::try_from(receipts.len())
+        .map_err(|_| resource_overflow("receipt count", "u64 receipts"))?;
+    if receipt_count_required > u64::from(limits.max_receipts) {
+        return Err(resource_refusal(
+            "receipt count",
+            receipt_count_required,
+            u64::from(limits.max_receipts),
+            "receipts",
+        ));
+    }
+    let revision_count = u32::try_from(revision_count_required)
+        .map_err(|_| resource_overflow("revision count", "u32 revisions"))?;
+    let receipt_count = u32::try_from(receipt_count_required)
+        .map_err(|_| resource_overflow("receipt count", "u32 receipts"))?;
+
+    let projection_rows_required = checked_add_resource(
+        1,
+        checked_add_resource(
+            revision_count_required,
+            receipt_count_required,
+            "projection row count",
+        )?,
+        "projection row count",
+    )?;
+    if projection_rows_required > u64::from(limits.max_projection_rows) {
+        return Err(resource_refusal(
+            "projection row count",
+            projection_rows_required,
+            u64::from(limits.max_projection_rows),
+            "rows",
+        ));
+    }
+    let projection_rows = u32::try_from(projection_rows_required)
+        .map_err(|_| resource_overflow("projection row count", "u32 rows"))?;
+
+    let mut semantic_bytes = 0u64;
+    for revision in revisions {
+        for value in [
+            revision.claim.as_str(),
+            &revision.statement,
+            &revision.quantifiers,
+            &revision.units_conventions,
+            &revision.hypotheses,
+            &revision.domain,
+            &revision.surface,
+            &revision.no_claim,
+        ] {
+            charge_semantic_bytes(&mut semantic_bytes, value)?;
+        }
+    }
+
+    let mut receipt_semantic_bytes = 0u64;
+    for receipt in receipts {
+        for value in [
+            receipt.checker.as_str(),
+            receipt.tcb.as_str(),
+            receipt.domain_note.as_str(),
+        ] {
+            charge_semantic_bytes(&mut semantic_bytes, value)?;
+            charge_semantic_bytes(&mut receipt_semantic_bytes, value)?;
+        }
+    }
+    if semantic_bytes > limits.max_semantic_bytes {
+        return Err(resource_refusal(
+            "aggregate semantic bytes",
+            semantic_bytes,
+            limits.max_semantic_bytes,
+            "UTF-8 bytes",
+        ));
+    }
+
+    let revision_slots = checked_mul_resource(
+        revision_count_required,
+        V1_LOGICAL_BYTES_PER_REVISION,
+        "logical graph working bytes",
+    )?;
+    let receipt_slots = checked_mul_resource(
+        receipt_count_required,
+        V1_LOGICAL_BYTES_PER_RECEIPT,
+        "logical graph working bytes",
+    )?;
+    let logical_working_bytes = checked_add_resource(
+        checked_add_resource(revision_slots, receipt_slots, "logical graph working bytes")?,
+        receipt_semantic_bytes,
+        "logical graph working bytes",
+    )?;
+    if logical_working_bytes > limits.max_working_bytes {
+        return Err(resource_refusal(
+            "logical graph working bytes",
+            logical_working_bytes,
+            limits.max_working_bytes,
+            "logical bytes",
+        ));
+    }
+
+    let projection_bytes_upper_bound = checked_add_resource(
+        checked_mul_resource(
+            projection_rows_required,
+            V1_PROJECTION_FIXED_BYTES_PER_ROW,
+            "projection byte upper bound",
+        )?,
+        checked_mul_resource(
+            receipt_semantic_bytes,
+            V1_PROJECTION_ESCAPE_EXPANSION,
+            "projection byte upper bound",
+        )?,
+        "projection byte upper bound",
+    )?;
+    if projection_bytes_upper_bound > limits.max_projection_bytes {
+        return Err(resource_refusal(
+            "projection byte upper bound",
+            projection_bytes_upper_bound,
+            limits.max_projection_bytes,
+            "logical bytes",
+        ));
+    }
+
+    // Only after every aggregate/count envelope is proven do we scan the
+    // individual semantic contracts. This keeps cap failure precedence stable
+    // for hostile batches while still refusing empty or oversized fields.
+    for revision in revisions {
+        revision.validate()?;
+    }
+    for receipt in receipts {
+        bounded_text("checker", &receipt.checker)?;
+        bounded_text("tcb", &receipt.tcb)?;
+        bounded_text("domain_note", &receipt.domain_note)?;
+    }
+
+    Ok(V1ResourceEnvelope {
+        revision_count,
+        receipt_count,
+        semantic_bytes,
+        logical_working_bytes,
+        projection_rows,
+        projection_bytes_upper_bound,
+    })
+}
+
+fn try_clone_text(value: &str, payload: &'static str) -> Result<String, V1Error> {
+    let required_bytes = u64::try_from(value.len())
+        .map_err(|_| resource_overflow("text clone length", "u64 bytes"))?;
+    let mut cloned = String::new();
+    cloned
+        .try_reserve_exact(value.len())
+        .map_err(|_| allocation_refusal(payload, required_bytes))?;
+    cloned.push_str(value);
+    Ok(cloned)
+}
+
+fn try_clone_receipts(
+    receipts: &[ClaimRelationReceipt],
+    resources: V1ResourceEnvelope,
+) -> Result<Vec<ClaimRelationReceipt>, V1Error> {
+    let mut cloned = Vec::new();
+    cloned.try_reserve_exact(receipts.len()).map_err(|_| {
+        allocation_refusal("relation receipt index", resources.logical_working_bytes)
+    })?;
+    for receipt in receipts {
+        cloned.push(ClaimRelationReceipt {
+            kind: receipt.kind,
+            from: receipt.from,
+            to: receipt.to,
+            checker: try_clone_text(&receipt.checker, "relation checker")?,
+            tcb: try_clone_text(&receipt.tcb, "relation TCB")?,
+            variance: receipt.variance,
+            domain_note: try_clone_text(&receipt.domain_note, "relation domain note")?,
+            policy_version: receipt.policy_version,
+        });
+    }
+    Ok(cloned)
+}
+
+fn normalized_graph_digest(
+    revisions: &[ClaimRevisionId],
+    edges: &[ClaimRelationReceipt],
+    representatives: &BTreeMap<ClaimRevisionId, ClaimRevisionId>,
+    resources: V1ResourceEnvelope,
+) -> Result<ContentHash, V1Error> {
+    let mut hasher = DomainHasher::new(GRAPH_DOMAIN);
+    hasher.update(&MANIFEST_V1_SCHEMA_VERSION.to_be_bytes());
+    hasher.update(&resources.revision_count.to_be_bytes());
+    for revision in revisions {
+        hasher.update(revision.as_bytes());
+    }
+    hasher.update(&resources.receipt_count.to_be_bytes());
+    for edge in edges {
+        hasher.update(&[relation_code(edge.kind)]);
+        hasher.update(edge.from.as_bytes());
+        hasher.update(edge.to.as_bytes());
+        hash_framed_text(&mut hasher, "checker", &edge.checker)?;
+        hash_framed_text(&mut hasher, "tcb", &edge.tcb)?;
+        hasher.update(&[variance_code(edge.variance)]);
+        hash_framed_text(&mut hasher, "domain_note", &edge.domain_note)?;
+        hasher.update(&edge.policy_version.to_be_bytes());
+    }
+    for (member, representative) in representatives {
+        hasher.update(member.as_bytes());
+        hasher.update(representative.as_bytes());
+    }
+    Ok(hasher.finalize())
 }
 
 /// Admit a claim graph: every endpoint must be a known revision and every
@@ -705,40 +1167,44 @@ pub fn admit_graph(
     revisions: &[ClaimRevision],
     receipts: &[ClaimRelationReceipt],
 ) -> Result<NormalizedGraph, V1Error> {
-    let mut ids = BTreeSet::new();
+    admit_graph_with_limits(revisions, receipts, V1AdmissionLimits::DEFAULT)
+}
+
+/// Admit a graph under a caller-tightened v1 resource envelope. Limits above
+/// [`V1AdmissionLimits::DEFAULT`] refuse; limits are policy metadata and never
+/// change the identity of an otherwise identical admitted graph.
+pub fn admit_graph_with_limits(
+    revisions: &[ClaimRevision],
+    receipts: &[ClaimRelationReceipt],
+    limits: V1AdmissionLimits,
+) -> Result<NormalizedGraph, V1Error> {
+    // Cardinality, semantic, logical-working, and projection envelopes are all
+    // proven before graph-owned trees, indexes, or receipt text are allocated.
+    let resources = preflight_graph(revisions, receipts, limits)?;
+
+    let mut id_list = Vec::new();
+    id_list.try_reserve_exact(revisions.len()).map_err(|_| {
+        allocation_refusal("revision identity index", resources.logical_working_bytes)
+    })?;
     for revision in revisions {
-        revision.validate()?;
-        if !ids.insert(revision.revision_id()) {
-            return Err(V1Error::new(
-                "v1-duplicate-revision",
-                "identical revision content supplied twice",
-            )
-            .with_fix("content-addressed identity is idempotent: deduplicate the input"));
-        }
+        id_list.push(revision.revision_id_after_validation()?);
+    }
+    id_list.sort_unstable();
+    if id_list.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(V1Error::new(
+            "v1-duplicate-revision",
+            "identical revision content supplied twice",
+        )
+        .with_fix("content-addressed identity is idempotent: deduplicate the input"));
     }
 
-    // Bound caller-owned text before cloning so hostile oversized drafts
-    // refuse without duplicating their allocation.
+    // Validate endpoint semantics against canonical endpoint copies before
+    // cloning any receipt text. This preserves bidirectional diagnostics while
+    // refusing invalid graphs before graph-owned payload allocation.
     for receipt in receipts {
-        bounded_text("checker", &receipt.checker)?;
-        bounded_text("tcb", &receipt.tcb)?;
-        bounded_text("domain_note", &receipt.domain_note)?;
-    }
-
-    // Equivalence is semantically bidirectional: after the allocation
-    // preflight, normalize a private clone before endpoint-sensitive
-    // validation and every downstream graph operation. This makes even refusal
-    // diagnostics orientation-invariant while leaving caller-owned drafts
-    // untouched. All directed kinds retain their supplied endpoints;
-    // checker/TCB/domain/policy evidence is never altered.
-    let mut edges = receipts.to_vec();
-    for receipt in &mut edges {
-        canonicalize_equivalence_endpoints(receipt);
-    }
-
-    for receipt in &edges {
-        for endpoint in [&receipt.from, &receipt.to] {
-            if !ids.contains(endpoint) {
+        let (from, to) = canonical_endpoints(receipt.kind, receipt.from, receipt.to);
+        for endpoint in [&from, &to] {
+            if id_list.binary_search(endpoint).is_err() {
                 return Err(V1Error::new(
                     "v1-dangling-relation",
                     format!(
@@ -750,7 +1216,7 @@ pub fn admit_graph(
                 .with_fix("or drop the stale receipt (renames never rebind identities)"));
             }
         }
-        if receipt.from == receipt.to {
+        if from == to {
             return Err(V1Error::new(
                 "v1-self-relation",
                 "a revision cannot relate to itself",
@@ -767,6 +1233,14 @@ pub fn admit_graph(
                 "use Preserved only with orientation-neutral bidirectional evidence, or choose the directed relation kind matching the variance",
             ));
         }
+    }
+
+    // Equivalence is semantically bidirectional: normalize the fallibly cloned
+    // private receipts before sorting and all subsequent graph operations.
+    // Caller-owned drafts stay untouched.
+    let mut edges = try_clone_receipts(receipts, resources)?;
+    for receipt in &mut edges {
+        canonicalize_equivalence_endpoints(receipt);
     }
 
     // The canonical receipt order includes EVERY field later fed to the graph
@@ -794,10 +1268,13 @@ pub fn admit_graph(
     }
 
     // Union-find over certified-equivalence edges.
-    let id_list: Vec<ClaimRevisionId> = ids.iter().copied().collect();
     let index: BTreeMap<ClaimRevisionId, usize> =
         id_list.iter().enumerate().map(|(i, id)| (*id, i)).collect();
-    let mut parent: Vec<usize> = (0..id_list.len()).collect();
+    let mut parent = Vec::new();
+    parent.try_reserve_exact(id_list.len()).map_err(|_| {
+        allocation_refusal("equivalence union-find", resources.logical_working_bytes)
+    })?;
+    parent.extend(0..id_list.len());
     // Iterative path-halving find (explicit-stack doctrine: no recursion).
     fn find(parent: &mut [usize], mut i: usize) -> usize {
         while parent[i] != i {
@@ -843,11 +1320,21 @@ pub fn admit_graph(
     }
     // Iterative DFS three-color cycle detection (deterministic order).
     let mut color: BTreeMap<ClaimRevisionId, u8> = BTreeMap::new();
+    let stack_slots = id_list
+        .len()
+        .checked_add(edges.len())
+        .and_then(|slots| slots.checked_add(1))
+        .ok_or_else(|| resource_overflow("cycle stack slots", "usize slots"))?;
+    let mut stack = Vec::new();
+    stack
+        .try_reserve_exact(stack_slots)
+        .map_err(|_| allocation_refusal("cycle detector stack", resources.logical_working_bytes))?;
     for &start in adjacency.keys() {
         if color.get(&start).copied().unwrap_or(0) != 0 {
             continue;
         }
-        let mut stack = vec![(start, false)];
+        stack.clear();
+        stack.push((start, false));
         while let Some((node, children_done)) = stack.pop() {
             if children_done {
                 color.insert(node, 2);
@@ -882,10 +1369,13 @@ pub fn admit_graph(
         }
     }
 
+    let digest = normalized_graph_digest(&id_list, &edges, &representative, resources)?;
     Ok(NormalizedGraph {
         revisions: id_list,
         edges,
         representatives: representative,
+        digest,
+        resources,
     })
 }
 

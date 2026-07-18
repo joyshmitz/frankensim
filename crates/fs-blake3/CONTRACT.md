@@ -23,6 +23,10 @@ without gaining solver, geometry, FFI, or license surface.
   `DERIVE_KEY_CONTEXT` for the domain and `DERIVE_KEY_MATERIAL` for the
   payload. Mode flags separate typed roots from plain `hash_bytes`
   artifacts as well as from other domains.
+- `DomainHasher` — the sealed streaming form of `hash_domain`. Callers choose
+  a public protocol domain and feed payload chunks, but cannot select raw mode
+  flags or secret-keyed hashing. Its final root is byte-identical to hashing
+  the concatenated payload through `hash_domain`.
 - `ContentHash(pub [u8; 32])` — Copy identity value. `as_bytes`,
   `to_hex` (64 lowercase hex chars), `from_hex` (either case, exactly
   64 chars, else `None`), `from_slice` (exactly 32 bytes, else
@@ -74,8 +78,8 @@ without gaining solver, geometry, FFI, or license surface.
 - Output is bit-identical to the official BLAKE3 specification for
   plain-mode hashing (spec/oracle vectors in the unit tests and in
   fs-ledger's `ledger_001` conformance suite).
-- Streaming and one-shot hashing of the same byte sequence produce the
-  same digest for every split pattern.
+- Plain and domain-separated streaming each match their one-shot form for the
+  same byte sequence under every split pattern; empty chunks are nonsemantic.
 - `hash_domain(d1, p1) == hash_domain(d2, p2)` implies (up to a BLAKE3
   collision) `d1 == d2 && p1 == p2`; equality between a tagged hash and a
   plain `hash_bytes` artifact likewise requires a cross-mode BLAKE3 collision
@@ -199,7 +203,7 @@ row order, declared lengths, or concatenated row bytes is semantic.
 
 ## Cancellation behavior
 
-`Blake3`, `hash_bytes`, and `hash_domain` remain synchronous and
+`Blake3`, `DomainHasher`, `hash_bytes`, and `hash_domain` remain synchronous and
 non-cancellable. Canonical construction takes an explicit `CancellationProbe`;
 `NeverCancel` is the deliberate opt-out. Encoding polls during initialization,
 schema validation and descriptor emission, header sizing and absorption,
@@ -223,9 +227,9 @@ None.
 ## Conformance tests
 
 Unit tests in `src/lib.rs`: official empty-input spec vector, oracle
-`abc` vector, hex round-trip and rejection, streaming-vs-one-shot
-across block/chunk edges, single- and multi-chunk derive-key oracle
-vectors, and raw/tagged namespace separation. The historical
+`abc` vector, hex round-trip and rejection, plain and domain-separated
+streaming-vs-one-shot across block/chunk edges, single- and multi-chunk
+derive-key oracle vectors, and raw/tagged namespace separation. The historical
 multi-chunk / multi-level tree vectors continue to run in fs-ledger's
 `ledger_001` conformance suite through the re-exported paths.
 

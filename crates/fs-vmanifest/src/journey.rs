@@ -564,9 +564,11 @@ impl ClaimRecord {
     /// Return the exact subject revision when present.
     #[must_use]
     pub fn subject_revision(&self) -> Option<&ClaimRevision> {
-        self.revisions
-            .iter()
-            .find(|revision| revision.revision_id() == self.subject)
+        self.revisions.iter().find(|revision| {
+            revision
+                .revision_id()
+                .is_ok_and(|revision_id| revision_id == self.subject)
+        })
     }
 }
 

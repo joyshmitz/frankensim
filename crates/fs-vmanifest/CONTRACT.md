@@ -3335,7 +3335,11 @@ conceptual lineage while `ClaimRevisionId` content-addresses one exact
 statement (kind, quantifiers, units/conventions, hypotheses, domain,
 code/contract surface, no-claim boundary, supersession pointer) — distinct
 revisions cannot collide, identical content is idempotent, supersession
-appends and never mutates. `CaseId`/`JourneyId` are the stable
+appends and never mutates. `ClaimRevision::revision_id` is fallible: it first
+admits every semantic field, then streams the exact legacy v1 preimage through
+the derive-key `DomainHasher`; an empty or oversized public draft publishes no
+authoritative id. Existing valid preimages and roots are byte-for-byte
+unchanged. `CaseId`/`JourneyId` are the stable
 case/journey identities. `SourceAuthority` is a total lattice
 (GeneratedArtifact < TestSource < Contract < BeadObligation <
 FrozenSnapshot); conflicts resolve upward by re-pinning, and
@@ -3367,6 +3371,30 @@ smallest member without erasing members. Exact duplicate receipts refuse.
 read-only canonical revisions, receipts, and representatives. Its total receipt
 order includes every digest-forming field, making its digest input-order
 invariant even for parallel edges sharing relation kind, endpoints, or checker.
+The graph preimage streams in that exact order and its root is cached once in
+the sealed graph; no complete identity preimage `Vec` is retained or rebuilt by
+renderers.
+
+The fixed v1 protocol envelope is 4096 revisions, 8192 receipts, 16 MiB of
+aggregate semantic UTF-8, 32 MiB of conservative logical graph-working charge,
+12,289 rows per complete projection, and 128 MiB for any one complete
+projection. Aggregate semantic bytes are the exact sum of every claim id, all
+seven revision semantic fields, and every receipt checker/TCB/domain note.
+Logical working charge is
+`256 * revisions + 512 * receipts + receipt-semantic-bytes`; the fixed charges
+conservatively cover normalized ids, receipt records, union/cycle/index state,
+and adjacency entries in schema units rather than allocator layout. A
+projection upper bound is
+`1024 * (1 + revisions + receipts) + 6 * receipt-semantic-bytes`, covering the
+largest JSON escape expansion plus fixed identity/ordinal fields.
+`admit_graph_with_limits` permits only tighter local budgets; it cannot loosen
+the v1 ceilings, and the active limit values never enter graph identity.
+Admission checks count, aggregate, working, and projection envelopes with
+checked `u64` arithmetic before hashing, tree/index construction, or receipt
+cloning. A refusal carries typed quantity/required/admitted/unit evidence.
+Successful graphs retain the derived `V1ResourceEnvelope`; equivalent input
+permutations retain the same envelope and digest.
+
 Human, strict JSON-lines, and ledger renderings project every normalized
 revision and receipt field from that one digest. JSON records carry schema
 version, graph digest, and a global canonical ordinal; human and ledger text
@@ -3384,6 +3412,14 @@ migration semantics per field, in data.
   ledger persistence fs-obs/fs-ledger scope.
 - The field registry SPECIFIES the record; the typed full-record wire
   codec lands with the V.1.2 compiler against this registry.
+- The retained working/projection charges are deterministic schema-level upper
+  bounds, not measurements or promises of allocator metadata, fragmentation,
+  temporary formatting capacity, stack use, operating-system RSS, or another
+  process's memory. Fallible `Vec`/`String` reservations return structured
+  refusals; standard-library `BTreeMap`/`BTreeSet` nodes and diagnostic
+  formatting expose no fallible reservation API. This synchronous v1 layer
+  also makes no cancellation-latency claim; G4 here proves hostile preflight
+  precedence and no returned partial graph, not allocator-failure totality.
 - Relation soundness is structural (orientation, variance, cycles,
   contradiction); checker/TCB strings are recorded identities, not
   re-verified proofs. Canonicalizing a certified-equivalence receipt records
