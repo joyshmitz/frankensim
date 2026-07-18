@@ -612,7 +612,8 @@ pub enum RefinedWindow {
 /// Refinement output over a set of possible-contact windows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CcdRefinement {
-    /// One entry per input window, in input order.
+    /// Time-ordered terminal subwindows. A refinement route may bisect an
+    /// input window into several pruned or retained entries.
     pub windows: Vec<RefinedWindow>,
     /// Worst versor-defect bound among every enclosure consulted.
     pub max_defect: f64,
@@ -684,6 +685,46 @@ pub fn refine_possible_windows(
 
 use fs_geom::{Chart, TraceStepClaim};
 
+/// A finite center and a certified upper bound for the distance from that
+/// center to every corner. Because a Euclidean ball is convex, containing
+/// every corner also contains their convex hull.
+fn enclosing_corner_ball(corners: &[fs_geom::Point3]) -> Option<(fs_geom::Point3, f64)> {
+    let first = *corners.first()?;
+    if !first.x.is_finite() || !first.y.is_finite() || !first.z.is_finite() {
+        return None;
+    }
+    let (mut lo, mut hi) = (first, first);
+    for &corner in &corners[1..] {
+        if !corner.x.is_finite() || !corner.y.is_finite() || !corner.z.is_finite() {
+            return None;
+        }
+        lo.x = lo.x.min(corner.x);
+        lo.y = lo.y.min(corner.y);
+        lo.z = lo.z.min(corner.z);
+        hi.x = hi.x.max(corner.x);
+        hi.y = hi.y.max(corner.y);
+        hi.z = hi.z.max(corner.z);
+    }
+    let center = fs_geom::Point3::new(
+        f64::midpoint(lo.x, hi.x),
+        f64::midpoint(lo.y, hi.y),
+        f64::midpoint(lo.z, hi.z),
+    );
+    if !center.x.is_finite() || !center.y.is_finite() || !center.z.is_finite() {
+        return None;
+    }
+
+    let mut radius = 0.0f64;
+    for corner in corners {
+        let dx = Interval::point(corner.x) - Interval::point(center.x);
+        let dy = Interval::point(corner.y) - Interval::point(center.y);
+        let dz = Interval::point(corner.z) - Interval::point(center.z);
+        let distance_hi = (dx * dx + dy * dy + dz * dz).sqrt().hi();
+        radius = radius.max(distance_hi);
+    }
+    Some((center, radius))
+}
+
 /// Refine possible-contact windows for a POLYTOPE body against a STATIC
 /// exact-distance obstacle chart (the SDF route of this bead's staging
 /// plan).
@@ -695,16 +736,18 @@ use fs_geom::{Chart, TraceStepClaim};
 /// `r = max |corner − c|` over the swept-vertex-hull corners, so
 /// `φ(q) ≥ φ_lo(c) − r` for every swept point `q`; when that bound is
 /// positive the whole window is PROVEN clear of the obstacle with a
-/// certified gap. The radius computation is inflated multiplicatively
-/// (documented in-line) to cover its own f64 rounding; the center choice
-/// affects tightness only, never soundness.
+/// certified gap. Every radius operation uses outward-rounded intervals,
+/// including subnormal underflow and overflow cases; an infinite upper bound
+/// merely prevents pruning. The center choice affects tightness only, never
+/// soundness.
 ///
 /// # Errors
 /// [`ContactError::MissingCapability`] (stable name
 /// `"exact-distance-chart"`) when the obstacle's trace claim is weaker;
 /// [`ContactError::InvalidSupport`]/[`ContactError::TooManyBodies`] on
 /// vertex-set refusals; motion refusals pass through typed;
-/// [`ContactError::Query`] wrapping an unusable chart enclosure;
+/// [`ContactError::Query`] wrapping non-finite swept corners or an unusable
+/// chart enclosure;
 /// [`ContactError::Cancelled`] per vertex and window.
 #[allow(clippy::too_many_lines)] // One conservative bisection transaction, mirroring certified_ccd.
 pub fn refine_windows_against_sdf(
@@ -769,27 +812,19 @@ pub fn refine_windows_against_sdf(
         examined += 1;
         let (hull, defect) = swept_vertex_hull(vertices, tube, window, cx)?;
         max_defect = max_defect.max(defect);
-        // Center: component-wise corner mean. Any finite center is sound;
-        // the radius below is measured from THIS center.
-        #[allow(clippy::cast_precision_loss)]
-        let n = hull.corners.len() as f64;
-        let (mut sx, mut sy, mut sz) = (0.0f64, 0.0f64, 0.0f64);
-        for corner in &hull.corners {
-            sx += corner.x;
-            sy += corner.y;
-            sz += corner.z;
-        }
-        let center = fs_geom::Point3::new(sx / n, sy / n, sz / n);
-        let mut radius = 0.0f64;
-        for corner in &hull.corners {
-            let dx = corner.x - center.x;
-            let dy = corner.y - center.y;
-            let dz = corner.z - center.z;
-            radius = radius.max((dx * dx + dy * dy + dz * dz).sqrt());
-        }
-        // ≤ 6 rounded f64 ops per corner distance at ≤ 1 ulp each: an
-        // 8-eps multiplicative inflation strictly covers the rounding.
-        let radius = (radius * (1.0 + 8.0 * f64::EPSILON)).next_up();
+        let Some((center, radius)) = enclosing_corner_ball(&hull.corners) else {
+            let corner = hull
+                .corners
+                .iter()
+                .copied()
+                .find(|corner| {
+                    !corner.x.is_finite() || !corner.y.is_finite() || !corner.z.is_finite()
+                })
+                .unwrap_or(hull.corners[0]);
+            return Err(ContactError::Query(QueryError::InvalidPointSample {
+                at: [corner.x, corner.y, corner.z],
+            }));
+        };
 
         let sample = obstacle.eval(center, cx);
         if cx.checkpoint().is_err() {
@@ -824,4 +859,65 @@ pub fn refine_windows_against_sdf(
         windows: out,
         max_defect,
     })
+}
+
+#[cfg(test)]
+mod sdf_radius_tests {
+    use super::enclosing_corner_ball;
+    use fs_geom::Point3;
+
+    #[test]
+    fn enclosing_corner_ball_survives_squared_distance_underflow() {
+        // The direct expression `(1e-162_f64).powi(2).sqrt()` underflows to
+        // zero. A certified radius must still enclose both endpoints.
+        let delta = 2.0e-162;
+        let corners = [Point3::new(0.0, 0.0, 0.0), Point3::new(delta, 0.0, 0.0)];
+        let (center, radius) = enclosing_corner_ball(&corners).expect("finite corners");
+        assert!(radius >= center.x);
+        assert!(radius >= delta - center.x);
+        assert!(radius > 0.0);
+    }
+
+    #[test]
+    fn enclosing_corner_ball_encloses_three_axis_subnormal_deltas() {
+        let delta = 2.0e-162;
+        let corners = [Point3::new(0.0, 0.0, 0.0), Point3::new(delta, delta, delta)];
+        let (center, radius) = enclosing_corner_ball(&corners).expect("finite corners");
+        let half_diagonal = 3.0f64.sqrt() * center.x;
+        assert!(radius >= half_diagonal);
+    }
+
+    #[test]
+    fn enclosing_corner_ball_rejects_empty_or_nonfinite_corners() {
+        assert_eq!(enclosing_corner_ball(&[]), None);
+        assert_eq!(
+            enclosing_corner_ball(&[Point3::new(f64::NAN, 0.0, 0.0)]),
+            None
+        );
+        assert_eq!(
+            enclosing_corner_ball(&[Point3::new(f64::INFINITY, 0.0, 0.0)]),
+            None
+        );
+    }
+
+    #[test]
+    fn enclosing_corner_ball_handles_opposite_signed_zero() {
+        let corners = [Point3::new(-0.0, 0.0, -0.0), Point3::new(0.0, -0.0, 0.0)];
+        let (center, radius) = enclosing_corner_ball(&corners).expect("finite corners");
+        assert_eq!(center.x.abs().to_bits(), 0.0f64.to_bits());
+        assert_eq!(center.y.abs().to_bits(), 0.0f64.to_bits());
+        assert_eq!(center.z.abs().to_bits(), 0.0f64.to_bits());
+        assert!(radius.is_finite() && radius >= 0.0);
+    }
+
+    #[test]
+    fn enclosing_corner_ball_degrades_overflow_to_no_prune_radius() {
+        let corners = [
+            Point3::new(-f64::MAX, 0.0, 0.0),
+            Point3::new(f64::MAX, 0.0, 0.0),
+        ];
+        let (center, radius) = enclosing_corner_ball(&corners).expect("finite corners");
+        assert_eq!(center.x.to_bits(), 0.0f64.to_bits());
+        assert!(radius.is_infinite() && radius.is_sign_positive());
+    }
 }

@@ -138,9 +138,12 @@ Euclidean signed distance is 1-Lipschitz (the theorem carried by
 capability name), so with the swept-vertex-hull corners enclosed in a
 ball of radius `r` around any center `c`, every swept point satisfies
 `φ(q) ≥ φ_lo(c) − r`; a positive bound proves the whole subwindow clear
-with a certified gap. The radius computation self-covers its f64
-rounding (multiplicative inflation, documented in-line); the center
-choice affects only tightness. Because certified_ccd MERGES adjacent
+with a certified gap. The center is the overflow-safe component-wise
+bounding-box midpoint, and every corner distance is evaluated with
+outward-rounded `fs-ivl` operations. Subnormal squared-distance underflow
+therefore remains enclosed; arithmetic overflow produces an infinite radius
+and disables pruning rather than creating a false-clear certificate. The
+center choice affects only tightness. Because certified_ccd MERGES adjacent
 possible windows, the route bisects internally with the same
 LIFO/tolerance/budget discipline (budget exhaustion refuses with exact
 partial state). ct-011 pins the value (a corner-region pass the AABB
