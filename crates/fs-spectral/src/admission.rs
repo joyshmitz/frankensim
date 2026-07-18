@@ -314,14 +314,14 @@ impl fmt::Display for SpectralPromotionBindingErrorV1 {
 
 impl core::error::Error for SpectralPromotionBindingErrorV1 {}
 
-/// Copyable favorable token produced only from a configured spectral
+/// Cloneable favorable token produced only from a configured spectral
 /// promotion witness.
 ///
 /// Generic verifier/admitter capabilities yield only
 /// [`PolicyRelativeSpectralAuthorityV1`]. They cannot be converted directly
 /// into this type; a separately configured [`SpectralPromotionTrustRootV1`]
 /// must first mint an opaque [`SpectralPromotionWitnessV1`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdmittedSpectralWitnessV1 {
     proposition: SpectralPropositionId,
     audit: IdentityAuditRecord,
@@ -402,8 +402,8 @@ impl AdmittedSpectralWitnessV1 {
     /// Bounded verifier/policy namespace, canonical-byte observations, and
     /// configured promotion context.
     #[must_use]
-    pub const fn promotion_audit(&self) -> PromotionAuditRecord {
-        self.promotion
+    pub fn promotion_audit(&self) -> PromotionAuditRecord {
+        self.promotion.clone()
     }
 
     /// Whether this token is bound to the typed digest, independently retained
@@ -830,7 +830,7 @@ impl WitnessDispositionV1 {
 }
 
 /// One witnessed or contradicted structure proposition.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StructureClaimV1 {
     property: StructurePropertyV1,
     support: StructureSupportV1,
@@ -923,7 +923,7 @@ impl StructureProfileV1 {
 
 /// Definiteness/nondegeneracy state of a named metric.
 #[allow(clippy::large_enum_variant)] // Admitted audit evidence stays inline and replay-complete.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MetricDefinitenessV1 {
     /// Canonical Euclidean metric.
     Euclidean,
@@ -993,7 +993,7 @@ impl MetricDefinitenessPropositionV1 {
 }
 
 impl MetricDefinitenessV1 {
-    const fn tag(self) -> u8 {
+    const fn tag(&self) -> u8 {
         match self {
             Self::Euclidean => 0,
             Self::PositiveDefinite { .. } => 1,
@@ -1003,11 +1003,11 @@ impl MetricDefinitenessV1 {
         }
     }
 
-    const fn is_positive_definite(self) -> bool {
+    const fn is_positive_definite(&self) -> bool {
         matches!(self, Self::Euclidean | Self::PositiveDefinite { .. })
     }
 
-    const fn is_adjoint_compatible(self) -> bool {
+    const fn is_adjoint_compatible(&self) -> bool {
         matches!(
             self,
             Self::Euclidean | Self::PositiveDefinite { .. } | Self::Indefinite { .. }
@@ -1016,7 +1016,7 @@ impl MetricDefinitenessV1 {
 }
 
 /// One domain or codomain metric.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SpectralMetricV1 {
     id: SpectralMetricId,
     dimension: u32,
@@ -1071,14 +1071,14 @@ impl SpectralMetricV1 {
 
     /// Definiteness state.
     #[must_use]
-    pub const fn definiteness(&self) -> MetricDefinitenessV1 {
-        self.definiteness
+    pub fn definiteness(&self) -> MetricDefinitenessV1 {
+        self.definiteness.clone()
     }
 }
 
 /// Gauge/nullspace convention attached to the operator spaces.
 #[allow(clippy::large_enum_variant)] // Admitted audit evidence stays inline and replay-complete.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GaugeConventionV1 {
     /// A checker admitted that no structural gauge/nullspace is present.
     CertifiedNone {
@@ -1176,7 +1176,7 @@ impl GaugePropositionV1 {
 }
 
 impl GaugeConventionV1 {
-    const fn tag(self) -> u8 {
+    const fn tag(&self) -> u8 {
         match self {
             Self::CertifiedNone { .. } => 0,
             Self::Fixed { .. } => 1,
@@ -1188,13 +1188,19 @@ impl GaugeConventionV1 {
     /// Witness-free semantic context for binding related serialization
     /// evidence to this exact gauge/reduction lineage.
     #[must_use]
-    pub const fn context(self) -> GaugeContextV1 {
+    pub const fn context(&self) -> GaugeContextV1 {
         match self {
             Self::CertifiedNone { .. } => GaugeContextV1::CertifiedNone,
-            Self::Fixed { nullity, gauge, .. } => GaugeContextV1::Fixed { nullity, gauge },
+            Self::Fixed { nullity, gauge, .. } => GaugeContextV1::Fixed {
+                nullity: *nullity,
+                gauge: *gauge,
+            },
             Self::Quotiented {
                 nullity, quotient, ..
-            } => GaugeContextV1::Quotiented { nullity, quotient },
+            } => GaugeContextV1::Quotiented {
+                nullity: *nullity,
+                quotient: *quotient,
+            },
             Self::Unknown => GaugeContextV1::Unknown,
         }
     }
@@ -1202,7 +1208,7 @@ impl GaugeConventionV1 {
 
 /// Whether nullspace zeros are present in serialized spectral samples.
 #[allow(clippy::large_enum_variant)] // Admitted audit evidence stays inline and replay-complete.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ZeroPaddingConventionV1 {
     /// A checker admitted that no structural null zeros are present.
     CertifiedNonePresent {
@@ -1259,7 +1265,7 @@ impl ZeroPaddingPropositionV1 {
 }
 
 impl ZeroPaddingConventionV1 {
-    const fn tag(self) -> u8 {
+    const fn tag(&self) -> u8 {
         match self {
             Self::CertifiedNonePresent { .. } => 0,
             Self::ExplicitlyPadded { .. } => 1,
@@ -1270,7 +1276,7 @@ impl ZeroPaddingConventionV1 {
 }
 
 /// Domain/codomain spaces, metrics, and nullspace conventions.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SpectralSpaceContextV1 {
     domain: SpectralMetricV1,
     codomain: SpectralMetricV1,
@@ -1297,26 +1303,26 @@ impl SpectralSpaceContextV1 {
 
     /// Domain metric.
     #[must_use]
-    pub const fn domain(&self) -> SpectralMetricV1 {
-        self.domain
+    pub fn domain(&self) -> SpectralMetricV1 {
+        self.domain.clone()
     }
 
     /// Codomain metric.
     #[must_use]
-    pub const fn codomain(&self) -> SpectralMetricV1 {
-        self.codomain
+    pub fn codomain(&self) -> SpectralMetricV1 {
+        self.codomain.clone()
     }
 
     /// Gauge convention.
     #[must_use]
-    pub const fn gauge(&self) -> GaugeConventionV1 {
-        self.gauge
+    pub fn gauge(&self) -> GaugeConventionV1 {
+        self.gauge.clone()
     }
 
     /// Zero-padding convention.
     #[must_use]
-    pub const fn zero_padding(&self) -> ZeroPaddingConventionV1 {
-        self.zero_padding
+    pub fn zero_padding(&self) -> ZeroPaddingConventionV1 {
+        self.zero_padding.clone()
     }
 }
 
@@ -1523,7 +1529,7 @@ impl RegularityClassV1 {
 }
 
 /// One supported or contradicted regularity proposition.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RegularityClaimV1 {
     class: RegularityClassV1,
     disposition: WitnessDispositionV1,
@@ -1860,8 +1866,8 @@ impl SpectralProblemSpecV1 {
 
     /// Space context.
     #[must_use]
-    pub const fn spaces(&self) -> SpectralSpaceContextV1 {
-        self.spaces
+    pub fn spaces(&self) -> SpectralSpaceContextV1 {
+        self.spaces.clone()
     }
 
     /// Regularity state.
@@ -2708,7 +2714,7 @@ impl AdmittedSpectralMethodClassV1 {
 /// deliberately separate from eigensolver method admission: an algorithm can
 /// compute candidates without being authorized to interpret the first gap as
 /// a physical/mechanism separation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdmittedSpectralGapSemanticsV1 {
     problem_id: SpectralProblemId,
     gauge: GaugeConventionV1,
@@ -2724,14 +2730,14 @@ impl AdmittedSpectralGapSemanticsV1 {
 
     /// Exact admitted gauge/nullspace convention.
     #[must_use]
-    pub const fn gauge(&self) -> GaugeConventionV1 {
-        self.gauge
+    pub fn gauge(&self) -> GaugeConventionV1 {
+        self.gauge.clone()
     }
 
     /// Exact admitted structural-zero serialization convention.
     #[must_use]
-    pub const fn zero_padding(&self) -> ZeroPaddingConventionV1 {
-        self.zero_padding
+    pub fn zero_padding(&self) -> ZeroPaddingConventionV1 {
+        self.zero_padding.clone()
     }
 }
 
@@ -2840,7 +2846,7 @@ fn push_gauge_context(out: &mut Vec<u8>, context: GaugeContextV1) {
 
 fn witness_bytes(witness: &AdmittedSpectralWitnessV1) -> Vec<u8> {
     let audit = witness.audit;
-    let promotion = witness.promotion;
+    let promotion = &witness.promotion;
     let mut out = Vec::with_capacity(32 * 8 + 64);
     push_u64(
         &mut out,
@@ -2956,7 +2962,7 @@ fn push_structure_support(out: &mut Vec<u8>, support: StructureSupportV1) {
     }
 }
 
-fn push_space_signature(out: &mut Vec<u8>, domain: SpectralMetricV1, codomain: SpectralMetricV1) {
+fn push_space_signature(out: &mut Vec<u8>, domain: &SpectralMetricV1, codomain: &SpectralMetricV1) {
     out.extend_from_slice(domain.id.as_bytes());
     push_u32(out, domain.dimension);
     out.extend_from_slice(codomain.id.as_bytes());
@@ -3000,7 +3006,7 @@ pub fn structure_proposition_receipt(
     let scaling = scaling_bytes(scaling);
     push_u32(&mut payload, scaling.len() as u32);
     payload.extend_from_slice(&scaling);
-    push_space_signature(&mut payload, domain, codomain);
+    push_space_signature(&mut payload, &domain, &codomain);
     push_structure_property(&mut payload, property);
     push_structure_support(&mut payload, support);
     payload.push(disposition.tag());
@@ -3036,7 +3042,7 @@ pub fn regularity_proposition_receipt(
     let scaling = scaling_bytes(scaling);
     push_u32(&mut payload, scaling.len() as u32);
     payload.extend_from_slice(&scaling);
-    push_space_signature(&mut payload, domain, codomain);
+    push_space_signature(&mut payload, &domain, &codomain);
     payload.push(regularity.tag());
     if let RegularityClassV1::RegularPolynomial { grade }
     | RegularityClassV1::InvertiblePolynomialLeadingCoefficient { grade } = regularity
@@ -3106,7 +3112,7 @@ fn nullspace_proposition_payload(
     let scaling = scaling_bytes(scaling);
     push_u32(&mut payload, scaling.len() as u32);
     payload.extend_from_slice(&scaling);
-    push_space_signature(&mut payload, domain, codomain);
+    push_space_signature(&mut payload, &domain, &codomain);
     payload
 }
 
@@ -3197,51 +3203,51 @@ fn scaling_bytes(scaling: SpectralScalingContextV1) -> Vec<u8> {
     out
 }
 
-fn metric_bytes(metric: SpectralMetricV1) -> Vec<u8> {
+fn metric_bytes(metric: &SpectralMetricV1) -> Vec<u8> {
     let mut out = Vec::with_capacity(256);
     out.extend_from_slice(metric.id.as_bytes());
     push_u32(&mut out, metric.dimension);
     out.push(metric.definiteness.tag());
-    match metric.definiteness {
+    match &metric.definiteness {
         MetricDefinitenessV1::Euclidean | MetricDefinitenessV1::Unknown => {}
         MetricDefinitenessV1::PositiveDefinite {
             lower,
             upper,
             witness,
         } => {
-            push_u64(&mut out, canonical_f64_bits(lower));
-            push_u64(&mut out, canonical_f64_bits(upper));
-            out.extend_from_slice(&witness_bytes(&witness));
+            push_u64(&mut out, canonical_f64_bits(*lower));
+            push_u64(&mut out, canonical_f64_bits(*upper));
+            out.extend_from_slice(&witness_bytes(witness));
         }
         MetricDefinitenessV1::Indefinite {
             positive,
             negative,
             witness,
         } => {
-            push_u32(&mut out, positive);
-            push_u32(&mut out, negative);
-            out.extend_from_slice(&witness_bytes(&witness));
+            push_u32(&mut out, *positive);
+            push_u32(&mut out, *negative);
+            out.extend_from_slice(&witness_bytes(witness));
         }
         MetricDefinitenessV1::Singular { rank, witness } => {
-            push_u32(&mut out, rank);
-            out.extend_from_slice(&witness_bytes(&witness));
+            push_u32(&mut out, *rank);
+            out.extend_from_slice(&witness_bytes(witness));
         }
     }
     out
 }
 
-fn spaces_bytes(spaces: SpectralSpaceContextV1) -> Vec<u8> {
-    let domain = metric_bytes(spaces.domain);
-    let codomain = metric_bytes(spaces.codomain);
+fn spaces_bytes(spaces: &SpectralSpaceContextV1) -> Vec<u8> {
+    let domain = metric_bytes(&spaces.domain);
+    let codomain = metric_bytes(&spaces.codomain);
     let mut out = Vec::with_capacity(domain.len() + codomain.len() + 80);
     push_u32(&mut out, domain.len() as u32);
     out.extend_from_slice(&domain);
     push_u32(&mut out, codomain.len() as u32);
     out.extend_from_slice(&codomain);
     out.push(spaces.gauge.tag());
-    match spaces.gauge {
+    match &spaces.gauge {
         GaugeConventionV1::CertifiedNone { witness } => {
-            out.extend_from_slice(&witness_bytes(&witness));
+            out.extend_from_slice(&witness_bytes(witness));
         }
         GaugeConventionV1::Unknown => {}
         GaugeConventionV1::Fixed {
@@ -3249,29 +3255,29 @@ fn spaces_bytes(spaces: SpectralSpaceContextV1) -> Vec<u8> {
             gauge,
             witness,
         } => {
-            push_u32(&mut out, nullity);
+            push_u32(&mut out, *nullity);
             out.extend_from_slice(gauge.as_bytes());
-            out.extend_from_slice(&witness_bytes(&witness));
+            out.extend_from_slice(&witness_bytes(witness));
         }
         GaugeConventionV1::Quotiented {
             nullity,
             quotient,
             witness,
         } => {
-            push_u32(&mut out, nullity);
+            push_u32(&mut out, *nullity);
             out.extend_from_slice(quotient.as_bytes());
-            out.extend_from_slice(&witness_bytes(&witness));
+            out.extend_from_slice(&witness_bytes(witness));
         }
     }
     out.push(spaces.zero_padding.tag());
-    match spaces.zero_padding {
+    match &spaces.zero_padding {
         ZeroPaddingConventionV1::CertifiedNonePresent { witness } => {
-            out.extend_from_slice(&witness_bytes(&witness));
+            out.extend_from_slice(&witness_bytes(witness));
         }
         ZeroPaddingConventionV1::ExplicitlyPadded { count, witness }
         | ZeroPaddingConventionV1::Omitted { count, witness } => {
-            push_u32(&mut out, count);
-            out.extend_from_slice(&witness_bytes(&witness));
+            push_u32(&mut out, *count);
+            out.extend_from_slice(&witness_bytes(witness));
         }
         ZeroPaddingConventionV1::Unknown => {}
     }
@@ -3352,7 +3358,7 @@ fn canonical_problem_receipt(
 ) -> Result<SpectralProblemIdentityReceiptV2, CanonicalError> {
     let class = class_bytes(spec.class);
     let scaling = scaling_bytes(spec.scaling);
-    let spaces = spaces_bytes(spec.spaces);
+    let spaces = spaces_bytes(&spec.spaces);
     let ordering = ordering_payload(spec.ordering);
     let scope = scope_payload(spec.requested_scope);
     let mut claim_payloads: Vec<Vec<u8>> = claims.iter().map(claim_bytes).collect();
@@ -3415,10 +3421,10 @@ fn validate_witness_receipt(
     }
 }
 
-fn validate_metric(metric: SpectralMetricV1, issues: &mut Vec<SpectralAdmissionIssueV1>) {
-    match metric.definiteness {
+fn validate_metric(metric: &SpectralMetricV1, issues: &mut Vec<SpectralAdmissionIssueV1>) {
+    match &metric.definiteness {
         MetricDefinitenessV1::Euclidean => {
-            if metric != SpectralMetricV1::euclidean(metric.dimension) {
+            if metric != &SpectralMetricV1::euclidean(metric.dimension) {
                 issues.push(SpectralAdmissionIssueV1::InvalidMetric { metric: metric.id });
             }
         }
@@ -3428,15 +3434,18 @@ fn validate_metric(metric: SpectralMetricV1, issues: &mut Vec<SpectralAdmissionI
             upper,
             witness,
         } => {
-            if !(lower.is_finite() && upper.is_finite() && lower > 0.0 && upper >= lower) {
+            if !(lower.is_finite() && upper.is_finite() && *lower > 0.0 && upper >= lower) {
                 issues.push(SpectralAdmissionIssueV1::InvalidMetric { metric: metric.id });
             }
             validate_witness_receipt(
-                &witness,
+                witness,
                 metric_proposition_receipt(
                     metric.id,
                     metric.dimension,
-                    MetricDefinitenessPropositionV1::PositiveDefinite { lower, upper },
+                    MetricDefinitenessPropositionV1::PositiveDefinite {
+                        lower: *lower,
+                        upper: *upper,
+                    },
                 ),
                 issues,
             );
@@ -3446,30 +3455,33 @@ fn validate_metric(metric: SpectralMetricV1, issues: &mut Vec<SpectralAdmissionI
             negative,
             witness,
         } => {
-            let total = positive.checked_add(negative);
-            if positive == 0 || negative == 0 || total != Some(metric.dimension) {
+            let total = positive.checked_add(*negative);
+            if *positive == 0 || *negative == 0 || total != Some(metric.dimension) {
                 issues.push(SpectralAdmissionIssueV1::InvalidMetric { metric: metric.id });
             }
             validate_witness_receipt(
-                &witness,
+                witness,
                 metric_proposition_receipt(
                     metric.id,
                     metric.dimension,
-                    MetricDefinitenessPropositionV1::Indefinite { positive, negative },
+                    MetricDefinitenessPropositionV1::Indefinite {
+                        positive: *positive,
+                        negative: *negative,
+                    },
                 ),
                 issues,
             );
         }
         MetricDefinitenessV1::Singular { rank, witness } => {
-            if rank >= metric.dimension {
+            if *rank >= metric.dimension {
                 issues.push(SpectralAdmissionIssueV1::InvalidMetric { metric: metric.id });
             }
             validate_witness_receipt(
-                &witness,
+                witness,
                 metric_proposition_receipt(
                     metric.id,
                     metric.dimension,
-                    MetricDefinitenessPropositionV1::Singular { rank },
+                    MetricDefinitenessPropositionV1::Singular { rank: *rank },
                 ),
                 issues,
             );
@@ -3544,12 +3556,12 @@ fn support_is_adjoint_compatible(
 fn shared_inner_product(
     spec: &SpectralProblemSpecV1,
     support: StructureSupportV1,
-) -> Option<SpectralMetricV1> {
+) -> Option<&SpectralMetricV1> {
     let StructureSupportV1::InnerProduct(metric_id) = support else {
         return None;
     };
-    let domain = spec.spaces.domain;
-    let codomain = spec.spaces.codomain;
+    let domain = &spec.spaces.domain;
+    let codomain = &spec.spaces.codomain;
     (domain == codomain && domain.id == metric_id).then_some(domain)
 }
 
@@ -4080,18 +4092,18 @@ pub fn validate_problem(
             metric: spec.spaces.domain.id,
         });
     }
-    validate_metric(spec.spaces.domain, &mut issues);
-    validate_metric(spec.spaces.codomain, &mut issues);
-    match spec.spaces.gauge {
+    validate_metric(&spec.spaces.domain, &mut issues);
+    validate_metric(&spec.spaces.codomain, &mut issues);
+    match &spec.spaces.gauge {
         GaugeConventionV1::CertifiedNone { witness } => validate_witness_receipt(
-            &witness,
+            witness,
             gauge_proposition_receipt(
                 spec.subject,
                 spec.scalar_field,
                 spec.class,
                 spec.scaling,
-                spec.spaces.domain,
-                spec.spaces.codomain,
+                spec.spaces.domain.clone(),
+                spec.spaces.codomain.clone(),
                 GaugePropositionV1::None,
             ),
             &mut issues,
@@ -4101,26 +4113,29 @@ pub fn validate_problem(
             gauge,
             witness,
         } => {
-            if nullity == 0 {
+            if *nullity == 0 {
                 issues.push(SpectralAdmissionIssueV1::Zero {
                     field: AdmissionFieldV1::GaugeNullity,
                 });
-            } else if nullity > spec.spaces.domain.dimension {
+            } else if *nullity > spec.spaces.domain.dimension {
                 issues.push(SpectralAdmissionIssueV1::DimensionMismatch {
-                    left: nullity,
+                    left: *nullity,
                     right: spec.spaces.domain.dimension,
                 });
             }
             validate_witness_receipt(
-                &witness,
+                witness,
                 gauge_proposition_receipt(
                     spec.subject,
                     spec.scalar_field,
                     spec.class,
                     spec.scaling,
-                    spec.spaces.domain,
-                    spec.spaces.codomain,
-                    GaugePropositionV1::Fixed { nullity, gauge },
+                    spec.spaces.domain.clone(),
+                    spec.spaces.codomain.clone(),
+                    GaugePropositionV1::Fixed {
+                        nullity: *nullity,
+                        gauge: *gauge,
+                    },
                 ),
                 &mut issues,
             );
@@ -4130,94 +4145,97 @@ pub fn validate_problem(
             quotient,
             witness,
         } => {
-            if nullity == 0 {
+            if *nullity == 0 {
                 issues.push(SpectralAdmissionIssueV1::Zero {
                     field: AdmissionFieldV1::GaugeNullity,
                 });
             }
             validate_witness_receipt(
-                &witness,
+                witness,
                 gauge_proposition_receipt(
                     spec.subject,
                     spec.scalar_field,
                     spec.class,
                     spec.scaling,
-                    spec.spaces.domain,
-                    spec.spaces.codomain,
-                    GaugePropositionV1::Quotiented { nullity, quotient },
+                    spec.spaces.domain.clone(),
+                    spec.spaces.codomain.clone(),
+                    GaugePropositionV1::Quotiented {
+                        nullity: *nullity,
+                        quotient: *quotient,
+                    },
                 ),
                 &mut issues,
             );
         }
         GaugeConventionV1::Unknown => {}
     }
-    match spec.spaces.zero_padding {
+    match &spec.spaces.zero_padding {
         ZeroPaddingConventionV1::CertifiedNonePresent { witness } => validate_witness_receipt(
-            &witness,
+            witness,
             zero_padding_proposition_receipt(
                 spec.subject,
                 spec.scalar_field,
                 spec.class,
                 spec.scaling,
-                spec.spaces.domain,
-                spec.spaces.codomain,
+                spec.spaces.domain.clone(),
+                spec.spaces.codomain.clone(),
                 spec.spaces.gauge.context(),
                 ZeroPaddingPropositionV1::NonePresent,
             ),
             &mut issues,
         ),
         ZeroPaddingConventionV1::ExplicitlyPadded { count, witness } => {
-            if count == 0 {
+            if *count == 0 {
                 issues.push(SpectralAdmissionIssueV1::Zero {
                     field: AdmissionFieldV1::ZeroPaddingCount,
                 });
-            } else if !matches!(spec.spaces.gauge, GaugeConventionV1::Quotiented { .. })
-                && count > spec.spaces.domain.dimension
+            } else if !matches!(&spec.spaces.gauge, GaugeConventionV1::Quotiented { .. })
+                && *count > spec.spaces.domain.dimension
             {
                 issues.push(SpectralAdmissionIssueV1::DimensionMismatch {
-                    left: count,
+                    left: *count,
                     right: spec.spaces.domain.dimension,
                 });
             }
             validate_witness_receipt(
-                &witness,
+                witness,
                 zero_padding_proposition_receipt(
                     spec.subject,
                     spec.scalar_field,
                     spec.class,
                     spec.scaling,
-                    spec.spaces.domain,
-                    spec.spaces.codomain,
+                    spec.spaces.domain.clone(),
+                    spec.spaces.codomain.clone(),
                     spec.spaces.gauge.context(),
-                    ZeroPaddingPropositionV1::ExplicitlyPadded { count },
+                    ZeroPaddingPropositionV1::ExplicitlyPadded { count: *count },
                 ),
                 &mut issues,
             );
         }
         ZeroPaddingConventionV1::Omitted { count, witness } => {
-            if count == 0 {
+            if *count == 0 {
                 issues.push(SpectralAdmissionIssueV1::Zero {
                     field: AdmissionFieldV1::ZeroPaddingCount,
                 });
-            } else if !matches!(spec.spaces.gauge, GaugeConventionV1::Quotiented { .. })
-                && count > spec.spaces.domain.dimension
+            } else if !matches!(&spec.spaces.gauge, GaugeConventionV1::Quotiented { .. })
+                && *count > spec.spaces.domain.dimension
             {
                 issues.push(SpectralAdmissionIssueV1::DimensionMismatch {
-                    left: count,
+                    left: *count,
                     right: spec.spaces.domain.dimension,
                 });
             }
             validate_witness_receipt(
-                &witness,
+                witness,
                 zero_padding_proposition_receipt(
                     spec.subject,
                     spec.scalar_field,
                     spec.class,
                     spec.scaling,
-                    spec.spaces.domain,
-                    spec.spaces.codomain,
+                    spec.spaces.domain.clone(),
+                    spec.spaces.codomain.clone(),
                     spec.spaces.gauge.context(),
-                    ZeroPaddingPropositionV1::Omitted { count },
+                    ZeroPaddingPropositionV1::Omitted { count: *count },
                 ),
                 &mut issues,
             );
@@ -4439,8 +4457,8 @@ pub fn validate_problem(
                 spec.scalar_field,
                 spec.class,
                 spec.scaling,
-                spec.spaces.domain,
-                spec.spaces.codomain,
+                spec.spaces.domain.clone(),
+                spec.spaces.codomain.clone(),
                 claim.class,
                 claim.disposition,
             ),
@@ -4478,8 +4496,8 @@ pub fn validate_problem(
                 spec.scalar_field,
                 spec.class,
                 spec.scaling,
-                spec.spaces.domain,
-                spec.spaces.codomain,
+                spec.spaces.domain.clone(),
+                spec.spaces.codomain.clone(),
                 claim.property,
                 claim.support,
                 claim.disposition,
@@ -4706,7 +4724,7 @@ pub fn assess_method_class(
     let representation = problem.spec.class.representation;
     let descriptor = problem.spec.class.descriptor;
     let origin = problem.spec.class.origin;
-    let metric = problem.spec.spaces.domain;
+    let metric = &problem.spec.spaces.domain;
     let ordinary_direct = matches!(descriptor, DescriptorRoleV1::Ordinary)
         && matches!(origin, SpectralOperatorOriginV1::Direct);
     let mut selected_support = None;
@@ -4909,7 +4927,10 @@ pub fn assess_method_class(
             if !matches!(origin, SpectralOperatorOriginV1::Direct) {
                 issues.push(SpectralAdmissionIssueV1::MethodOriginMismatch { method });
             }
-            if !matches!(metric.definiteness, MetricDefinitenessV1::Indefinite { .. }) {
+            if !matches!(
+                &metric.definiteness,
+                MetricDefinitenessV1::Indefinite { .. }
+            ) {
                 issues.push(SpectralAdmissionIssueV1::IndefiniteMetricRequired { method });
             }
             if problem.spec.spaces.domain.id != problem.spec.spaces.codomain.id {
@@ -5035,8 +5056,8 @@ pub fn assess_method_class(
 pub fn assess_gap_semantics(
     problem: &ValidatedSpectralProblemV1,
 ) -> Result<AdmittedSpectralGapSemanticsV1, SpectralAdmissionReportV1> {
-    let gauge = problem.spec.spaces.gauge;
-    let zero_padding = problem.spec.spaces.zero_padding;
+    let gauge = &problem.spec.spaces.gauge;
+    let zero_padding = &problem.spec.spaces.zero_padding;
     let mut issues = Vec::new();
     if matches!(gauge, GaugeConventionV1::Unknown) {
         issues.push(SpectralAdmissionIssueV1::GapGaugeConventionRequired);
@@ -5047,7 +5068,7 @@ pub fn assess_gap_semantics(
     let gauge_nullity = match gauge {
         GaugeConventionV1::CertifiedNone { .. } => Some(0),
         GaugeConventionV1::Fixed { nullity, .. }
-        | GaugeConventionV1::Quotiented { nullity, .. } => Some(nullity),
+        | GaugeConventionV1::Quotiented { nullity, .. } => Some(*nullity),
         GaugeConventionV1::Unknown => None,
     };
     let declared_zero_count = match zero_padding {
@@ -5055,7 +5076,7 @@ pub fn assess_gap_semantics(
             None
         }
         ZeroPaddingConventionV1::ExplicitlyPadded { count, .. }
-        | ZeroPaddingConventionV1::Omitted { count, .. } => Some(count),
+        | ZeroPaddingConventionV1::Omitted { count, .. } => Some(*count),
     };
     if let (Some(gauge_nullity), Some(declared_zero_count)) = (gauge_nullity, declared_zero_count)
         && gauge_nullity != declared_zero_count
@@ -5068,8 +5089,8 @@ pub fn assess_gap_semantics(
     if issues.is_empty() {
         Ok(AdmittedSpectralGapSemanticsV1 {
             problem_id: problem.problem_id(),
-            gauge,
-            zero_padding,
+            gauge: gauge.clone(),
+            zero_padding: zero_padding.clone(),
         })
     } else {
         Err(SpectralAdmissionReportV1::new(issues))

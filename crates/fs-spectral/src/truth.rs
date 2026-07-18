@@ -167,7 +167,7 @@ fn push_enclosure(out: &mut Vec<u8>, enclosure: SpectralEnclosureV1) {
 /// Unvalidated algebraic or geometric multiplicity claim carried by a draft.
 /// Favorable semantics become inspectable as result truth only through
 /// [`ValidatedSpectralClusterV1`] after every witness binding has passed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(
     clippy::large_enum_variant,
     reason = "favorable multiplicity variants intentionally retain their admitted evidence receipt inline"
@@ -227,7 +227,7 @@ pub enum MultiplicityStatementV1 {
 }
 
 impl MultiplicityClaimV1 {
-    fn validate(self) -> Result<(), SpectralTruthErrorV1> {
+    fn validate(&self) -> Result<(), SpectralTruthErrorV1> {
         match self {
             Self::LowerBound { value: 0, .. }
             | Self::Bounds { lower: 0, .. }
@@ -242,57 +242,60 @@ impl MultiplicityClaimV1 {
         }
     }
 
-    const fn minimum(self) -> Option<u32> {
+    const fn minimum(&self) -> Option<u32> {
         match self {
             Self::Unknown => None,
-            Self::LowerBound { value, .. } | Self::Exact { value, .. } => Some(value),
-            Self::Bounds { lower, .. } => Some(lower),
+            Self::LowerBound { value, .. } | Self::Exact { value, .. } => Some(*value),
+            Self::Bounds { lower, .. } => Some(*lower),
         }
     }
 
-    const fn maximum(self) -> Option<u32> {
+    const fn maximum(&self) -> Option<u32> {
         match self {
             Self::Unknown | Self::LowerBound { .. } => None,
-            Self::Bounds { upper: value, .. } | Self::Exact { value, .. } => Some(value),
+            Self::Bounds { upper: value, .. } | Self::Exact { value, .. } => Some(*value),
         }
     }
 
-    const fn exact(self) -> Option<u32> {
+    const fn exact(&self) -> Option<u32> {
         match self {
-            Self::Exact { value, .. } => Some(value),
+            Self::Exact { value, .. } => Some(*value),
             Self::Unknown | Self::LowerBound { .. } | Self::Bounds { .. } => None,
         }
     }
 
-    const fn statement(self) -> MultiplicityStatementV1 {
+    const fn statement(&self) -> MultiplicityStatementV1 {
         match self {
             Self::Unknown => MultiplicityStatementV1::Unknown,
-            Self::LowerBound { value, .. } => MultiplicityStatementV1::LowerBound { value },
-            Self::Bounds { lower, upper, .. } => MultiplicityStatementV1::Bounds { lower, upper },
-            Self::Exact { value, .. } => MultiplicityStatementV1::Exact { value },
+            Self::LowerBound { value, .. } => MultiplicityStatementV1::LowerBound { value: *value },
+            Self::Bounds { lower, upper, .. } => MultiplicityStatementV1::Bounds {
+                lower: *lower,
+                upper: *upper,
+            },
+            Self::Exact { value, .. } => MultiplicityStatementV1::Exact { value: *value },
         }
     }
 
-    fn push_semantics(self, out: &mut Vec<u8>) {
+    fn push_semantics(&self, out: &mut Vec<u8>) {
         match self {
             Self::Unknown => out.push(0),
             Self::LowerBound { value, .. } => {
                 out.push(1);
-                push_u32(out, value);
+                push_u32(out, *value);
             }
             Self::Bounds { lower, upper, .. } => {
                 out.push(2);
-                push_u32(out, lower);
-                push_u32(out, upper);
+                push_u32(out, *lower);
+                push_u32(out, *upper);
             }
             Self::Exact { value, .. } => {
                 out.push(3);
-                push_u32(out, value);
+                push_u32(out, *value);
             }
         }
     }
 
-    const fn witness(self) -> Option<AdmittedSpectralWitnessV1> {
+    const fn witness(&self) -> Option<&AdmittedSpectralWitnessV1> {
         match self {
             Self::Unknown => None,
             Self::LowerBound { witness, .. }
@@ -393,7 +396,7 @@ pub enum LocalizationAuthorityV1 {
 /// that the witness names this problem, cluster, enclosure, or authority
 /// family. Favorable fields are intentionally not inspectable until validation
 /// produces a [`ValidatedSpectralClusterV1`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SpectralLocalizationV1 {
     enclosure: SpectralEnclosureV1,
     authority: LocalizationAuthorityV1,
@@ -441,7 +444,7 @@ impl SpectralLocalizationV1 {
 
     /// Enclosed/candidate set.
     #[must_use]
-    pub const fn enclosure(self) -> SpectralEnclosureV1 {
+    pub const fn enclosure(&self) -> SpectralEnclosureV1 {
         self.enclosure
     }
 }
@@ -488,7 +491,7 @@ impl UndefinedSeparationReasonV1 {
 /// Unvalidated internal-resolution claim carried by a cluster draft.
 /// Favorable variants become inspectable as truth only through
 /// [`ValidatedSpectralClusterV1::internal`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 #[allow(
     clippy::large_enum_variant,
     reason = "favorable internal-resolution variants intentionally retain their admitted evidence receipt inline"
@@ -533,7 +536,7 @@ pub enum InternalClusterStateV1 {
 /// localization authority, multiplicity, internal resolution, and defectivity
 /// remain sealed until [`SpectralTruthV1::new`] returns a
 /// [`ValidatedSpectralClusterV1`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SpectralClusterV1 {
     id: SpectralClusterIdV1,
     localization: SpectralLocalizationV1,
@@ -574,7 +577,7 @@ impl SpectralClusterV1 {
         {
             return Err(SpectralTruthErrorV1::GeometricExceedsAlgebraic);
         }
-        match internal {
+        match &internal {
             InternalClusterStateV1::Simple if algebraic_multiplicity.exact() != Some(1) => {
                 return Err(SpectralTruthErrorV1::InvalidInternalClusterState);
             }
@@ -615,13 +618,13 @@ impl SpectralClusterV1 {
 
     /// Stable cluster lineage identity.
     #[must_use]
-    pub const fn id(self) -> SpectralClusterIdV1 {
+    pub const fn id(&self) -> SpectralClusterIdV1 {
         self.id
     }
 
     /// Set-valued enclosure.
     #[must_use]
-    pub const fn enclosure(self) -> SpectralEnclosureV1 {
+    pub const fn enclosure(&self) -> SpectralEnclosureV1 {
         self.localization.enclosure
     }
 }
@@ -629,7 +632,7 @@ impl SpectralClusterV1 {
 /// Non-forgeable view of one cluster whose complete favorable evidence has
 /// been checked against the enclosing admitted problem and result semantics.
 /// Instances are minted only as part of [`SpectralTruthV1`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ValidatedSpectralClusterV1 {
     cluster: SpectralClusterV1,
 }
@@ -661,26 +664,26 @@ impl ValidatedSpectralClusterV1 {
     /// Proposition-bound localization witness, if the validated localization
     /// is favorable. Candidate localization returns `None`.
     #[must_use]
-    pub const fn localization_witness(&self) -> Option<AdmittedSpectralWitnessV1> {
-        self.cluster.localization.witness
+    pub fn localization_witness(&self) -> Option<AdmittedSpectralWitnessV1> {
+        self.cluster.localization.witness.clone()
     }
 
     /// Validated algebraic-multiplicity claim.
     #[must_use]
-    pub const fn algebraic_multiplicity(&self) -> MultiplicityClaimV1 {
-        self.cluster.algebraic_multiplicity
+    pub fn algebraic_multiplicity(&self) -> MultiplicityClaimV1 {
+        self.cluster.algebraic_multiplicity.clone()
     }
 
     /// Validated geometric-multiplicity claim.
     #[must_use]
-    pub const fn geometric_multiplicity(&self) -> MultiplicityClaimV1 {
-        self.cluster.geometric_multiplicity
+    pub fn geometric_multiplicity(&self) -> MultiplicityClaimV1 {
+        self.cluster.geometric_multiplicity.clone()
     }
 
     /// Validated per-cluster internal-resolution state.
     #[must_use]
-    pub const fn internal(&self) -> InternalClusterStateV1 {
-        self.cluster.internal
+    pub fn internal(&self) -> InternalClusterStateV1 {
+        self.cluster.internal.clone()
     }
 
     /// Infer defectivity only from two validated exact multiplicities, never
@@ -728,7 +731,7 @@ impl PositiveFiniteV1 {
 }
 
 /// Separation at the boundary of a partial ordered request.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 #[allow(
     clippy::large_enum_variant,
     reason = "favorable partial-boundary variants intentionally retain their admitted evidence receipt inline"
@@ -814,7 +817,7 @@ pub enum ScopeBoundaryStateV1 {
 /// estimates, residual bounds, and rigorous enclosures are different
 /// propositions and are incomparable unless their exact models are related by
 /// an additional admitted theorem.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 #[allow(
     clippy::large_enum_variant,
     reason = "favorable result-authority variants intentionally retain their admitted evidence receipt inline"
@@ -866,7 +869,7 @@ pub enum PartialCoverageStatusV1 {
 
 /// Explicit projective/infinite accounting for a full finite-dimensional
 /// spectrum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(
     clippy::large_enum_variant,
     reason = "infinity-accounting variants intentionally retain their admitted evidence receipt inline"
@@ -894,7 +897,7 @@ pub enum InfinityAccountingV1 {
 
 /// Achieved coverage. Requested scope is taken only from the bound validated
 /// problem; callers cannot repeat or silently replace it here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(
     clippy::large_enum_variant,
     reason = "favorable coverage variants intentionally retain their admitted evidence receipts inline"
@@ -1122,14 +1125,19 @@ pub enum InfinityAccountingStatementV1 {
 }
 
 impl InfinityAccountingV1 {
-    const fn statement(self) -> InfinityAccountingStatementV1 {
+    const fn statement(&self) -> InfinityAccountingStatementV1 {
         match self {
             Self::NotApplicable => InfinityAccountingStatementV1::NotApplicable,
             Self::Included {
                 algebraic, cluster, ..
-            } => InfinityAccountingStatementV1::Included { algebraic, cluster },
+            } => InfinityAccountingStatementV1::Included {
+                algebraic: *algebraic,
+                cluster: *cluster,
+            },
             Self::ExcludedWithCount { algebraic, .. } => {
-                InfinityAccountingStatementV1::ExcludedWithCount { algebraic }
+                InfinityAccountingStatementV1::ExcludedWithCount {
+                    algebraic: *algebraic,
+                }
             }
         }
     }
@@ -1415,7 +1423,7 @@ fn push_cluster_semantics(out: &mut Vec<u8>, cluster: &SpectralClusterV1) {
     push_enclosure(out, cluster.localization.enclosure);
     cluster.algebraic_multiplicity.push_semantics(out);
     cluster.geometric_multiplicity.push_semantics(out);
-    match cluster.internal {
+    match &cluster.internal {
         InternalClusterStateV1::NoClaim => out.push(0),
         InternalClusterStateV1::Unknown { reason } => {
             out.push(1);
@@ -1552,14 +1560,14 @@ impl SpectralTruthV1 {
 
     /// Evidence-bearing authority of the complete returned result set.
     #[must_use]
-    pub const fn authority(&self) -> SpectralResultAuthorityV1 {
-        self.authority
+    pub fn authority(&self) -> SpectralResultAuthorityV1 {
+        self.authority.clone()
     }
 
     /// Achieved algebraic coverage relative to the admitted request.
     #[must_use]
-    pub const fn coverage(&self) -> SpectralCoverageV1 {
-        self.coverage
+    pub fn coverage(&self) -> SpectralCoverageV1 {
+        self.coverage.clone()
     }
 
     /// Canonically ordered set-valued spectral clusters.
@@ -1582,7 +1590,7 @@ impl SpectralTruthV1 {
 }
 
 fn validate_truth_witness(
-    witness: AdmittedSpectralWitnessV1,
+    witness: &AdmittedSpectralWitnessV1,
     problem: SpectralProblemId,
     proposition: SpectralTruthPropositionV1,
     issues: &mut Vec<SpectralTruthErrorV1>,
@@ -1609,7 +1617,7 @@ fn validate_multiplicity_witness(
     cluster: SpectralClusterIdV1,
     enclosure: SpectralEnclosureV1,
     kind: MultiplicityKindV1,
-    claim: MultiplicityClaimV1,
+    claim: &MultiplicityClaimV1,
     issues: &mut Vec<SpectralTruthErrorV1>,
 ) {
     let Some(witness) = claim.witness() else {
@@ -1618,13 +1626,13 @@ fn validate_multiplicity_witness(
     let (assertion, lower, upper) = match claim {
         MultiplicityClaimV1::Unknown => return,
         MultiplicityClaimV1::LowerBound { value, .. } => {
-            (MultiplicityAssertionV1::LowerBound, value, None)
+            (MultiplicityAssertionV1::LowerBound, *value, None)
         }
         MultiplicityClaimV1::Bounds { lower, upper, .. } => {
-            (MultiplicityAssertionV1::Bounds, lower, Some(upper))
+            (MultiplicityAssertionV1::Bounds, *lower, Some(*upper))
         }
         MultiplicityClaimV1::Exact { value, .. } => {
-            (MultiplicityAssertionV1::Exact, value, Some(value))
+            (MultiplicityAssertionV1::Exact, *value, Some(*value))
         }
     };
     validate_truth_witness(
@@ -1668,7 +1676,7 @@ fn cluster_exists(clusters: &[SpectralClusterV1], id: SpectralClusterIdV1) -> bo
 fn projective_clusters(clusters: &[SpectralClusterV1]) -> Vec<SpectralClusterV1> {
     clusters
         .iter()
-        .copied()
+        .cloned()
         .filter(|cluster| {
             matches!(
                 cluster.localization.enclosure,
@@ -1680,10 +1688,16 @@ fn projective_clusters(clusters: &[SpectralClusterV1]) -> Vec<SpectralClusterV1>
 
 fn projective_cluster_has_favorable_claim(cluster: &SpectralClusterV1) -> bool {
     cluster.localization.authority != LocalizationAuthorityV1::Candidate
-        || !matches!(cluster.algebraic_multiplicity, MultiplicityClaimV1::Unknown)
-        || !matches!(cluster.geometric_multiplicity, MultiplicityClaimV1::Unknown)
+        || !matches!(
+            &cluster.algebraic_multiplicity,
+            MultiplicityClaimV1::Unknown
+        )
+        || !matches!(
+            &cluster.geometric_multiplicity,
+            MultiplicityClaimV1::Unknown
+        )
         || matches!(
-            cluster.internal,
+            &cluster.internal,
             InternalClusterStateV1::Simple
                 | InternalClusterStateV1::UndefinedSeparation { .. }
                 | InternalClusterStateV1::ProvenDegenerate { .. }
@@ -1704,7 +1718,10 @@ fn validate_cluster_evidence(
     issues: &mut Vec<SpectralTruthErrorV1>,
 ) {
     for cluster in clusters {
-        match (cluster.localization.authority, cluster.localization.witness) {
+        match (
+            cluster.localization.authority,
+            cluster.localization.witness.as_ref(),
+        ) {
             (LocalizationAuthorityV1::Candidate, None) => {}
             (LocalizationAuthorityV1::Candidate, Some(_))
             | (LocalizationAuthorityV1::Estimated | LocalizationAuthorityV1::Enclosed, None) => {
@@ -1726,7 +1743,7 @@ fn validate_cluster_evidence(
             cluster.id,
             cluster.localization.enclosure,
             MultiplicityKindV1::Algebraic,
-            cluster.algebraic_multiplicity,
+            &cluster.algebraic_multiplicity,
             issues,
         );
         validate_multiplicity_witness(
@@ -1734,10 +1751,10 @@ fn validate_cluster_evidence(
             cluster.id,
             cluster.localization.enclosure,
             MultiplicityKindV1::Geometric,
-            cluster.geometric_multiplicity,
+            &cluster.geometric_multiplicity,
             issues,
         );
-        match cluster.internal {
+        match &cluster.internal {
             InternalClusterStateV1::ProvenDegenerate { witness } => validate_truth_witness(
                 witness,
                 problem,
@@ -1761,8 +1778,8 @@ fn validate_cluster_evidence(
                     enclosure: cluster.localization.enclosure,
                     algebraic: cluster.algebraic_multiplicity.statement(),
                     geometric: cluster.geometric_multiplicity.statement(),
-                    lower,
-                    norm,
+                    lower: *lower,
+                    norm: *norm,
                 },
                 issues,
             ),
@@ -1860,7 +1877,7 @@ pub fn validate_truth_v1(
         )
     {
         let whole_set_enclosed = matches!(
-            draft.authority,
+            &draft.authority,
             SpectralResultAuthorityV1::CertifiedEnclosure { .. }
         );
         if draft.clusters.iter().any(|cluster| {
@@ -1886,13 +1903,13 @@ pub fn validate_truth_v1(
         issues.push(SpectralTruthErrorV1::MultipleProjectiveClusters);
     }
     let whole_result_favorable = matches!(
-        draft.authority,
+        &draft.authority,
         SpectralResultAuthorityV1::Estimated { .. }
             | SpectralResultAuthorityV1::ResidualBounded { .. }
             | SpectralResultAuthorityV1::CertifiedEnclosure { .. }
     );
     let coverage_asserts_membership = matches!(
-        draft.coverage,
+        &draft.coverage,
         SpectralCoverageV1::Partial { .. }
             | SpectralCoverageV1::RegionComplete { .. }
             | SpectralCoverageV1::FullFinite { .. }
@@ -1908,7 +1925,7 @@ pub fn validate_truth_v1(
         issues.push(SpectralTruthErrorV1::ProjectiveInfinityExcludedByRegularity);
     }
 
-    match draft.authority {
+    match &draft.authority {
         SpectralResultAuthorityV1::NoClaim
         | SpectralResultAuthorityV1::Unknown
         | SpectralResultAuthorityV1::Candidate => {}
@@ -1925,7 +1942,7 @@ pub fn validate_truth_v1(
             norm,
             witness,
         } => {
-            if !(upper.is_finite() && upper >= 0.0) {
+            if !(upper.is_finite() && *upper >= 0.0) {
                 issues.push(SpectralTruthErrorV1::InvalidResidualBound);
             }
             validate_truth_witness(
@@ -1933,8 +1950,8 @@ pub fn validate_truth_v1(
                 problem_id,
                 SpectralTruthPropositionV1::ResultResidualBound {
                     result_set: result_set_id,
-                    upper,
-                    norm,
+                    upper: *upper,
+                    norm: *norm,
                 },
                 &mut issues,
             );
@@ -1983,8 +2000,8 @@ pub fn validate_truth_v1(
         if let SpectralCoverageV1::RegionComplete {
             algebraic_cardinality,
             ..
-        } = draft.coverage
-            && u64::from(algebraic_cardinality)
+        } = &draft.coverage
+            && u64::from(*algebraic_cardinality)
                 .checked_add(excluded)
                 .is_none_or(|accounted| accounted > total)
         {
@@ -2007,15 +2024,15 @@ pub fn validate_truth_v1(
     }
     let requested_scope = problem.spec().requested_scope();
     let complete = matches!(
-        draft.coverage,
+        &draft.coverage,
         SpectralCoverageV1::RegionComplete { .. } | SpectralCoverageV1::FullFinite { .. }
     );
-    match draft.coverage {
+    match &draft.coverage {
         SpectralCoverageV1::NoResult => {
             if !draft.clusters.is_empty() {
                 issues.push(SpectralTruthErrorV1::NoResultHasClusters);
             }
-            if !matches!(draft.authority, SpectralResultAuthorityV1::NoClaim)
+            if !matches!(&draft.authority, SpectralResultAuthorityV1::NoClaim)
                 || !matches!(&draft.boundary, ScopeBoundaryStateV1::NoClaim)
             {
                 issues.push(SpectralTruthErrorV1::NoResultHasClaims);
@@ -2031,13 +2048,13 @@ pub fn validate_truth_v1(
                 issues.push(SpectralTruthErrorV1::DiscreteSpectrumRegularityNotEstablished);
             }
             if let CompletenessScopeV1::Partial { requested } = requested_scope {
-                if exact_sum != Some(returned_algebraic) {
+                if exact_sum != Some(*returned_algebraic) {
                     issues.push(SpectralTruthErrorV1::CoverageCardinalityMismatch);
                 }
                 match status {
                     PartialCoverageStatusV1::Incomplete
-                        if returned_algebraic > 0
-                            && returned_algebraic < requested
+                        if *returned_algebraic > 0
+                            && *returned_algebraic < requested
                             && !matches!(
                                 &draft.boundary,
                                 ScopeBoundaryStateV1::Partial(
@@ -2045,7 +2062,7 @@ pub fn validate_truth_v1(
                                 )
                             ) => {}
                     PartialCoverageStatusV1::Satisfied
-                        if returned_algebraic == requested
+                        if *returned_algebraic == requested
                             && matches!(
                                 &draft.boundary,
                                 ScopeBoundaryStateV1::Partial(
@@ -2055,23 +2072,23 @@ pub fn validate_truth_v1(
                     PartialCoverageStatusV1::ClusterClosureOverrun {
                         boundary_cluster,
                         preceding_algebraic,
-                    } if preceding_algebraic < requested
-                        && returned_algebraic > requested
-                        && cluster_exists(&draft.clusters, boundary_cluster)
+                    } if *preceding_algebraic < requested
+                        && *returned_algebraic > requested
+                        && cluster_exists(&draft.clusters, *boundary_cluster)
                         && draft
                             .clusters
                             .iter()
-                            .find(|cluster| cluster.id == boundary_cluster)
+                            .find(|cluster| cluster.id == *boundary_cluster)
                             .and_then(|cluster| cluster.algebraic_multiplicity.exact())
                             .and_then(|multiplicity| {
                                 preceding_algebraic.checked_add(multiplicity)
                             })
-                            == Some(returned_algebraic)
+                            == Some(*returned_algebraic)
                         && matches!(
                             &draft.boundary,
                             ScopeBoundaryStateV1::Partial(
                                 PartialBoundaryStateV1::ClusterClosed { cluster, .. }
-                            ) if *cluster == boundary_cluster
+                            ) if *cluster == *boundary_cluster
                         ) => {}
                     PartialCoverageStatusV1::Incomplete
                     | PartialCoverageStatusV1::Satisfied
@@ -2087,8 +2104,8 @@ pub fn validate_truth_v1(
                 problem_id,
                 SpectralTruthPropositionV1::PartialCoverage {
                     result_set: result_set_id,
-                    returned_algebraic,
-                    status,
+                    returned_algebraic: *returned_algebraic,
+                    status: *status,
                 },
                 &mut issues,
             );
@@ -2103,8 +2120,8 @@ pub fn validate_truth_v1(
             if !matches!(requested_scope, CompletenessScopeV1::Region { .. }) {
                 issues.push(SpectralTruthErrorV1::CoverageScopeMismatch);
             }
-            if exact_sum != Some(algebraic_cardinality)
-                || (algebraic_cardinality == 0) != draft.clusters.is_empty()
+            if exact_sum != Some(*algebraic_cardinality)
+                || (*algebraic_cardinality == 0) != draft.clusters.is_empty()
             {
                 issues.push(SpectralTruthErrorV1::CoverageCardinalityMismatch);
             }
@@ -2121,7 +2138,7 @@ pub fn validate_truth_v1(
                 problem_id,
                 SpectralTruthPropositionV1::RegionCompleteness {
                     result_set: result_set_id,
-                    algebraic_cardinality,
+                    algebraic_cardinality: *algebraic_cardinality,
                 },
                 &mut issues,
             );
@@ -2141,7 +2158,7 @@ pub fn validate_truth_v1(
                     problem_id,
                     result_set_id,
                     &draft.clusters,
-                    finite_algebraic,
+                    *finite_algebraic,
                     infinity,
                     algebraic_cardinality,
                     infinity_policy,
@@ -2166,7 +2183,7 @@ pub fn validate_truth_v1(
                 problem_id,
                 SpectralTruthPropositionV1::FullCompleteness {
                     result_set: result_set_id,
-                    finite_algebraic,
+                    finite_algebraic: *finite_algebraic,
                     infinity: infinity.statement(),
                 },
                 &mut issues,
@@ -2185,14 +2202,14 @@ pub fn validate_truth_v1(
             .and_then(|candidate| candidate.algebraic_multiplicity.exact())
             .is_some_and(|multiplicity| multiplicity >= 2);
         let matching_overrun = matches!(
-            draft.coverage,
+            &draft.coverage,
             SpectralCoverageV1::Partial {
                 status: PartialCoverageStatusV1::ClusterClosureOverrun {
                     boundary_cluster,
                     ..
                 },
                 ..
-            } if boundary_cluster == *cluster
+            } if *boundary_cluster == *cluster
         );
         if !(exact_repeated && matching_overrun) {
             issues.push(SpectralTruthErrorV1::BoundaryCoverageMismatch);
@@ -2208,7 +2225,7 @@ pub fn validate_truth_v1(
         &mut issues,
     );
     if matches!(&draft.boundary, ScopeBoundaryStateV1::FullSpectrum)
-        && !matches!(draft.coverage, SpectralCoverageV1::FullFinite { .. })
+        && !matches!(&draft.coverage, SpectralCoverageV1::FullFinite { .. })
     {
         issues.push(SpectralTruthErrorV1::BoundaryCoverageMismatch);
     }
@@ -2216,8 +2233,8 @@ pub fn validate_truth_v1(
     if matches!(
         draft.termination,
         SpectralTerminationV1::NotStarted | SpectralTerminationV1::Refused
-    ) && (!matches!(draft.authority, SpectralResultAuthorityV1::NoClaim)
-        || !matches!(draft.coverage, SpectralCoverageV1::NoResult)
+    ) && (!matches!(&draft.authority, SpectralResultAuthorityV1::NoClaim)
+        || !matches!(&draft.coverage, SpectralCoverageV1::NoResult)
         || !draft.clusters.is_empty()
         || !matches!(&draft.boundary, ScopeBoundaryStateV1::NoClaim))
     {
@@ -2294,7 +2311,7 @@ fn validate_full_accounting(
     result_set_id: SpectralResultSetIdV1,
     clusters: &[SpectralClusterV1],
     finite_algebraic: u32,
-    infinity: InfinityAccountingV1,
+    infinity: &InfinityAccountingV1,
     total_algebraic: u32,
     policy: InfiniteEigenvaluePolicyV1,
     issues: &mut Vec<SpectralTruthErrorV1>,
@@ -2339,11 +2356,11 @@ fn validate_full_accounting(
                         infinity_policy: InfiniteEigenvaluePolicyV1::IncludeProjective
                     }
                 )
-                || finite_algebraic.checked_add(algebraic) != Some(total_algebraic)
+                || finite_algebraic.checked_add(*algebraic) != Some(total_algebraic)
             {
                 issues.push(SpectralTruthErrorV1::InfinityPolicyMismatch);
             }
-            let projective_ok = match (algebraic, cluster, projective.as_slice()) {
+            let projective_ok = match (*algebraic, *cluster, projective.as_slice()) {
                 (0, None, []) => true,
                 (value, Some(expected), [actual]) if value > 0 && actual.id == expected => {
                     actual.algebraic_multiplicity.exact() == Some(value)
@@ -2353,7 +2370,7 @@ fn validate_full_accounting(
             if !projective_ok {
                 issues.push(SpectralTruthErrorV1::InfinityAccountingMismatch);
             }
-            if problem.projective_infinity_is_excluded() && algebraic != 0 {
+            if problem.projective_infinity_is_excluded() && *algebraic != 0 {
                 issues.push(SpectralTruthErrorV1::InfinityAccountingMismatch);
             }
             validate_truth_witness(
@@ -2361,8 +2378,8 @@ fn validate_full_accounting(
                 problem_id,
                 SpectralTruthPropositionV1::IncludedInfinity {
                     result_set: result_set_id,
-                    algebraic,
-                    cluster,
+                    algebraic: *algebraic,
+                    cluster: *cluster,
                 },
                 issues,
             );
@@ -2376,11 +2393,11 @@ fn validate_full_accounting(
                     }
                 )
                 || !projective.is_empty()
-                || finite_algebraic.checked_add(algebraic) != Some(total_algebraic)
+                || finite_algebraic.checked_add(*algebraic) != Some(total_algebraic)
             {
                 issues.push(SpectralTruthErrorV1::InfinityPolicyMismatch);
             }
-            if problem.projective_infinity_is_excluded() && algebraic != 0 {
+            if problem.projective_infinity_is_excluded() && *algebraic != 0 {
                 issues.push(SpectralTruthErrorV1::InfinityAccountingMismatch);
             }
             validate_truth_witness(
@@ -2388,7 +2405,7 @@ fn validate_full_accounting(
                 problem_id,
                 SpectralTruthPropositionV1::ExcludedInfinity {
                     result_set: result_set_id,
-                    algebraic,
+                    algebraic: *algebraic,
                 },
                 issues,
             );
@@ -2421,7 +2438,7 @@ fn validate_boundary_evidence(
                     norm,
                     witness,
                 } => validate_truth_witness(
-                    *witness,
+                    witness,
                     problem_id,
                     SpectralTruthPropositionV1::PartialBoundarySeparated {
                         result_set: result_set_id,
@@ -2435,7 +2452,7 @@ fn validate_boundary_evidence(
                         issues.push(SpectralTruthErrorV1::DanglingClusterReference);
                     }
                     validate_truth_witness(
-                        *witness,
+                        witness,
                         problem_id,
                         SpectralTruthPropositionV1::PartialBoundaryClusterClosed {
                             result_set: result_set_id,
@@ -2457,7 +2474,7 @@ fn validate_boundary_evidence(
                     norm,
                     witness,
                 } => validate_truth_witness(
-                    *witness,
+                    witness,
                     problem_id,
                     SpectralTruthPropositionV1::RegionBoundarySeparated {
                         result_set: result_set_id,
@@ -2471,7 +2488,7 @@ fn validate_boundary_evidence(
                     excluded_algebraic,
                     witness,
                 } => validate_truth_witness(
-                    *witness,
+                    witness,
                     problem_id,
                     SpectralTruthPropositionV1::RegionBoundaryIntersections {
                         result_set: result_set_id,
