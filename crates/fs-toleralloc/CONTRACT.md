@@ -6,9 +6,9 @@ rest with a certified justification.
 
 ## Purpose and layer
 
-Layer L4 (optimization). Depends only on `fs-evidence` (`ColorRank` for the
-sensitivity's color) and `fs-math` (deterministic scalar kernels). Pure,
-deterministic.
+Layer L4 (optimization). Depends only on `fs-blake3` (candidate content
+identity), `fs-evidence` (`ColorRank` and its versioned algebra), and `fs-math`
+(deterministic scalar kernels). Pure, deterministic.
 
 ## Public types and semantics
 
@@ -58,12 +58,25 @@ deterministic.
   lane cannot certify exact cancellation. The signed delta is the subtraction
   of the two published binary64 variances, so its zero is diagnostic rather
   than a certificate of no exact-real correlation effect.
+- `propagate_correlated_stack_logged(&AdmittedCorrelationModel,
+  &[CorrelatedStackTerm]) -> Result<CorrelatedStackEvaluationLogV1,
+  CorrelatedStackEvaluationLogErrorV1>` — runs the unchanged correlated-stack
+  evaluator and atomically returns one self-contained log retaining the
+  complete receipt, exact model, ordered terms, five published quantities,
+  exposed canonical preimage, and nominal domain-separated BLAKE3 candidate
+  identity. The raw `propagate_correlated_stack` entry point remains available
+  and is not implicitly logged; the one-log guarantee applies only to a
+  successful call through this wrapper.
 - `ToleranceError` identifies the exact invalid feature field, public argument,
   sampled extreme, canonical-name collision, or derived quantity. Numeric
   reasons are stable `ScalarIssue` values rather than formatted floating-point
   text.
 - `CorrelationAdmissionError` and `CorrelatedStackError` identify malformed
   model identity/factor/axis data and non-representable first-order results.
+- `CorrelatedStackEvaluationLogErrorV1` wraps the exact stack refusal and
+  separately identifies checked canonical-size overflow, bounded allocation
+  failure, or an internal encoder-size disagreement. Every error returns no
+  partial log and no candidate identity.
 
 ## Invariants
 
@@ -87,6 +100,11 @@ deterministic.
 - Correlated propagation uses signed sensitivities, preserves caller axis
   order, and reports the counterfactual independent result. It never assumes
   that correlation inflates variance.
+- A successful logged wrapper call binds byte-schema version, numeric-algorithm
+  version, `fs-evidence::COLOR_ALGEBRA_VERSION`, identity domain, external
+  model namespace/schema/digest, dimension, every factor bit, measured
+  row-norm defect bit, term count, every positional ordinal/name/sensitivity
+  bit/explicit color tag/standard-deviation bit, and all five result bits.
 
 ## Error model
 
@@ -106,6 +124,12 @@ result overflows are refused instead of becoming clean-looking zero or
 infinity. Negative zero is refused where an exact-zero sensitivity or factor
 coefficient would otherwise acquire two semantic encodings.
 
+The evaluation-log preimage uses checked size arithmetic and
+`try_reserve_exact` before emission. Its public cap covers the exact worst-case
+128-axis dense factor plus maximum-width namespace and names. Log construction
+is atomic at the API boundary: a stack refusal, size failure, allocation
+failure, or encoder disagreement returns no `CorrelatedStackEvaluationLogV1`.
+
 ## Determinism class
 
 Fully deterministic: the allocation, robustness check, and budget are pure
@@ -117,6 +141,10 @@ Bitwise reproducibility holds CROSS-ISA: every transcendental routes through
 `fs_math::det` (bead frankensim-lyms; platform libm is not correctly rounded
 and differs across ISAs), and the crate is registered in the `check-libm`
 doctrine lint. `sqrt` stays primitive (IEEE-754 correct rounding).
+The logged wrapper hashes a fixed little-endian, length-framed preimage in the
+declared domain. Native `usize`, enum layout/order, debug text, and native
+endianness are not encoded; color ranks have explicit version-one tags and the
+preimage also binds the color-algebra version.
 
 ## Cancellation behavior
 
@@ -147,11 +175,56 @@ normalization, bounded-name, overflow, and underflow refusals; fail-closed
 singular-factor cancellation; all-zero sensitivity binding; and deterministic
 replay.
 
+`tests/evaluation_log.rs` independently reconstructs the complete canonical
+preimage for a nontrivial two-axis model and its domain-separated identity;
+moves every caller-controlled semantic field including same-math
+namespace/digest/name/color/order witnesses; replays retained model/terms bit
+exactly; reaches the simultaneous 128-axis and maximum-byte envelope; proves
+invalid calls publish no value; and binds canonical positive-zero results while
+refusing negative-zero sensitivity. A source-local encoder-seam test mutates
+the private measured-defect and five derived-output fields independently.
+
 The stricter robustness/admission policy is evidence-semantic. The consuming
 `fs-diffreal-e2e` tolerance fixture binds it as
 `fs-diffreal-e2e/tolerance-allocation-fixture/v3`; v1/v2 evidence must not be
 silently reinterpreted under the sealed-sensitivity, typed-event, sampled-only
 policy.
+
+## Correlated-stack evaluation log v1
+
+The version-one log is a self-contained, content-addressed candidate artifact:
+the complete `CorrelatedStackReceipt` and the bytes used to derive its nominal
+identity travel together. This closes the wrapper-level audit question “which
+correlation model and ordered stack produced these published moments?” without
+altering the correlated arithmetic or treating a result hash as scientific
+authority. Evaluation or log construction failure returns neither a partial
+artifact nor an identity.
+
+The canonical preimage is, in order: ASCII `FSTLOGV1`; three little-endian
+`u32` values for log schema, numeric algorithm, and color-algebra version; the
+length-framed identity-domain and model-namespace bytes; external model schema
+`u64`; 32 digest bytes; dimension and factor-count `u64`s; every row-major
+factor `f64::to_bits`; measured row-norm-defect bits; term-count `u64`; and for
+each term its ordinal `u64`, length-framed exact name, signed-sensitivity bits,
+one color byte (`Estimated=1`, `Validated=2`, `Verified=3`), and standard-
+deviation bits. The five output bit patterns follow in getter order:
+independent standard deviation/variance, correlated standard
+deviation/variance, and signed delta. Every length and ordinal is encoded as a
+checked little-endian `u64`; no native-width or implicit enum representation is
+used.
+
+The identity is explicitly **unratified** and non-authoritative, tracked by the
+still-open manufacturing Bead. This in-memory wrapper is not a durable identity
+sink and is not registered as a workspace identity authority. It is
+ledger-ready but does not persist itself. Version one provides no
+`fs-ledger` transaction, append ordering, logical timestamp, custody record,
+crash-durability claim, typed decoder, unknown-version admission, schema
+migration, or cross-process typed round trip. Its digest proves stable identity
+of the exposed canonical bytes under the declared domain; it does not prove
+authentication, execution, model truth, population validity, dimensional
+closure, calibration, or correlation authority. Promotion to a governed
+durable identity requires the workspace authority, coupling, and generated
+schema gates and is not claimed by this tranche.
 
 ## Perfect-dependence grouped allocation v1
 

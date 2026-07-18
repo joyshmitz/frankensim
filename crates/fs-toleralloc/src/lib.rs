@@ -44,6 +44,12 @@ pub use dependency_allocation::{
     GroupedDerivedQuantity, GroupedFeature, MAX_DEPENDENCY_GROUPS_V1, MAX_DEPENDENCY_NAME_BYTES_V1,
     MAX_DEPENDENCY_NAMESPACE_BYTES_V1, MAX_GROUPED_FEATURES_V1, allocate_grouped,
 };
+pub use evaluation_log::{
+    CORRELATED_STACK_EVALUATION_ALGORITHM_V1, CORRELATED_STACK_EVALUATION_IDENTITY_DOMAIN_V1,
+    CORRELATED_STACK_EVALUATION_LOG_SCHEMA_V1, CorrelatedStackEvaluationIdV1,
+    CorrelatedStackEvaluationLogErrorV1, CorrelatedStackEvaluationLogV1,
+    MAX_CORRELATED_STACK_EVALUATION_LOG_BYTES_V1, propagate_correlated_stack_logged,
+};
 pub use fs_evidence::ColorRank;
 pub use gear_backlash::{
     GEAR_BACKLASH_CONSUMER_SCHEMA_V1, GearBacklashConsumerDraftV1, GearBacklashConsumptionErrorV1,
@@ -68,6 +74,7 @@ pub use structured_propagation::{
 };
 
 mod dependency_allocation;
+mod evaluation_log;
 mod gear_backlash;
 mod structured_propagation;
 
