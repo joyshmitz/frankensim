@@ -3433,6 +3433,86 @@ migration semantics per field, in data.
   checker obligation recorded as text, not something v1 admission can infer
   from free-form strings. Distinct revision identities are never erased.
 
+## V.1.2 complete verification inventory compiler (bead i94v.7.1.2)
+
+`inventory` is a pure compiler from bounded, normalized source snapshots into
+one immutable verification inventory. Its record surface is exactly the 22
+fields in `MANIFEST_RECORD_FIELDS`; every field is resolved for every admitted
+claim revision. The sealed identity binds the inventory schema/compiler,
+authority and reconciliation policy versions, exact source pins, the normalized
+V.1.1 graph, field facts, evidence observations, reconciliation receipts,
+resolutions, and conflicts. Equivalent input permutations therefore produce
+the same inventory digest, while an admitted semantic change to a source,
+graph, fact, observation, or reconciliation changes identity. Supported policy
+versions are identity-forming; unsupported versions refuse. Active resource
+limits are admission policy rather than inventory identity.
+
+Each source kind has a source-specific constructor and a closed role. Obligation
+sources can author obligation facts and reconciliation; observed-evidence
+sources can author evidence observations. Resolution uses the exact field
+authority and role declared by `MANIFEST_RECORD_FIELDS`: a matching fact from a
+non-owning role remains visible provenance, while a differing fact is a
+blocking cross-role disagreement rather than a silent override. Equal-authority
+field disagreement and equal-maximum-authority snapshot disagreement remain
+blocking; a unique higher-authority snapshot resolves nonblockingly while every
+pin remains in provenance.
+`FrozenInventory` cannot be constructed as raw caller authority; a sealed
+inventory may emit only a metadata-only, content-addressed replay source. That
+replay pointer cannot author facts, observations, or reconciliation.
+
+Evidence state is four orthogonal axes: execution, completeness, integrity, and
+adjudication. A terminal scientific adjudication is admissible only for a
+completed, complete, verified observation. Distinct incompatible terminal
+adjudications for the same revision conflict. Refutation, support, absence, or
+presence here is retained inventory metadata: it neither proves the scientific
+claim nor promotes a revision.
+
+Alias and rename reconciliation is typed over exact `ClaimId`s; split and merge
+is typed over nonempty exact `ClaimRevisionId` sets. Admission checks endpoint
+existence, distinctness, exact supersession relationships, source role, policy
+version, duplicate topology, forks, cycles, and split/merge predecessor and
+successor conflicts. Reconciliation records lineage history only: it neither
+adds graph equivalence nor transfers observations, field facts, proof,
+authority, or promotion.
+
+Human, strict JSON-lines, and ledger projections are physical encodings of the
+same complete canonical semantic-row sequence. Hostile controls, whitespace,
+and delimiters cannot inject another physical row or ledger key. Ledger rows
+are explicitly `scope=operation outcome=inventory-metadata`; an observation's
+adjudication is a value, never a forged operation outcome. Semantic diff keys
+all rows, including the inventory header, and reports exact additions,
+removals, and changes without inferring aliases or renames. The canonical row
+sequence and each complete physical view expose distinct domain-separated
+digests; those hashes prove exact per-view bytes, not bit equality across
+formats.
+
+Replay requires every exact historical source pin in the sealed receipt and
+never falls back to a current source. Inventory resource admission bounds
+source, fact, observation, reconciliation, semantic-byte, derived-resolution,
+and projection-row envelopes; the normalized V.1.1 graph retains its separate
+revision, relation, semantic, working, row, and projection-byte envelope.
+Successful admission returns no partial state. These are conservative
+schema-level bounds, not allocator- or RSS-level promises.
+
+### Gauntlet and no-claim boundaries (inventory compiler)
+
+- G0 covers complete field closure, typed authority, immutable sealing,
+  deterministic identity, exact replay, refusal boundaries, and typed
+  reconciliation invariants. G3 covers permutation equivalence, hostile text,
+  contradiction visibility, semantic diff, and source mutation.
+- The pure compiler does not read Beads, contracts, registries, Rust source,
+  test binaries, benchmark output, ledgers, or filesystems. A concrete adapter
+  must authenticate and normalize the bytes named by its source pin; a caller
+  supplying arbitrary normalized content does not gain proof that the locator
+  was actually read.
+- This layer provides no persistence, signature verification, source custody,
+  runtime execution, automatic scientific adjudication, promotion decision,
+  or completeness claim about undeclared/open-world sources.
+- A conflict-free inventory means only that the declared normalized inputs are
+  structurally resolvable under the pinned policies. It is not evidence that
+  the declared source set is exhaustive, truthful, independent, or sufficient
+  to establish a claim.
+
 ## V.1.5 deterministic selection semantics (bead i94v.7.1.5)
 
 `v1_selection` keeps scientific scope and campaign intensity orthogonal:
