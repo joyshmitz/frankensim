@@ -3746,12 +3746,15 @@ pub mod snapshot_v2 {
     }
 
     /// Inspect only when both caller-retained exact roots agree.
-    pub fn inspect_expected<C: CancellationProbe>(
-        bytes: &[u8],
+    ///
+    /// The returned payload view borrows only `bytes`; expectation context is
+    /// cloned into the inspection so the caller-held token may be short-lived.
+    pub fn inspect_expected<'a, C: CancellationProbe>(
+        bytes: &'a [u8],
         expected: &SnapshotExpectationV2,
         limits: SnapshotLimitsV2,
         cancellation: C,
-    ) -> Result<SnapshotInspectionV2<'_>, SnapshotV2Error> {
+    ) -> Result<SnapshotInspectionV2<'a>, SnapshotV2Error> {
         let mut inspection = inspect(bytes, limits, cancellation)?;
         if inspection.content_id != expected.content_id {
             return Err(SnapshotV2Error::ExpectedContentMismatch {
@@ -5528,6 +5531,27 @@ mod tests {
         assert_eq!(
             first.authority_subject_receipt().id(),
             second.authority_subject_receipt().id()
+        );
+    }
+
+    #[test]
+    fn v2_expected_inspection_borrows_bytes_not_expectation() {
+        let payload = b"expectation-lifetime-independent payload";
+        let context = base_v2_context::<JacobiState>();
+        let limits = v2_limits(8, 8);
+        let sealed =
+            snapshot_v2::seal(payload, &context, limits, || false).expect("lifetime fixture seals");
+
+        let inspection = {
+            let expectation = sealed.expectation();
+            snapshot_v2::inspect_expected(sealed.bytes(), &expectation, limits, || false)
+                .expect("block-local expectation admits the snapshot")
+        };
+
+        assert_eq!(inspection.payload(), payload);
+        assert_eq!(
+            inspection.admission(),
+            snapshot_v2::SnapshotAdmissionV2::MatchedCallerExpectation
         );
     }
 
