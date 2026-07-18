@@ -62,13 +62,20 @@ const B3: [f32; 5] = [1.0 / 16.0, 4.0 / 16.0, 6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0
 /// shape. The output is PERMANENTLY tagged `BiasedDenoised`.
 ///
 /// # Errors
-/// [`ImgError::Shape`] on plane-shape disagreement.
+/// [`ImgError::Shape`] on plane-shape disagreement, or
+/// [`ImgError::Unsupported`] when the declared dimensions exceed the
+/// addressable element count.
 pub fn atrous_denoise(
     noisy: &LabeledPlane,
     albedo: Option<&LabeledPlane>,
     params: &DenoiseParams,
 ) -> Result<LabeledPlane, ImgError> {
-    let n = noisy.width * noisy.height;
+    let n = noisy
+        .width
+        .checked_mul(noisy.height)
+        .ok_or_else(|| ImgError::Unsupported {
+            what: "denoiser plane dimensions exceed the addressable element count".to_owned(),
+        })?;
     if noisy.data.len() != n {
         return Err(ImgError::Shape {
             expected: n,
@@ -179,5 +186,42 @@ mod tests {
         for &v in &out.data {
             assert!((v - 0.5).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn plane_extent_admission_is_checked() {
+        let impossible = LabeledPlane {
+            width: 1usize << (usize::BITS - 1),
+            height: 2,
+            data: Vec::new(),
+            provenance: PixelProvenance::RawEstimate,
+        };
+        assert_eq!(
+            atrous_denoise(&impossible, None, &DenoiseParams::default()),
+            Err(ImgError::Unsupported {
+                what: "denoiser plane dimensions exceed the addressable element count".to_owned(),
+            })
+        );
+
+        let empty = LabeledPlane {
+            width: 0,
+            height: 7,
+            data: Vec::new(),
+            provenance: PixelProvenance::RawEstimate,
+        };
+        let empty_out = atrous_denoise(&empty, None, &DenoiseParams::default()).unwrap();
+        assert_eq!((empty_out.width, empty_out.height), (0, 7));
+        assert!(empty_out.data.is_empty());
+
+        let unit = LabeledPlane {
+            width: 1,
+            height: 1,
+            data: vec![0.25],
+            provenance: PixelProvenance::RawEstimate,
+        };
+        let unit_out = atrous_denoise(&unit, None, &DenoiseParams::default()).unwrap();
+        assert_eq!((unit_out.width, unit_out.height), (1, 1));
+        assert_eq!(unit_out.data.len(), 1);
+        assert!(unit_out.data[0].is_finite());
     }
 }
