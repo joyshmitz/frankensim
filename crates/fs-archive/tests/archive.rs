@@ -75,6 +75,18 @@ fn the_cvt_archive_assigns_to_the_nearest_centroid() {
     assert_eq!(c.num_elites(), 2);
     assert!((c.qd_score() - 11.0).abs() < 1e-12);
     assert!((c.coverage() - 2.0 / 3.0).abs() < 1e-12);
+    // Finite squared distances overflow here, but the nearer centroid remains
+    // mathematically unambiguous.
+    let large = CvtArchive::new(vec![vec![2e200], vec![1e200]]);
+    assert_eq!(large.nearest_centroid(&[0.0]), 1);
+    // Rounded square roots would collapse these distinct finite squared
+    // distances into a tie and retain the farther first centroid.
+    let delta = 1.0 / 67_108_864.0;
+    let near_rounding_boundary = CvtArchive::new(vec![vec![1.0, delta], vec![1.0, 0.0]]);
+    assert_eq!(near_rounding_boundary.nearest_centroid(&[0.0, 0.0]), 1);
+    // Even distances larger than f64::MAX retain a comparable scaled form.
+    let extremes = CvtArchive::new(vec![vec![f64::MAX], vec![1e308]]);
+    assert_eq!(extremes.nearest_centroid(&[-f64::MAX]), 1);
 }
 
 #[test]
@@ -87,6 +99,20 @@ fn novelty_rewards_distance_from_the_archive() {
     assert!(novelty(&[0.0], &[], 3).is_infinite());
     // Asking for no neighbours is also maximally novel after validation.
     assert!(novelty(&[0.0], &[vec![0.0]], 0).is_infinite());
+    assert_eq!(
+        novelty(&[0.0], &[vec![1e200]], 1).to_bits(),
+        1e200_f64.to_bits()
+    );
+    let repeated_max = vec![vec![f64::MAX]; 3];
+    assert_eq!(
+        novelty(&[0.0], &repeated_max, 3).to_bits(),
+        f64::MAX.to_bits()
+    );
+    let opposite_extremes = vec![vec![f64::MAX], vec![-f64::MAX]];
+    assert_eq!(
+        novelty(&[-f64::MAX], &opposite_extremes, 2).to_bits(),
+        f64::MAX.to_bits()
+    );
 }
 
 #[test]

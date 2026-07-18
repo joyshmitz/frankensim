@@ -212,11 +212,7 @@ impl CvtArchive {
         self.centroids
             .iter()
             .enumerate()
-            .min_by(|(_, a), (_, b)| {
-                dist2(a, descriptor)
-                    .partial_cmp(&dist2(b, descriptor))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            .min_by(|(_, a), (_, b)| compare_distances(a, b, descriptor))
             .map_or(0, |(i, _)| i)
     }
 
@@ -298,10 +294,13 @@ pub fn novelty(descriptor: &[f64], others: &[Vec<f64>], k: usize) -> f64 {
     if k == 0 {
         return f64::INFINITY;
     }
-    let mut dists: Vec<f64> = others.iter().map(|o| dist2(o, descriptor).sqrt()).collect();
-    dists.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mut dists: Vec<DistanceMagnitude> = others
+        .iter()
+        .map(|other| distance_magnitude(other, descriptor))
+        .collect();
+    dists.sort_by(|a, b| a.compare(*b));
     let kk = k.min(dists.len());
-    dists.iter().take(kk).sum::<f64>() / kk as f64
+    mean_distances(&dists[..kk])
 }
 
 fn assert_descriptor(label: &str, values: &[f64], expected_dim: usize) {
@@ -324,7 +323,125 @@ fn assert_non_negative_fitness(fitness: f64) {
     );
 }
 
-fn dist2(a: &[f64], b: &[f64]) -> f64 {
+fn squared_distance(a: &[f64], b: &[f64]) -> f64 {
     debug_assert_eq!(a.len(), b.len());
     a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DistanceMagnitude {
+    squared: f64,
+    scale: f64,
+    factor: f64,
+}
+
+impl DistanceMagnitude {
+    const ZERO: DistanceMagnitude = DistanceMagnitude {
+        squared: 0.0,
+        scale: 0.0,
+        factor: 0.0,
+    };
+
+    fn materialize(self) -> f64 {
+        self.scale * self.factor
+    }
+
+    fn compare(self, other: DistanceMagnitude) -> std::cmp::Ordering {
+        match (self.squared.is_finite(), other.squared.is_finite()) {
+            (true, true) => self
+                .squared
+                .partial_cmp(&other.squared)
+                .unwrap_or(std::cmp::Ordering::Equal),
+            _ => {
+                if self.scale >= other.scale {
+                    self.factor
+                        .partial_cmp(&(other.factor * (other.scale / self.scale)))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    (self.factor * (self.scale / other.scale))
+                        .partial_cmp(&other.factor)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }
+        }
+    }
+
+    fn ratio_to(self, maximum: DistanceMagnitude) -> f64 {
+        if self.scale == 0.0 {
+            return 0.0;
+        }
+        let ratio = if self.scale <= maximum.scale {
+            (self.factor * (self.scale / maximum.scale)) / maximum.factor
+        } else {
+            self.factor / (maximum.factor * (maximum.scale / self.scale))
+        };
+        ratio.min(1.0)
+    }
+}
+
+fn distance_magnitude(a: &[f64], b: &[f64]) -> DistanceMagnitude {
+    let squared = squared_distance(a, b);
+    if squared.is_finite() {
+        let distance = squared.sqrt();
+        return if distance == 0.0 {
+            DistanceMagnitude::ZERO
+        } else {
+            DistanceMagnitude {
+                squared,
+                scale: distance,
+                factor: 1.0,
+            }
+        };
+    }
+    let scale = a
+        .iter()
+        .zip(b)
+        .map(|(x, y)| x.abs().max(y.abs()))
+        .fold(0.0_f64, f64::max);
+    let normalized_squared: f64 = a
+        .iter()
+        .zip(b)
+        .map(|(x, y)| {
+            let delta = x / scale - y / scale;
+            delta * delta
+        })
+        .sum();
+    DistanceMagnitude {
+        squared,
+        scale,
+        factor: normalized_squared.sqrt(),
+    }
+}
+
+fn compare_distances(a: &[f64], b: &[f64], descriptor: &[f64]) -> std::cmp::Ordering {
+    let a_squared = squared_distance(a, descriptor);
+    let b_squared = squared_distance(b, descriptor);
+    match (a_squared.is_finite(), b_squared.is_finite()) {
+        (true, true) => a_squared
+            .partial_cmp(&b_squared)
+            .unwrap_or(std::cmp::Ordering::Equal),
+        _ => distance_magnitude(a, descriptor).compare(distance_magnitude(b, descriptor)),
+    }
+}
+
+fn mean_distances(values: &[DistanceMagnitude]) -> f64 {
+    debug_assert!(!values.is_empty());
+    let count = values.len() as f64;
+    let direct_sum = values.iter().map(|value| value.materialize()).sum::<f64>();
+    if direct_sum.is_finite() {
+        return direct_sum / count;
+    }
+    let maximum = values
+        .iter()
+        .copied()
+        .max_by(|a, b| a.compare(*b))
+        .expect("nonempty distance slice");
+    if maximum.scale == 0.0 {
+        return 0.0;
+    }
+    let ratio_sum = values
+        .iter()
+        .map(|value| value.ratio_to(maximum))
+        .sum::<f64>();
+    maximum.scale * (maximum.factor * (ratio_sum / count))
 }
