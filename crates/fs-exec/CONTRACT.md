@@ -381,7 +381,9 @@ an explicit migration or recalibration. The re-exported `TilePool` exposes the
 current values as `PLACEMENT_IDENTITY_VERSION` and
 `PLACEMENT_IDENTITY_DOMAIN` associated constants.
 
-## Snapshot envelope (bead wf9.8.2, v1)
+## Snapshot envelopes (beads wf9.8.2 and sj31i.52.5)
+
+### Legacy v1 compatibility receipt
 
 Solver snapshots travel inside a canonical envelope — magic
 `FSEXSNAP`, envelope version, stable state TYPE id, payload SCHEMA
@@ -405,6 +407,177 @@ unseal → resume remains bit-exact (conformance-tested).
 `envelope::inspect` independently validates magic, envelope version, exact
 payload extent, and checksum before exposing private-field type/schema/run
 metadata; ledger consumers use it without interpreting solver-specific bytes.
+
+V1's FNV-1a checksum is accidental-corruption evidence only. It is neither a
+content-addressing authority nor a producer signature, and its `u64` type/schema
+and provenance fields are never re-hashed or widened into v2 semantic IDs.
+`inspect_legacy_snapshot_v1` is the first quarantine boundary: it retains the
+exact v1 bytes, structurally parsed header metadata, the historical checksum as
+an unchanged `u64`, and a plain BLAKE3 `ContentId` of those exact bytes. The FNV
+checksum covers only the payload, so it does not authenticate the type, schema,
+or provenance header. The BLAKE3 value is raw-content identity only and cannot
+construct a v2 resume identity or authority. Expected-root legacy admission,
+bounded/cancellable legacy hashing, and an explicit source-to-v2 migration
+receipt remain successor work; new ledger/session paths must not infer them.
+
+### Strong-identity v2 (code-first tranche; central proof pending)
+
+`snapshot_v2` adds an envelope with a fixed 588-byte canonical header while
+quarantining the v1 surface. Its distinct `FSEXSNV2` magic prevents a
+version-byte rewrite from turning one format into the other. The header pins
+the canonical identity-frame
+version, exact resume-schema ID, exact authority-subject-schema ID, and exact
+drain-report domain/version/wire-grammar era before binding separate full-width
+nominal state-type, state-schema, and payload-codec IDs plus codec version;
+algorithm identity/version; semantic problem identity; exact RNG/counter-state
+identity; deterministic-versus-fast mode and an execution/numeric fingerprint;
+remaining and consumed budget-state identity; provenance; a caller-declared
+pause-request binding and gate generation; the exact run/count/root fields
+derived from a typed `DrainFinalizeReport`; exact payload length; plain BLAKE3
+payload identity; and a typed `SnapshotResumeIdV2`. The resume semantic-schema
+version is independent of the transport-envelope version so a future transport
+must explicitly preserve or migrate resume meaning. Reserved bytes are zero and
+any extension requires a versioned migration. Preflight returns distinct typed
+refusals for stale canonical-frame, resume-schema, authority-schema, and
+drain-report eras before ordinary identity comparison or payload decode.
+
+Those era fields are fail-closed compatibility discriminators, not a theorem
+that an upstream owner can never forget to rotate an identifier. Registry
+registration, generated coupling validation, retained canonical vectors, and
+explicit era-to-era migration are owned by the snapshot identity-registration
+successor and are not yet claimed by this tranche.
+
+The four identity/authority axes remain deliberately separate:
+
+- `SnapshotPayloadContentIdV2` names exact payload bytes.
+- `SnapshotContentIdV2` names the exact complete envelope bytes.
+- `SnapshotResumeIdV2` names the complete resume semantics plus payload root and
+  length. It is an unanchored `SemanticId`, not authentication.
+- `SnapshotAuthoritySubjectIdV2` is a typed canonical child binding over both
+  the exact complete-envelope content ID and the exact resume ID. Policy
+  authority for either component cannot be replayed onto another pair.
+
+`preflight_header` accepts exactly one fixed header and returns a checked
+payload/total-length plan before a stream allocates or fetches payload bytes. It
+checks format/version, canonical header shape, tags, caps, platform conversion,
+and drain-report self-consistency. `inspect` then checks exact artifact extent,
+payload root, resume receipt, whole-envelope root, and the composite authority
+subject. It returns `UnanchoredConsistencyOnly`; there is no unanchored decode.
+`inspect_expected` additionally requires an opaque caller-retained expectation
+minted by `SealedSnapshotV2`; it binds the exact envelope root, resume root, and
+full caller-supplied resume context, and has no public raw-root constructor. The
+token is currently an in-process capability retained from sealing; there is no
+public durable reconstruction path from raw roots. `inspect_authorized` requires
+an independently retained expected-context capability plus an admitted
+`AuthorityRef` for the composite subject. `Admitted` is explicitly
+policy-relative: cryptographic signature semantics exist only if the injected
+verifier actually implements them. Authority anchor, verifier, key-policy, and
+typestate are deliberately excluded from subject identity, while their bounded
+audit record remains attached after decode. Changing that metadata cannot move
+the subject; changing either exact-envelope content or resume semantics must.
+Sealed evidence, unanchored inspection, and opened evidence expose the complete
+bounded resume and authority-subject receipts (not only digest IDs), allowing a
+caller to stage a separate `present -> verify -> admit` flow without pretending
+that inspection itself granted authority.
+
+Durable reconstruction of the expected context/pause capability and a
+session-owned restart protocol are still absent. Consequently a remote or
+post-process-restart authorized resume cannot yet be completed solely from the
+envelope plus authority receipt; that end-to-end path belongs to the ledger,
+PreparedResume, atomic-freeze, and session-activation successors.
+
+`SolverStateV2` is opt-in and requires independent full-width state type, schema,
+and codec identities; the v1 `TYPE_ID` is never promoted. It must implement a
+new fallible v2 codec and may not blanket-delegate to legacy `Enc`/`Dec`. Its
+three `[u8; 32]` declarations are nevertheless nominal and caller-authored: this
+tranche cannot prevent two implementations from copying/colliding IDs or prove
+Rust-type ownership. The state-owner/schema/codec charter registry is required
+before those constants become globally authoritative. Moreover,
+`SolverStateV2: SolverState` and legacy generic `ResumableSolver`, `content_hash`,
+and `fork` APIs still permit an explicit or accidental downgrade to v1/FNV
+semantics. The independent strong-state trait/legacy-adapter split is successor
+work; this tranche makes no API-level downgrade-resistance claim.
+
+`SnapshotEncoderV2` caps helper-produced output before fallible reservation,
+polls before and after allocation, and polls at an interval no smaller than its
+widest atomic primitive (eight bytes). Any helper refusal poisons the codec
+transaction, so an implementation that swallows the returned error still cannot
+publish. `SnapshotDecoderV2` validates internal collection counts and exact
+remaining wire extent before allocation, charges logical decoded allocation
+bytes, uses `try_reserve_exact`, polls while decoding, rejects trailing bytes,
+and is likewise sticky-poisoned. Thus supported helper paths cannot smuggle
+`u64::MAX` into an infallible `Vec::with_capacity` path.
+
+These helper guarantees do not sandbox arbitrary trait implementations. A
+custom codec can allocate or mutate external state outside the helpers, ignore
+budgets, or panic. The wrapper does not catch panics or roll back external side
+effects; whole-implementation purity, panic containment, hard physical-RSS
+bounds, and bounded cancellation latency outside helper calls remain no-claims
+until owner registration and the G4 transaction gauntlet land.
+
+`ExpectedResumeContextV2::for_paused_state` requires a
+`PausedSnapshotBoundaryV2` constructed from `DrainFinalizeReport`, so a public
+caller-authored `drained=true` or lifecycle enum cannot authorize resume. Header
+parsing constructs only `DeclaredPausedSnapshotBoundaryV2`, an observational
+data type with no conversion into that typed report binding. Consequently
+unanchored inspection and mismatch diagnostics may expose exact declared fields
+without letting candidate bytes mint their own expectation. The boundary also
+binds the caller-supplied pause request and gate generation; opening compares
+the entire independently retained context before decoding.
+
+A `DrainFinalizeReport` proves reproducible structural drainage for its own
+tracker/run/count tuple. By itself it does **not** prove that the pause request,
+gate generation, session, supplied `S` value, or serialized bytes belonged to
+one atomic freeze transaction; independently reproduced equivalent reports are
+structurally equal. Atomic state quiescence and association require the planned
+linear `SnapshotFreezePermit<S>` transaction, burned before codec execution and
+poisoned on panic/refusal. Until that capability lands, expected opening proves
+caller-relative consistency, not globally authoritative checkpoint provenance.
+The old compute `Cx` is already cancelled at a valid pause boundary, so callers
+must use a fresh, bounded finalization-scope cancellation probe for
+encode/hash/publication. A returned cancellation error publishes no snapshot
+value, subject to the arbitrary-code side-effect no-claim above. Completed
+solver artifacts require a separate finalized receipt/artifact and are not
+misrepresented as resumable v2 snapshots.
+
+`SnapshotLimitsV2` makes payload bytes, collection items, decoded allocation,
+hash polls, codec polls, and canonical-identity limits explicit. Payload and
+whole-envelope BLAKE3 passes poll at the declared byte interval; each typed
+identity construction has its own bounded polls. Production sealing consumes the
+codec's one payload `Vec`, fallibly grows it by the fixed header, and shifts the
+payload backward in polled chunks instead of retaining a second complete
+payload. This bounds the logical live representation to one vector plus header;
+allocator capacity, reallocation strategy, and transient physical memory are
+not a hard RSS theorem. Header writing, both hashes, identity construction, the
+payload shift, and final publication all have explicit cancellation boundaries.
+
+Owned sealed/opened artifacts deliberately omit whole-artifact `Clone`/`Eq` and
+use bounded/redacted `Debug` output that reports identities and lengths rather
+than state or payload bytes. Consuming a sealed or opened artifact returns the
+bytes/state together with a must-use evidence object; there is no convenience
+method that silently discards content, resume, authority-subject, expected
+context, or admission evidence. Attached and discharged opened evidence can
+mint a new opaque expected-reopen token for the same exact retained bytes,
+without exposing a caller-authored raw-root constructor.
+
+G0/G3 and G4-shaped module tests are **defined** for caller-expectation and
+policy-authority opening, retained authority evidence, independent movement of
+state type/schema/codec/version and every other resume field, authority-subject
+movement/nonmovement, canonical/drain-era pinning, nonsemantic schedule/limit
+invariance, bounded/redacted artifact handling, sticky codec refusal,
+payload/header corruption, truncation/append, two-way v1/v2 format refusal,
+forged drain reports, hostile outer and internal lengths,
+recomputed-unkeyed-root attack, wrong composite authority, and bounded
+cancellation. This is a code-first tranche: central compilation and execution
+have not yet run, so no Gauntlet tier is reported green.
+
+Still open and explicitly unclaimed are identity registry/golden-coupling
+registration, collision-proof state-owner charters, bounded legacy admission
+and migration receipts, the strong-state API split, atomic freeze permits,
+PreparedResume validation against an actual solver configuration, immutable
+ledger schema/GC roots, session prepare-then-activate recovery, semantic fork
+lineage, finalized-solver artifacts, no-mock cancellation/panic/replay storms,
+and retained-vector cross-thread/cross-ISA G5 proof.
 
 ## Stream identity is declared, never scheduled (bead wf9.7.1)
 
