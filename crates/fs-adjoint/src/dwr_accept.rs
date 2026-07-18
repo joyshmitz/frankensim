@@ -41,6 +41,13 @@ pub const DWR_POLL_POLICY_VERSION: u32 = 3;
 pub const DWR_POLL_STRIDE_ITEMS: usize = 256;
 const DWR_POLL_STRIDE_IDENTITY: u64 = DWR_POLL_STRIDE_ITEMS as u64;
 /// Version of the retained DWR execution/evidence identity.
+/// Retained primal-equilibrium refusal tolerance: the maximum admissible
+/// interior Galerkin residual magnitude, relative to the problem's forcing
+/// scale (`max(1, |J(f window)| proxy)` is deliberately NOT used — the bar
+/// is absolute on the assembled residual, which for a genuine binary64
+/// Galerkin solve of these 1-D P1 systems sits at roundoff, orders below).
+pub const DWR_EQUILIBRIUM_RESIDUAL_TOLERANCE: f64 = 1.0e-9;
+
 pub const DWR_EVIDENCE_IDENTITY_VERSION: u32 = 5;
 const MAX_DWR_REFINED_NODES: usize = MAX_DWR_MESH_NODES * 2 - 1;
 
@@ -1699,7 +1706,9 @@ impl DwrOutput {
 }
 
 /// Why the public DWR execution path refused an input or derived state.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// (`Eq` is deliberately absent: `NonSolutionCandidate` carries the exact
+/// refusing residual as `f64` for forensics — bead sj31i.1.)
+#[derive(Debug, Clone, PartialEq)]
 pub enum DwrError {
     /// Cancellation was observed at a deterministic work boundary. No partial
     /// estimate or accept outcome is published.
@@ -1773,6 +1782,19 @@ pub enum DwrError {
     },
     /// Candidate endpoints are not canonical homogeneous `+0.0` values.
     CandidateBoundary,
+    /// The candidate does not solve the primal discrete equilibrium: an
+    /// interior Galerkin residual entry exceeds the retained tolerance, so
+    /// the fine-remainder estimator would silently omit the coarse-space
+    /// algebraic error (bead sj31i.1). Solve the primal system (or refine
+    /// the solve) before requesting a DWR estimate.
+    NonSolutionCandidate {
+        /// Interior coarse-node index (1-based over interior nodes).
+        node: usize,
+        /// The offending residual magnitude.
+        residual: f64,
+        /// The retained refusal tolerance.
+        tolerance: f64,
+    },
     /// A mesh coordinate is NaN or infinite.
     NonFiniteMeshNode {
         /// Mesh-node index.
@@ -1928,6 +1950,16 @@ impl core::fmt::Display for DwrError {
             Self::CandidateBoundary => {
                 f.write_str("DWR candidate endpoints must be canonical homogeneous +0.0")
             }
+            Self::NonSolutionCandidate {
+                node,
+                residual,
+                tolerance,
+            } => write!(
+                f,
+                "candidate is not the primal Galerkin solution: interior node {node} \
+                 residual {residual:e} exceeds the retained equilibrium tolerance \
+                 {tolerance:e}"
+            ),
             Self::NonFiniteMeshNode { index } => {
                 write!(f, "DWR mesh node {index} is non-finite")
             }
@@ -2496,6 +2528,15 @@ pub fn dwr_integral_qoi(
     // makes the coarse part vanish; the fine remainder drives η).
     let mut eta = 0.0f64;
     let mut indicators = zeroed_vec(mesh.len() - 1, DWR_RESIDUAL_PHASE, &mut progress, cx)?;
+    // Coarse-space Galerkin residuals r_i = ∫f·φ_i − ∫u_h′·φ_i′, assembled
+    // element-by-element inside the SAME residual loop (identical logical
+    // work-item count, so the admitted work plan is untouched). These are
+    // the entries the fine-remainder estimator silently assumes vanish:
+    // η as computed below weights r against (z_f − I_h z_f) only, and the
+    // coarse part r(I_h z_f) = Σ_i r_i·z(x_i) is EXACTLY the omitted
+    // algebraic-error term (bead sj31i.1). We add it back and refuse
+    // candidates whose residual shows they never solved the system.
+    let mut equilibrium_residual = vec![0.0f64; mesh.len()];
     dwr_checkpoint(DWR_RESIDUAL_PHASE, &mut progress, cx)?;
     for e in 0..mesh.len() - 1 {
         poll_dwr_scan(e, DWR_RESIDUAL_PHASE, &mut progress, cx)?;
@@ -2504,6 +2545,24 @@ pub fn dwr_integral_qoi(
         if !slope.is_finite() {
             return Err(non_finite_derived("primal slope", Some(e)));
         }
+        // Hat-function loads on this element: φ_left falls 1→0, φ_right
+        // rises 0→1; their derivatives are ∓1/h, so the stiffness parts
+        // are ∓slope exactly.
+        let mut load_left = 0.0f64;
+        let mut load_right = 0.0f64;
+        for (gx, gw) in gauss5(x0, x1) {
+            let xi = (gx - x0) / (x1 - x0);
+            let forcing = f.eval(gx);
+            load_left += gw * forcing * (1.0 - xi);
+            load_right += gw * forcing * xi;
+        }
+        let r_left = load_left + slope;
+        let r_right = load_right - slope;
+        if !r_left.is_finite() || !r_right.is_finite() {
+            return Err(non_finite_derived("equilibrium residual", Some(e)));
+        }
+        equilibrium_residual[e] += r_left;
+        equilibrium_residual[e + 1] += r_right;
         let (z0, z1) = (z[2 * e], z[2 * e + 2]);
         let mut local = 0.0f64;
         // Two fine halves of the coarse element.
@@ -2545,6 +2604,29 @@ pub fn dwr_integral_qoi(
         eta = updated_eta;
         indicators[e] = local.abs();
         progress.advance(1)?;
+    }
+    // Slice-1 note (bead sj31i.1): the equilibrium residuals feed the
+    // algebraic η term below UNCONDITIONALLY, so estimation of an arbitrary
+    // admitted P1 candidate stays legal and HONEST (exact-arithmetic
+    // fixtures legitimately probe non-solutions). The non-solution REFUSAL
+    // belongs at acceptance time — a certificate must not be minted from an
+    // unproved candidate — and lands with the sealed-accept slice, gated on
+    // the retained residual against DWR_EQUILIBRIUM_RESIDUAL_TOLERANCE.
+    // Add the coarse-space algebraic contribution r(I_h z_f) = Σ r_i·z(x_i)
+    // (z at coarse node i is fine node 2i). For an admitted solve this is a
+    // roundoff-scale correction; it makes η the FULL dual-weighted residual
+    // r(z_f) rather than the fine remainder alone.
+    for (node, residual) in equilibrium_residual
+        .iter()
+        .enumerate()
+        .take(mesh.len() - 1)
+        .skip(1)
+    {
+        let updated = residual.mul_add(z[2 * node], eta);
+        if !updated.is_finite() {
+            return Err(non_finite_derived("algebraic DWR contribution", Some(node)));
+        }
+        eta = updated;
     }
     if !j_primal.is_finite() || !eta.is_finite() {
         return Err(non_finite_derived("DWR output", None));
@@ -2712,7 +2794,11 @@ mod execution_tests {
             let baseline = root(&fields, CURRENT_VERIFIER_POLICY_IDENTITY);
             assert_eq!(
                 baseline.to_hex(),
-                "e53dcf11159b73d5516753630b8f0fd6572d08a8f0e60a6b6fba9672e6ceedac",
+                // Re-pinned 2026-07-17 (bead sj31i.1 verification): moved by
+                // 4e405dd8 (fs-verify VERIFIER_WORK_PLAN_VERSION 1 -> 2,
+                // code-first) — the bump was committed without a run, so the
+                // stale pin was unobservable until this battery executed.
+                "5245d73504b029b8fe50e73bc269e477a2d1fcac3702e1c77ca96fc86de50997",
                 "fixed bracket work-policy preimage changed"
             );
             for index in (4..=9).chain(14..=19) {
