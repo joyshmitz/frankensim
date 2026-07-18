@@ -256,7 +256,7 @@ impl ReceiptPayload {
             )
             .str(
                 "no-claim-boundary",
-                "no-cross-ISA-bitwise-equality;no-checkpoint-or-cancellation-recovery;no-performance-claim",
+                "single-sphere-fixture-only;no-all-manifold-coverage;no-cross-ISA-bitwise-equality;no-checkpoint-or-cancellation-recovery;no-cryptographic-authenticity;no-ledger-persistence;no-performance-claim",
             )
             .str("stop-rule", "Any(GradNorm,Budget);first-satisfied-child-attribution")
             .str("fixture-oracle-version", FIXTURE_ORACLE_VERSION)
@@ -836,6 +836,7 @@ fn receipt(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SemanticRefusal {
     CanonicalConfigMismatch,
+    InputSeedMismatch,
     FixtureDimensionMismatch,
     FixtureRegenerationMismatch,
     MatrixSymmetryMismatch,
@@ -850,6 +851,7 @@ enum SemanticRefusal {
     ReportMismatch,
     ReportedNormMismatch,
     ReturnedPointNotEvaluated,
+    TerminalCallbackMismatch,
     ReturnedGradientMismatch,
     OracleSnapshotMismatch,
     QualityGateMismatch,
@@ -872,10 +874,22 @@ fn oracle_close(left: f64, right: f64, ulp_factor: f64) -> bool {
         && (left - right).abs() <= ulp_factor * f64::EPSILON * left.abs().max(right.abs()).max(1.0)
 }
 
+fn relative_norm_close(left: f64, right: f64, ulp_factor: f64) -> bool {
+    left.is_finite()
+        && right.is_finite()
+        && !left.is_sign_negative()
+        && !right.is_sign_negative()
+        && (left - right).abs()
+            <= ulp_factor * f64::EPSILON * left.abs().max(right.abs()).max(f64::MIN_POSITIVE)
+}
+
 #[allow(clippy::too_many_lines)] // Each receipt field has an explicit semantic obligation.
 fn validate_semantics(payload: &ReceiptPayload) -> Result<(), SemanticRefusal> {
     if payload.config != StudyConfig::canonical() {
         return Err(SemanticRefusal::CanonicalConfigMismatch);
+    }
+    if payload.input_seed != INPUT_SEED {
+        return Err(SemanticRefusal::InputSeedMismatch);
     }
     let config = &payload.config;
     let dimension = config.ambient_dimension;
@@ -947,6 +961,13 @@ fn validate_semantics(payload: &ReceiptPayload) -> Result<(), SemanticRefusal> {
             return Err(SemanticRefusal::CallbackOracleMismatch);
         }
     }
+    // Reject off-manifold callbacks before constructing residual evidence. In
+    // particular, `independent_residual` deliberately requires a nonzero point;
+    // an untrusted all-zero terminal callback must become a typed refusal here,
+    // not an assertion panic during admission.
+    if callback_max_sphere_violation >= config.manifold_violation_tolerance() {
+        return Err(SemanticRefusal::QualityGateMismatch);
+    }
 
     let final_x = decode_finite(&payload.final_x_bits, dimension)?;
     let final_gradient = decode_finite(&payload.final_gradient_bits, dimension)?;
@@ -974,7 +995,10 @@ fn validate_semantics(payload: &ReceiptPayload) -> Result<(), SemanticRefusal> {
     {
         return Err(SemanticRefusal::NonFiniteEvidence);
     }
-    if report_gradient_inf < 0.0 || report_gradient_l2 < 0.0 || report_worst_violation < 0.0 {
+    if report_gradient_inf.is_sign_negative()
+        || report_gradient_l2.is_sign_negative()
+        || report_worst_violation.is_sign_negative()
+    {
         return Err(SemanticRefusal::ReportedNormMismatch);
     }
     if payload.state_iterations != payload.report_iterations
@@ -1002,8 +1026,17 @@ fn validate_semantics(payload: &ReceiptPayload) -> Result<(), SemanticRefusal> {
         return Err(SemanticRefusal::StateHistoryMismatch);
     }
     let mut callback_cursor = 1usize;
-    for &retained_objective_bits in payload.history_bits.iter().skip(1) {
-        let relative_index = payload.objective_calls[callback_cursor..]
+    let terminal_callback_index = payload.objective_calls.len() - 1;
+    for &retained_objective_bits in payload
+        .history_bits
+        .iter()
+        .skip(1)
+        .take(payload.history_bits.len().saturating_sub(2))
+    {
+        if callback_cursor >= terminal_callback_index {
+            return Err(SemanticRefusal::StateHistoryMismatch);
+        }
+        let relative_index = payload.objective_calls[callback_cursor..terminal_callback_index]
             .iter()
             .position(|call| call.objective_bits == retained_objective_bits)
             .ok_or(SemanticRefusal::StateHistoryMismatch)?;
@@ -1017,7 +1050,7 @@ fn validate_semantics(payload: &ReceiptPayload) -> Result<(), SemanticRefusal> {
     let recomputed_gradient_l2 =
         checked_stable_l2(&final_gradient).ok_or(SemanticRefusal::NonFiniteEvidence)?;
     if payload.report_gradient_norm_bits != recomputed_gradient_inf.to_bits()
-        || !oracle_close(
+        || !relative_norm_close(
             report_gradient_l2,
             recomputed_gradient_l2,
             config.gradient_l2_replay_ulp_factor(),
@@ -1028,11 +1061,27 @@ fn validate_semantics(payload: &ReceiptPayload) -> Result<(), SemanticRefusal> {
 
     let final_call = payload
         .objective_calls
-        .iter()
-        .find(|call| {
-            call.point_bits == payload.final_x_bits && call.objective_bits == payload.final_f_bits
-        })
+        .last()
         .ok_or(SemanticRefusal::ReturnedPointNotEvaluated)?;
+    if final_call.point_bits != payload.final_x_bits
+        || final_call.objective_bits != payload.final_f_bits
+    {
+        let appeared_earlier = payload.objective_calls[..terminal_callback_index]
+            .iter()
+            .any(|call| {
+                call.point_bits == payload.final_x_bits
+                    && call.objective_bits == payload.final_f_bits
+            });
+        return Err(if appeared_earlier {
+            // A GradNorm terminal state is checked immediately after accepting
+            // the final line-search trial, so no later objective callback is
+            // possible. Finding the returned state only in the prefix proves a
+            // fabricated post-terminal trace suffix.
+            SemanticRefusal::TerminalCallbackMismatch
+        } else {
+            SemanticRefusal::ReturnedPointNotEvaluated
+        });
+    }
     let final_ambient_gradient = decode_finite(&final_call.ambient_gradient_bits, dimension)?;
     let normal_component: f64 = final_ambient_gradient
         .iter()
@@ -1100,7 +1149,6 @@ fn validate_semantics(payload: &ReceiptPayload) -> Result<(), SemanticRefusal> {
         || oracle_gradient_inf
             > config.gradient_tolerance() + config.callback_oracle_ulp_factor() * f64::EPSILON
         || report_worst_violation >= config.manifold_violation_tolerance()
-        || callback_max_sphere_violation >= config.manifold_violation_tolerance()
     {
         return Err(SemanticRefusal::QualityGateMismatch);
     }
@@ -1250,6 +1298,106 @@ fn riemannian_sphere_study_replays_and_rejects_seeded_red_mutation() {
         admit_receipt(&foreign_reference, &reference),
         Err(MergeRefusal::ReferenceIdentityMismatch),
         "a semantically valid receipt must still match the selected reference identity"
+    );
+
+    let mut alternate_seed_mutant = reference.clone();
+    alternate_seed_mutant.payload.input_seed ^= 1;
+    alternate_seed_mutant.reseal();
+    assert_eq!(
+        admit_receipt(
+            &alternate_seed_mutant.declared_identity,
+            &alternate_seed_mutant
+        ),
+        Err(MergeRefusal::SemanticMismatch(
+            SemanticRefusal::InputSeedMismatch
+        )),
+        "this fixed study must not let a resealed alternate seed redefine its own reference corpus"
+    );
+
+    // A terminal GradNorm report performs no callback after the accepted final
+    // trial. Prove that a fully resealed suffix forgery cannot authorize itself:
+    // all callback values remain oracle-valid and all counters/snapshots are
+    // updated, so only the causal terminal-callback invariant can reject it.
+    let mut post_terminal_mutant = reference.clone();
+    let mut trailing_call = post_terminal_mutant
+        .payload
+        .objective_calls
+        .first()
+        .expect("reference receipt must retain its initial callback")
+        .clone();
+    trailing_call.ordinal = post_terminal_mutant.payload.objective_calls.len();
+    assert_ne!(
+        trailing_call.point_bits, post_terminal_mutant.payload.final_x_bits,
+        "the seeded start must differ from the converged terminal point"
+    );
+    post_terminal_mutant
+        .payload
+        .objective_calls
+        .push(trailing_call);
+    post_terminal_mutant.payload.state_evaluations = post_terminal_mutant
+        .payload
+        .state_evaluations
+        .checked_add(1)
+        .expect("red callback accounting must not overflow");
+    post_terminal_mutant.payload.report_evaluations = post_terminal_mutant
+        .payload
+        .report_evaluations
+        .checked_add(1)
+        .expect("red report accounting must not overflow");
+    let post_terminal_oracle = oracle_snapshot(
+        &reference_fixture.matrix(),
+        &reference_run.state.x,
+        &post_terminal_mutant.payload.objective_calls,
+        &config,
+    );
+    post_terminal_mutant.payload.oracle = post_terminal_oracle;
+    post_terminal_mutant.reseal();
+    assert_eq!(
+        admit_receipt(
+            &post_terminal_mutant.declared_identity,
+            &post_terminal_mutant
+        ),
+        Err(MergeRefusal::SemanticMismatch(
+            SemanticRefusal::TerminalCallbackMismatch
+        )),
+        "an oracle-valid callback appended after the returned GradNorm state must fail closed"
+    );
+
+    let mut signed_zero_mutant = reference.clone();
+    signed_zero_mutant.payload.report_worst_violation_bits = (-0.0f64).to_bits();
+    signed_zero_mutant.reseal();
+    assert_eq!(
+        admit_receipt(&signed_zero_mutant.declared_identity, &signed_zero_mutant),
+        Err(MergeRefusal::SemanticMismatch(
+            SemanticRefusal::ReportedNormMismatch
+        )),
+        "a norm-like certificate must reject noncanonical negative zero even when resealed"
+    );
+
+    // Exercise the admission ordering with a finite, algebraically valid but
+    // off-manifold zero callback. This must be a typed quality refusal before
+    // the nonzero-denominator residual oracle is reached, never a panic.
+    let mut zero_callback_mutant = reference.clone();
+    let terminal_call = zero_callback_mutant
+        .payload
+        .objective_calls
+        .last_mut()
+        .expect("reference receipt must retain a terminal callback");
+    terminal_call.point_bits.fill(0.0f64.to_bits());
+    terminal_call.objective_bits = 0.0f64.to_bits();
+    terminal_call.ambient_gradient_bits.fill(0.0f64.to_bits());
+    terminal_call.independent_sphere_norm_bits = 0.0f64.to_bits();
+    terminal_call.independent_sphere_violation_bits = 1.0f64.to_bits();
+    zero_callback_mutant.reseal();
+    assert_eq!(
+        admit_receipt(
+            &zero_callback_mutant.declared_identity,
+            &zero_callback_mutant
+        ),
+        Err(MergeRefusal::SemanticMismatch(
+            SemanticRefusal::QualityGateMismatch
+        )),
+        "an off-manifold terminal callback must refuse without reaching an assertion-based residual oracle"
     );
 
     let (mutant, coordinate, mask) = mutate_returned_decision(&reference);
