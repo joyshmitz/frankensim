@@ -1306,11 +1306,13 @@ atomic authority-head advancement grant that separately governed authority.
   services. The exact 258-byte allocation intent binds attempt, epoch, lane-
   neutral context, operation kind, primary/secondary ordinals, expected logical-
   slot authority head, operation payload, idempotency, capability, and signer.
-  The exact 164-byte verifier-owned logical-slot authority head binds its service,
-  attempt, epoch, generation, slot-ledger root, burned count, and latest
-  allocation receipt. Its exact 335-byte CAS receipt binds the intent, expected
-  and committed authority heads, old/new generations, old/new slot-ledger roots,
-  capability, idempotency, signature, CAS disposition, and durable interval.
+  The exact 204-byte verifier-owned logical-slot authority head binds its service,
+  attempt, epoch, generation, slot-ledger root, burned count, latest allocation
+  receipt, logical-slot-history artifact root, and allocation count. Its exact
+  271-byte CAS receipt binds the intent, expected and committed slot-ledger
+  roots, old/new generations, capability, idempotency, signature, CAS
+  disposition, and durable interval; it carries no duplicate expected/committed
+  authority-head digests.
   This replicated verifier-owned CAS commits before either lane may `Acquire`;
   both lane leases must byte-equal the same allocation receipt. Failure of one
   lane after the allocation leaves the global slot burned and forces
@@ -1627,8 +1629,8 @@ atomic authority-head advancement grant that separately governed authority.
   TransferSet. The infrastructure reservation row for each destination binds
   both the exact nonzero retention-policy digest and frozen destination-roster
   digest; the same two raw32 fields are canonical zero in every nondestination
-  row. With those fields each framed member is 265 bytes and the exact nine-
-  member set is 2542 bytes.
+  row. With those fields each member is 265 bytes, each framed member is 273
+  bytes, and the exact nine-member set is `85 + 9*273 = 2542` bytes.
 
   Each exact 137-byte destination-retention member extends the prior 105-byte
   destination identity/receipt projection with the digest of that store's
