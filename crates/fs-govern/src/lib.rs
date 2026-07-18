@@ -36,6 +36,7 @@
 
 pub mod crates;
 pub mod doctrine;
+pub mod evidence_contract;
 pub mod lanes;
 pub mod program_risks;
 pub mod proposals;
