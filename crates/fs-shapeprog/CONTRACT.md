@@ -15,13 +15,16 @@ rewrite engine, and s-expression parser.
   `Translate{child, t}`. Builders `sphere`/`cube`/`union`/`offset`/`translate`.
 - `sdf(p)` — the signed distance (union = min, intersect = max, difference =
   `max(a, −b)`, offset = `child − radius`, empty = `+∞`).
-- `to_sexpr` / `parse` — a round-tripping s-expression syntax.
+- `to_sexpr` / `parse` — a round-tripping s-expression syntax. Parsed numeric
+  atoms must be finite; signed zero remains valid.
 - `canonical` / `canonical_hash` — commutative operands sorted; equivalent
   programs share a content hash (archive/ledger dedup).
 - `simplify(&Geom, tiny_offset_tol) -> Simplified { program, rewrites,
   max_error }` — rewrite to a fixpoint under geometric identities; each
   `Rewrite` carries a `Certificate` (`Exact` or `Approximate{bound}`).
-- `max_sdf_discrepancy(a, b, samples)` — the rewrite-safety check.
+- `max_sdf_discrepancy(a, b, samples)` — the rewrite-safety check. Empty or
+  non-finite evidence and unrepresentable arithmetic return `+∞` as a refusal
+  sentinel; matching `+∞` is agreement only for structurally empty SDFs.
 - `linear_repeat` / `stochastic_repeat` — shape-grammar productions (seeded,
   reproducible).
 - `ParseError`.
@@ -32,7 +35,7 @@ rewrite engine, and s-expression parser.
   identities (offset composition, union/difference/translate identities,
   transform distribution) leave the SDF unchanged; `drop-tiny-offset` changes it
   by at most `|radius|`. Verified by `max_sdf_discrepancy` over a sample grid.
-- Round-trip: `parse(g.to_sexpr()) == g`.
+- Round-trip: `parse(g.to_sexpr()) == g` for finite-parameter programs.
 - Canonicalization: commutative-equivalent programs share `canonical_hash`.
 - Grammar derivations are reproducible from their seed.
 
@@ -59,11 +62,12 @@ None.
 
 ## Conformance tests
 
-`tests/shapeprog.rs` (8 cases): DSL round-trip; SDF semantics; exact rewrites
+`tests/shapeprog.rs` (11 cases): DSL round-trip; SDF semantics; exact rewrites
 preserve the SDF exactly (sampled); identity + distribution rewrites; a
 certified-approximate rewrite stays within its bound; canonicalization
 deduplicates commutative programs; grammar derivations reproducible from seeds;
-malformed programs rejected.
+malformed and non-finite numeric programs rejected; invalid, empty, and
+arithmetically unrepresentable discrepancy evidence refused.
 
 ## No-claim boundaries
 

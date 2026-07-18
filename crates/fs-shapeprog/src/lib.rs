@@ -191,6 +191,35 @@ impl Geom {
             Geom::Offset { child, .. } | Geom::Translate { child, .. } => 1 + child.size(),
         }
     }
+
+    fn has_finite_parameters(&self) -> bool {
+        match self {
+            Geom::Empty => true,
+            Geom::Primitive { size, .. } => size.is_finite(),
+            Geom::Union(a, b) | Geom::Intersect(a, b) | Geom::Difference(a, b) => {
+                a.has_finite_parameters() && b.has_finite_parameters()
+            }
+            Geom::Offset { child, radius } => radius.is_finite() && child.has_finite_parameters(),
+            Geom::Translate { child, t } => {
+                t.iter().all(|value| value.is_finite()) && child.has_finite_parameters()
+            }
+        }
+    }
+
+    fn has_structurally_empty_sdf(&self) -> bool {
+        match self {
+            Geom::Empty => true,
+            Geom::Primitive { .. } => false,
+            Geom::Union(a, b) => a.has_structurally_empty_sdf() && b.has_structurally_empty_sdf(),
+            Geom::Intersect(a, b) => {
+                a.has_structurally_empty_sdf() || b.has_structurally_empty_sdf()
+            }
+            Geom::Difference(a, _) => a.has_structurally_empty_sdf(),
+            Geom::Offset { child, .. } | Geom::Translate { child, .. } => {
+                child.has_structurally_empty_sdf()
+            }
+        }
+    }
 }
 
 fn order(a: Geom, b: Geom) -> (Geom, Geom) {
@@ -202,16 +231,34 @@ fn order(a: Geom, b: Geom) -> (Geom, Geom) {
 }
 
 /// The maximum `|SDF_a − SDF_b|` over the sample points — the rewrite-safety
-/// check (both non-finite at a point count as agreement).
+/// check. Structurally empty SDFs agree at `+∞`; invalid evidence or
+/// unrepresentable arithmetic returns `+∞` as a fail-closed sentinel.
 #[must_use]
 pub fn max_sdf_discrepancy(a: &Geom, b: &Geom, samples: &[[f64; 3]]) -> f64 {
+    if samples.is_empty() || !a.has_finite_parameters() || !b.has_finite_parameters() {
+        return f64::INFINITY;
+    }
+    let (a_empty, b_empty) = (
+        a.has_structurally_empty_sdf(),
+        b.has_structurally_empty_sdf(),
+    );
     let mut worst = 0.0_f64;
     for &p in samples {
+        if !p.iter().all(|value| value.is_finite()) {
+            return f64::INFINITY;
+        }
         let (da, db) = (a.sdf(p), b.sdf(p));
-        if da.is_infinite() && db.is_infinite() && da.signum() == db.signum() {
+        if da == f64::INFINITY && db == f64::INFINITY && a_empty && b_empty {
             continue;
         }
-        worst = worst.max((da - db).abs());
+        if !da.is_finite() || !db.is_finite() {
+            return f64::INFINITY;
+        }
+        let delta = da - db;
+        if !delta.is_finite() {
+            return f64::INFINITY;
+        }
+        worst = worst.max(delta.abs());
     }
     worst
 }
@@ -475,7 +522,8 @@ pub enum ParseError {
     BadNumber(String),
 }
 
-/// Parse an s-expression program (round-trips with [`Geom::to_sexpr`]).
+/// Parse an s-expression program (round-trips with [`Geom::to_sexpr`] for
+/// finite-parameter programs).
 ///
 /// # Errors
 /// [`ParseError`] on malformed input.
@@ -499,8 +547,14 @@ fn tokenize(s: &str) -> Vec<String> {
 }
 
 fn num(t: &str) -> Result<f64, ParseError> {
-    t.parse::<f64>()
-        .map_err(|_| ParseError::BadNumber(t.to_string()))
+    let value = t
+        .parse::<f64>()
+        .map_err(|_| ParseError::BadNumber(t.to_string()))?;
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(ParseError::BadNumber(t.to_string()))
+    }
 }
 
 fn parse_expr(tokens: &mut Vec<String>) -> Result<Geom, ParseError> {

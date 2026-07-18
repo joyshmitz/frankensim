@@ -160,3 +160,76 @@ fn malformed_programs_are_rejected() {
     // a truncated primitive reads no number -> unexpected end.
     assert!(matches!(parse("(sphere"), Err(ParseError::UnexpectedEnd)));
 }
+
+#[test]
+fn non_finite_numeric_atoms_are_rejected_in_every_grammar_slot() {
+    for atom in ["NaN", "inf", "-inf", "1e999", "-1e999"] {
+        for source in [
+            format!("(sphere {atom})"),
+            format!("(cube {atom})"),
+            format!("(offset (sphere 1) {atom})"),
+            format!("(translate (sphere 1) {atom} 0 0)"),
+            format!("(translate (sphere 1) 0 {atom} 0)"),
+            format!("(translate (sphere 1) 0 0 {atom})"),
+        ] {
+            assert_eq!(
+                parse(&source),
+                Err(ParseError::BadNumber(atom.to_string())),
+                "source {source} must fail closed"
+            );
+        }
+    }
+
+    let parsed = parse("(sphere -0.0)").expect("signed zero remains finite");
+    let Geom::Primitive { size, .. } = parsed else {
+        panic!("sphere parser must return a primitive");
+    };
+    assert_eq!(size.to_bits(), (-0.0_f64).to_bits());
+}
+
+#[test]
+fn discrepancy_refuses_invalid_or_unrepresentable_evidence() {
+    let one = Geom::sphere(1.0);
+    let two = Geom::sphere(2.0);
+    let sample = [[0.0, 0.0, 0.0]];
+    assert_eq!(max_sdf_discrepancy(&one, &two, &sample), 1.0);
+    assert!(max_sdf_discrepancy(&one, &two, &[]).is_infinite());
+
+    for invalid_sample in [
+        [[f64::NAN, 0.0, 0.0]],
+        [[f64::INFINITY, 0.0, 0.0]],
+        [[f64::NEG_INFINITY, 0.0, 0.0]],
+    ] {
+        assert!(max_sdf_discrepancy(&one, &one, &invalid_sample).is_infinite());
+    }
+
+    for invalid_program in [
+        Geom::sphere(f64::NAN),
+        Geom::cube(f64::INFINITY),
+        Geom::sphere(1.0).offset(f64::NEG_INFINITY),
+        Geom::sphere(1.0).translate([0.0, f64::NAN, 0.0]),
+    ] {
+        assert!(max_sdf_discrepancy(&invalid_program, &invalid_program, &sample).is_infinite());
+    }
+
+    let extreme_sample = [[f64::MAX, f64::MAX, f64::MAX]];
+    assert!(max_sdf_discrepancy(&one, &one, &extreme_sample).is_infinite());
+    assert!(
+        max_sdf_discrepancy(&Geom::sphere(-f64::MAX), &Geom::sphere(f64::MAX), &sample)
+            .is_infinite()
+    );
+
+    for structural_empty in [
+        Geom::Empty,
+        Geom::Union(Box::new(Geom::Empty), Box::new(Geom::Empty)),
+        Geom::Intersect(Box::new(Geom::Empty), Box::new(one.clone())),
+        Geom::Difference(Box::new(Geom::Empty), Box::new(one)),
+        Geom::Empty.offset(1.0),
+        Geom::Empty.translate([1.0, 2.0, 3.0]),
+    ] {
+        assert_eq!(
+            max_sdf_discrepancy(&structural_empty, &Geom::Empty, &sample),
+            0.0
+        );
+    }
+}
