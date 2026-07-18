@@ -1,8 +1,10 @@
 //! G5 study-scale replay for the production BIPOP-CMA path (7tv.21.22).
 //!
-//! The fixture captures every objective call and binds that trace together
-//! with the complete ordered public restart ledger, its named best restart,
-//! and every legacy `BipopReport`/nested `CmaReport` projection. A test-local
+//! The fixture captures every objective call through a closure-owned witness,
+//! bit-compares it with the complete production `BipopReport::evaluations`
+//! trace, and binds both together with the canonical root/trace/study identities,
+//! ordered public restart ledger, named best restart, and every legacy
+//! `BipopReport`/nested `CmaReport` projection. A test-local
 //! algebraic oracle independently checks objective semantics. A separate
 //! trace-driven CMA shadow reconstructs every restart boundary, stream sample,
 //! budget decision, terminal reason, and report field before linking the first
@@ -16,8 +18,11 @@
 
 use fs_blake3::{ContentHash, hash_domain};
 use fs_dfo::{
-    BIPOP_ADMISSION_SCHEMA_VERSION, BIPOP_RESTART_SCHEMA_VERSION, BipopAdmission, BipopLane,
-    BipopReport, BipopRestartRecord, CmaReport, CmaStopReason, admit_bipop, bipop_cmaes,
+    BIPOP_ADMISSION_SCHEMA_VERSION, BIPOP_EVALUATION_SCHEMA_VERSION, BIPOP_REPORT_SCHEMA_VERSION,
+    BIPOP_RESTART_SCHEMA_VERSION, BIPOP_ROOT_IDENTITY_KIND, BIPOP_STUDY_IDENTITY_DOMAIN,
+    BIPOP_STUDY_IDENTITY_SCHEMA_VERSION, BIPOP_TRACE_IDENTITY_DOMAIN,
+    BIPOP_TRACE_IDENTITY_SCHEMA_VERSION, BipopAdmission, BipopLane, BipopReport,
+    BipopRestartRecord, CmaReport, CmaStopReason, admit_bipop, bipop_cmaes,
 };
 use fs_obs::ident::{IdentityBuilder, ReplayIdentity};
 use fs_obs::{Emitter, Event, EventKind, Severity};
@@ -50,7 +55,7 @@ const CMA_MEANINGFUL_IMPROVEMENT_RELATIVE: f64 = 1e-12;
 const CMA_STAGNATION_GENERATIONS: usize = 120;
 const OBJECTIVE_ORACLE_ROUNDOFF_SCALE: f64 = 64.0;
 const SEMANTIC_ORACLE_VERSION: &str =
-    "bipop-algebraic-objective-trace-driven-cma-ledger-accounting-v4";
+    "bipop-algebraic-objective-production-trace-driven-cma-ledger-accounting-v6";
 const STRONG_IDENTITY_DOMAIN: &str = "frankensim.fs-dfo.bipop-study.replay-identity.v1";
 const STRONG_EVENT_IDENTITY_DOMAIN: &str =
     "frankensim.fs-dfo.bipop-study.event-content-identity.v1";
@@ -398,7 +403,7 @@ fn fixture_admission_kat_mismatch(admission: &BipopAdmission) -> Option<String> 
 }
 
 fn fixture_identity(seed: u64, admission: &BipopAdmission) -> ReplayIdentity {
-    let mut builder = IdentityBuilder::new("fs-dfo-bipop-study-fixture-v4")
+    let mut builder = IdentityBuilder::new("fs-dfo-bipop-study-fixture-v6")
         .str("suite", SUITE)
         .str("case", CASE)
         .str("red-case", RED_CASE)
@@ -453,7 +458,7 @@ fn fixture_identity(seed: u64, admission: &BipopAdmission) -> ReplayIdentity {
         )
         .str(
             "cma-best-update-rule",
-            "strictly-lower-objective-only;first-stable-tie",
+            "f64-total-cmp-strictly-less;first-stable-bitwise-tie",
         )
         .str(
             "bipop-best-update-rule",
@@ -463,6 +468,25 @@ fn fixture_identity(seed: u64, admission: &BipopAdmission) -> ReplayIdentity {
             "bipop-restart-record-schema-version",
             u64::from(BIPOP_RESTART_SCHEMA_VERSION),
         )
+        .u64(
+            "bipop-report-schema-version",
+            u64::from(BIPOP_REPORT_SCHEMA_VERSION),
+        )
+        .u64(
+            "bipop-evaluation-schema-version",
+            u64::from(BIPOP_EVALUATION_SCHEMA_VERSION),
+        )
+        .str("bipop-root-identity-kind", BIPOP_ROOT_IDENTITY_KIND)
+        .u64(
+            "bipop-trace-identity-schema-version",
+            u64::from(BIPOP_TRACE_IDENTITY_SCHEMA_VERSION),
+        )
+        .str("bipop-trace-identity-domain", BIPOP_TRACE_IDENTITY_DOMAIN)
+        .u64(
+            "bipop-study-identity-schema-version",
+            u64::from(BIPOP_STUDY_IDENTITY_SCHEMA_VERSION),
+        )
+        .str("bipop-study-identity-domain", BIPOP_STUDY_IDENTITY_DOMAIN)
         .u64(
             "bipop-admission-schema-version",
             u64::from(BIPOP_ADMISSION_SCHEMA_VERSION),
@@ -647,7 +671,10 @@ fn result_identity(
     report: &BipopReport,
     evaluations: &[Evaluation],
 ) -> ReplayIdentity {
-    let mut builder = IdentityBuilder::new("fs-dfo-bipop-study-result-v4")
+    let root = report.root_inputs();
+    let trace_identity = report.trace_identity();
+    let study_identity = report.study_identity();
+    let mut builder = IdentityBuilder::new("fs-dfo-bipop-study-result-v6")
         .child("fixture", fixture)
         // IdentityBuilder::child retains the legacy 64-bit child root. Carry
         // the complete child preimage as well so the domain-separated result
@@ -658,6 +685,48 @@ fn result_identity(
             "fixture-blake3",
             strong_identity_hash(fixture).as_bytes(),
         )
+        .u64(
+            "report-schema-version",
+            u64::from(report.schema_version()),
+        )
+        .u64("root-start-length", usize_u64(root.start().len()))
+        .f64_bits("root-sigma", root.sigma())
+        .u64("root-total-budget", usize_u64(root.total_budget()))
+        .flag("root-target-present", root.target().is_some())
+        .u64("root-seed", root.seed())
+        .u64(
+            "root-identity-schema-version",
+            u64::from(root.identity().version()),
+        )
+        .str("root-identity-kind", root.identity().kind())
+        .u64("root-identity-compact-root", root.identity().root())
+        .bytes(
+            "root-identity-canonical-bytes",
+            root.identity().canonical_bytes(),
+        )
+        .u64(
+            "trace-identity-schema-version",
+            u64::from(trace_identity.schema_version()),
+        )
+        .u64("trace-identity-rows", usize_u64(trace_identity.rows()))
+        .u64(
+            "trace-identity-dimension",
+            usize_u64(trace_identity.dimension()),
+        )
+        .bytes("trace-identity-digest", trace_identity.digest())
+        .u64(
+            "study-identity-schema-version",
+            u64::from(study_identity.schema_version()),
+        )
+        .u64(
+            "study-identity-restarts",
+            usize_u64(study_identity.restarts()),
+        )
+        .u64(
+            "study-identity-evaluations",
+            usize_u64(study_identity.evaluations()),
+        )
+        .bytes("study-identity-digest", study_identity.digest())
         .u64("total-evals", usize_u64(report.total_evals))
         .u64("total-budget", usize_u64(report.total_budget()))
         .u64("schedule-length", usize_u64(report.schedule.len()))
@@ -669,7 +738,22 @@ fn result_identity(
         .u64("best-run-generations", usize_u64(report.best.generations))
         .flag("best-run-converged", report.best.converged)
         .f64_bits("best-run-sigma", report.best.sigma)
-        .u64("evaluation-trace-length", usize_u64(evaluations.len()));
+        .u64(
+            "production-evaluation-trace-length",
+            usize_u64(report.total_evals),
+        )
+        .u64(
+            "closure-witness-trace-length",
+            usize_u64(evaluations.len()),
+        );
+    if let Some(target) = root.target() {
+        builder = builder.f64_bits("root-target", target);
+    }
+    for (coordinate, &value) in root.start().iter().enumerate() {
+        builder = builder
+            .u64("root-start-coordinate-index", usize_u64(coordinate))
+            .f64_bits("root-start-coordinate", value);
+    }
     for (restart, &lambda) in report.schedule.iter().enumerate() {
         builder = builder
             .u64("restart-index", usize_u64(restart))
@@ -722,16 +806,48 @@ fn result_identity(
             .u64("best-coordinate-index", usize_u64(coordinate))
             .f64_bits("best-coordinate", value);
     }
+    for evaluation in report.evaluations() {
+        builder = builder
+            .u64(
+                "production-evaluation-global-offset",
+                usize_u64(evaluation.global_offset()),
+            )
+            .u64(
+                "production-evaluation-schema-version",
+                u64::from(evaluation.schema_version()),
+            )
+            .u64("production-evaluation-restart", evaluation.restart())
+            .u64(
+                "production-evaluation-local-offset",
+                usize_u64(evaluation.local_offset()),
+            )
+            .u64(
+                "production-evaluation-dimension",
+                usize_u64(evaluation.point().len()),
+            );
+        for (coordinate, &value) in evaluation.point().iter().enumerate() {
+            builder = builder
+                .u64(
+                    "production-evaluation-coordinate-index",
+                    usize_u64(coordinate),
+                )
+                .f64_bits("production-evaluation-coordinate", value);
+        }
+        builder = builder.f64_bits("production-evaluation-objective", evaluation.objective());
+    }
     for (evaluation_index, evaluation) in evaluations.iter().enumerate() {
         builder = builder
-            .u64("evaluation-index", usize_u64(evaluation_index))
-            .u64("evaluation-dimension", usize_u64(evaluation.x.len()));
+            .u64("closure-evaluation-index", usize_u64(evaluation_index))
+            .u64(
+                "closure-evaluation-dimension",
+                usize_u64(evaluation.x.len()),
+            );
         for (coordinate, &value) in evaluation.x.iter().enumerate() {
             builder = builder
-                .u64("evaluation-coordinate-index", usize_u64(coordinate))
-                .f64_bits("evaluation-coordinate", value);
+                .u64("closure-evaluation-coordinate-index", usize_u64(coordinate))
+                .f64_bits("closure-evaluation-coordinate", value);
         }
-        builder = builder.f64_bits("evaluation-objective", evaluation.value);
+        builder = builder.f64_bits("closure-evaluation-objective", evaluation.value);
     }
     builder.finish()
 }
@@ -1012,6 +1128,7 @@ fn reconstruct_cma_from_trace(
 
     while evals + lambda <= allocated_budget {
         generations += 1;
+        let mut generation_reached_target = false;
         if generations % CMA_EIGEN_INTERVAL.max(1) == 1 || CMA_EIGEN_INTERVAL <= 1 {
             for row in 0..n {
                 for column in row + 1..n {
@@ -1063,7 +1180,8 @@ fn reconstruct_cma_from_trace(
             }
             fitness[candidate] = observed.value;
             evals += 1;
-            if fitness[candidate] < f_best {
+            generation_reached_target |= observed.value <= F_TARGET;
+            if fitness[candidate].total_cmp(&f_best).is_lt() {
                 if f_best - fitness[candidate]
                     > CMA_MEANINGFUL_IMPROVEMENT_RELATIVE * (1.0 + f_best.abs())
                 {
@@ -1074,7 +1192,7 @@ fn reconstruct_cma_from_trace(
             }
         }
         generations_since_improvement += 1;
-        if f_best <= F_TARGET {
+        if generation_reached_target {
             if evals != evaluations.len() {
                 return Err(format!(
                     "target-terminal-offset-{evals}!=trace-length-{}",
@@ -1559,6 +1677,162 @@ fn reconstruct_restart_ledger(run: &StudyRun) -> Result<Vec<ReconstructedRestart
     Ok(reconstructed)
 }
 
+fn production_evidence_mismatch(run: &StudyRun) -> Option<String> {
+    let report = &run.report;
+    if report.schema_version() != BIPOP_REPORT_SCHEMA_VERSION {
+        return Some(format!(
+            "production-report-schema:{}!=supported-{BIPOP_REPORT_SCHEMA_VERSION}",
+            report.schema_version()
+        ));
+    }
+    let root = report.root_inputs();
+    if !same_point_bits(root.start(), &X0) {
+        return Some("production-root-start!=fixture-start".to_string());
+    }
+    if root.sigma().to_bits() != SIGMA0.to_bits() {
+        return Some(format!(
+            "production-root-sigma:0x{:016x}!=fixture-0x{:016x}",
+            root.sigma().to_bits(),
+            SIGMA0.to_bits()
+        ));
+    }
+    if root.total_budget() != TOTAL_BUDGET {
+        return Some(format!(
+            "production-root-budget:{}!=fixture-{TOTAL_BUDGET}",
+            root.total_budget()
+        ));
+    }
+    if root.target().map(f64::to_bits) != Some(F_TARGET.to_bits()) {
+        return Some(format!(
+            "production-root-target:{:?}!=fixture-0x{:016x}",
+            root.target().map(f64::to_bits),
+            F_TARGET.to_bits()
+        ));
+    }
+    if root.seed() != run.input_seed {
+        return Some(format!(
+            "production-root-seed:{}!=fixture-{}",
+            root.seed(),
+            run.input_seed
+        ));
+    }
+    if root.identity().kind() != BIPOP_ROOT_IDENTITY_KIND {
+        return Some(format!(
+            "production-root-identity-kind:{}!=supported-{BIPOP_ROOT_IDENTITY_KIND}",
+            root.identity().kind()
+        ));
+    }
+
+    let trace_identity = report.trace_identity();
+    if trace_identity.schema_version() != BIPOP_TRACE_IDENTITY_SCHEMA_VERSION {
+        return Some(format!(
+            "production-trace-schema:{}!=supported-{BIPOP_TRACE_IDENTITY_SCHEMA_VERSION}",
+            trace_identity.schema_version()
+        ));
+    }
+    if trace_identity.rows() != report.total_evals {
+        return Some(format!(
+            "production-trace-rows:{}!=report-total-{}",
+            trace_identity.rows(),
+            report.total_evals
+        ));
+    }
+    if trace_identity.dimension() != DIMENSION {
+        return Some(format!(
+            "production-trace-dimension:{}!=fixture-{DIMENSION}",
+            trace_identity.dimension()
+        ));
+    }
+    let study_identity = report.study_identity();
+    if study_identity.schema_version() != BIPOP_STUDY_IDENTITY_SCHEMA_VERSION {
+        return Some(format!(
+            "production-study-schema:{}!=supported-{BIPOP_STUDY_IDENTITY_SCHEMA_VERSION}",
+            study_identity.schema_version()
+        ));
+    }
+    if study_identity.restarts() != report.records().len()
+        || study_identity.evaluations() != report.total_evals
+    {
+        return Some(format!(
+            "production-study-cardinality:restarts-{}-evaluations-{}!=report-{}-{}",
+            study_identity.restarts(),
+            study_identity.evaluations(),
+            report.records().len(),
+            report.total_evals
+        ));
+    }
+    if let Err(error) = report.validate_study_identity() {
+        return Some(format!("production-study-identity-refused:{error}"));
+    }
+    if let Err(error) = report.admit_study_identity(study_identity) {
+        return Some(format!("production-study-self-admission-refused:{error}"));
+    }
+
+    if run.evaluations.len() != report.total_evals {
+        return Some(format!(
+            "closure-trace-length:{}!=production-{}",
+            run.evaluations.len(),
+            report.total_evals
+        ));
+    }
+    let mut restart_index = 0usize;
+    for (global_offset, (closure, production)) in
+        run.evaluations.iter().zip(report.evaluations()).enumerate()
+    {
+        while restart_index < report.records().len()
+            && global_offset >= report.records()[restart_index].trace_end()
+        {
+            restart_index += 1;
+        }
+        let Some(record) = report.records().get(restart_index) else {
+            return Some(format!(
+                "production-trace[{global_offset}]-has-no-owning-restart"
+            ));
+        };
+        let expected_local = global_offset
+            .checked_sub(record.trace_start())
+            .expect("contiguous production intervals start before their rows");
+        if production.schema_version() != BIPOP_EVALUATION_SCHEMA_VERSION {
+            return Some(format!(
+                "production-trace[{global_offset}]-schema:{}!=supported-{BIPOP_EVALUATION_SCHEMA_VERSION}",
+                production.schema_version()
+            ));
+        }
+        if production.global_offset() != global_offset {
+            return Some(format!(
+                "production-trace[{global_offset}]-global-offset:{}",
+                production.global_offset()
+            ));
+        }
+        if production.restart() != record.ordinal() {
+            return Some(format!(
+                "production-trace[{global_offset}]-restart:{}!=record-{}",
+                production.restart(),
+                record.ordinal()
+            ));
+        }
+        if production.local_offset() != expected_local {
+            return Some(format!(
+                "production-trace[{global_offset}]-local-offset:{}!=expected-{expected_local}",
+                production.local_offset()
+            ));
+        }
+        if !same_point_bits(production.point(), &closure.x) {
+            return Some(format!(
+                "production-trace[{global_offset}]-point!=closure-witness"
+            ));
+        }
+        if production.objective().to_bits() != closure.value.to_bits() {
+            return Some(format!(
+                "production-trace[{global_offset}]-objective:0x{:016x}!=closure-0x{:016x}",
+                production.objective().to_bits(),
+                closure.value.to_bits()
+            ));
+        }
+    }
+    None
+}
+
 #[allow(clippy::too_many_lines)] // Complete trace and public-report accounting is the oracle.
 fn accounting_mismatch(run: &StudyRun) -> Option<String> {
     let expected_admission =
@@ -1743,6 +2017,9 @@ fn accounting_mismatch(run: &StudyRun) -> Option<String> {
             error.restart(),
             error.invariant()
         ));
+    }
+    if let Some(mismatch) = production_evidence_mismatch(run) {
+        return Some(mismatch);
     }
     None
 }
@@ -2770,6 +3047,15 @@ fn bipop_full_study_replays_and_seeded_failure_is_refused() {
     assert_eq!(validate_payload(&replay), Ok(()));
     assert_eq!(admit_against(&first, &first.result), Ok(()));
     assert_eq!(admit_against(&replay, &first.result), Ok(()));
+    let production_reference = first.report.study_identity();
+    first
+        .report
+        .admit_study_identity(production_reference)
+        .expect("canonical production payload admits against its identity");
+    replay
+        .report
+        .admit_study_identity(production_reference)
+        .expect("production replay admits against the canonical production identity");
 
     let mismatch = first_public_mismatch(&first, &replay);
     assert_eq!(
