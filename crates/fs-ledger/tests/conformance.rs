@@ -1426,10 +1426,32 @@ fn ledger_009_version_is_stamped() {
 
 #[test]
 fn ledger_010_nightly_writer_records_run() {
+    fn one_json_line<'a>(bytes: &'a [u8], stream: &str) -> &'a str {
+        let text = std::str::from_utf8(bytes).expect("nightly_ledger emits UTF-8");
+        let line = text
+            .strip_suffix('\n')
+            .unwrap_or_else(|| panic!("{stream} must end with exactly one newline: {text:?}"));
+        assert!(
+            !line.chars().any(|ch| ch < ' '),
+            "{stream} contains a raw JSON control: {text:?}"
+        );
+        line
+    }
+
+    const SUITE: &str = "nightly\",\"forged\":true,\"tail\":\"\\line\nnext\u{0001}";
+    const SUITE_JSON: &str =
+        "nightly\\\",\\\"forged\\\":true,\\\"tail\\\":\\\"\\\\line\\nnext\\u0001";
+    const SHA: &str = "sha\"\\\n\u{0003}";
+    const SHA_JSON: &str = "sha\\\"\\\\\\n\\u0003";
+    const RUNNER: &str = "runner\"\\\r\t\u{0002}";
+    const RUNNER_JSON: &str = "runner\\\"\\\\\\r\\t\\u0002";
+
     let db = temp_db("nightly");
     let exe = env!("CARGO_BIN_EXE_nightly_ledger");
     let out = std::process::Command::new(exe)
-        .args([db.as_str(), "ok", "nightly_gauntlet_pass", "1"])
+        .args([db.as_str(), "ok", SUITE, "1"])
+        .env("GITHUB_SHA", SHA)
+        .env("RUNNER_OS", RUNNER)
         .output()
         .expect("run nightly_ledger");
     assert!(
@@ -1437,24 +1459,124 @@ fn ledger_010_nightly_writer_records_run() {
         "nightly_ledger failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    let stdout = one_json_line(&out.stdout, "stdout");
+    assert!(stdout.contains(&format!("\"metric\":\"{SUITE_JSON}\"")));
+    assert!(!stdout.contains("\"forged\":true"));
+
     let l = Ledger::open(&db).expect("open nightly db");
     assert_eq!(l.table_count("ops").unwrap(), 1);
     assert_eq!(l.table_count("metrics").unwrap(), 1);
     assert_eq!(l.table_count("events").unwrap(), 1);
     let op = l.op(1).unwrap().expect("op row");
     assert_eq!(op.outcome.as_deref(), Some("ok"));
+    assert_eq!(
+        op.ir,
+        format!("{{\"op\":\"ci.nightly\",\"suite\":\"{SUITE_JSON}\"}}")
+    );
+    assert_eq!(op.versions, format!("{{\"frankensim\":\"{SHA_JSON}\"}}"));
+    assert_eq!(
+        op.capability,
+        format!("{{\"ops\":[\"ci.nightly\"],\"runner\":\"{RUNNER_JSON}\"}}")
+    );
+    l.append_event(&EventRow {
+        session: None,
+        t: 1,
+        kind: "nightly_writer_stdout_validation",
+        payload: Some(stdout),
+    })
+    .expect("stdout is one valid JSON value");
+
     assert!(l.lint().unwrap().is_clean());
     // Bad arguments are structured refusals on stderr, never panics.
+    const BAD_OUTCOME: &str = "bogus\",\"forged\":true,\"tail\":\"\\\n\u{0002}";
+    const BAD_OUTCOME_JSON: &str = "bogus\\\",\\\"forged\\\":true,\\\"tail\\\":\\\"\\\\\\n\\u0002";
     let bad = std::process::Command::new(exe)
-        .args([db.as_str(), "bogus", "x", "y"])
+        .args([db.as_str(), BAD_OUTCOME, "x", "y"])
         .output()
         .expect("run nightly_ledger with bad args");
     assert!(!bad.status.success());
-    assert!(String::from_utf8_lossy(&bad.stderr).contains("NightlyLedger"));
+    let bad_stderr = one_json_line(&bad.stderr, "bad-argument stderr");
+    assert!(bad_stderr.contains("NightlyLedger"));
+    assert!(bad_stderr.contains(BAD_OUTCOME_JSON));
+    assert!(!bad_stderr.contains("\"forged\":true"));
+    l.append_event(&EventRow {
+        session: None,
+        t: 2,
+        kind: "nightly_writer_refusal_validation",
+        payload: Some(bad_stderr),
+    })
+    .expect("refusal is one valid JSON value");
+
+    // Non-finite values must refuse before opening or partially mutating the
+    // ledger; they are not JSON numbers and metrics require finite REALs.
+    let nonfinite = std::process::Command::new(exe)
+        .args([db.as_str(), "ok", "nonfinite", "NaN"])
+        .output()
+        .expect("run nightly_ledger with non-finite value");
+    assert!(!nonfinite.status.success());
+    let nonfinite_stderr = one_json_line(&nonfinite.stderr, "non-finite stderr");
+    assert!(nonfinite_stderr.contains("value must be finite, got NaN"));
+    l.append_event(&EventRow {
+        session: None,
+        t: 3,
+        kind: "nightly_writer_nonfinite_validation",
+        payload: Some(nonfinite_stderr),
+    })
+    .expect("non-finite refusal is one valid JSON value");
+
+    // A failure after begin_op must roll back the whole write group. The empty
+    // suite passes IR admission, then violates metrics.name's non-empty CHECK.
+    let late_failure = std::process::Command::new(exe)
+        .args([db.as_str(), "ok", "", "1"])
+        .output()
+        .expect("run nightly_ledger with a late metric failure");
+    assert!(!late_failure.status.success());
+    let late_stderr = one_json_line(&late_failure.stderr, "late-failure stderr");
+    assert!(late_stderr.contains("NightlyLedger"));
+    l.append_event(&EventRow {
+        session: None,
+        t: 4,
+        kind: "nightly_writer_rollback_validation",
+        payload: Some(late_stderr),
+    })
+    .expect("late-failure refusal is one valid JSON value");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let non_utf8_suite = std::ffi::OsString::from_vec(vec![0xff]);
+        let non_utf8 = std::process::Command::new(exe)
+            .arg(db.as_str())
+            .arg("ok")
+            .arg(non_utf8_suite)
+            .arg("1")
+            .output()
+            .expect("run nightly_ledger with non-UTF-8 suite");
+        assert!(!non_utf8.status.success());
+        let non_utf8_stderr = one_json_line(&non_utf8.stderr, "non-UTF-8 stderr");
+        assert!(non_utf8_stderr.contains("suite must be valid UTF-8"));
+        l.append_event(&EventRow {
+            session: None,
+            t: 5,
+            kind: "nightly_writer_non_utf8_validation",
+            payload: Some(non_utf8_stderr),
+        })
+        .expect("non-UTF-8 refusal is one valid JSON value");
+    }
+
+    assert_eq!(l.table_count("ops").unwrap(), 1);
+    assert_eq!(l.table_count("metrics").unwrap(), 1);
+    #[cfg(unix)]
+    assert_eq!(l.table_count("events").unwrap(), 6);
+    #[cfg(not(unix))]
+    assert_eq!(l.table_count("events").unwrap(), 5);
+    assert!(l.lint().unwrap().is_clean());
+
     drop(l);
     cleanup_db(&db);
     verdict(
         "ledger-010",
-        "nightly_ledger records op+metric+event into a lint-clean ledger; bad args refuse structurally",
+        "nightly_ledger preserves hostile strings in valid JSON; bad args and non-finite values refuse structurally",
     );
 }
