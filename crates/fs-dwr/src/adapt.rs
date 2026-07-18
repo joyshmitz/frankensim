@@ -29,16 +29,29 @@ pub struct AdaptStep {
     pub marked: usize,
 }
 
+fn json_f64(value: f64, precision: usize) -> String {
+    if value.is_finite() {
+        format!("{value:.precision$e}")
+    } else {
+        "null".to_owned()
+    }
+}
+
 impl AdaptStep {
-    /// Ledger-style JSON row.
+    /// Ledger-style JSON row. Non-finite evidence is represented as JSON
+    /// `null`, never as an invalid bare token.
     #[must_use]
     pub fn to_json(&self) -> String {
         let mut s = String::new();
         let _ = write!(
             s,
-            "{{\"dofs\":{},\"j\":{:.10e},\"eta_signed\":{:.4e},\
-             \"eta_abs\":{:.4e},\"marked\":{}}}",
-            self.dofs, self.j, self.eta_signed, self.eta_abs, self.marked
+            "{{\"dofs\":{},\"j\":{},\"eta_signed\":{},\
+             \"eta_abs\":{},\"marked\":{}}}",
+            self.dofs,
+            json_f64(self.j, 10),
+            json_f64(self.eta_signed, 4),
+            json_f64(self.eta_abs, 4),
+            self.marked
         );
         s
     }
@@ -223,13 +236,45 @@ pub fn adapt_loop(
 #[cfg(test)]
 mod tests {
     use super::{
-        adapt_loop, constrained_refinement, interface_target_level, refinement_ceiling,
+        AdaptStep, adapt_loop, constrained_refinement, interface_target_level, refinement_ceiling,
         validate_theta,
     };
     use crate::estimate::{GoalContext, estimate};
     use crate::mark::dorfler;
     use fs_cutfem::{Circle, CutFemError, CutSdf, FemParams, Quadtree, Space};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn adapt_step_json_uses_null_for_non_finite_evidence() {
+        let step = AdaptStep {
+            dofs: 1,
+            j: f64::NAN,
+            eta_signed: f64::INFINITY,
+            eta_abs: f64::NEG_INFINITY,
+            marked: 2,
+        };
+        assert_eq!(
+            step.to_json(),
+            "{\"dofs\":1,\"j\":null,\"eta_signed\":null,\"eta_abs\":null,\"marked\":2}"
+        );
+
+        let finite = AdaptStep {
+            dofs: 3,
+            j: 1.25,
+            eta_signed: -2.5,
+            eta_abs: 3.75,
+            marked: 4,
+        };
+        let json = finite.to_json();
+        assert_eq!(
+            json,
+            format!(
+                "{{\"dofs\":3,\"j\":{:.10e},\"eta_signed\":{:.4e},\
+                 \"eta_abs\":{:.4e},\"marked\":4}}",
+                finite.j, finite.eta_signed, finite.eta_abs
+            )
+        );
+    }
 
     #[test]
     fn constrained_refinement_defers_inside_halo_without_global_band_promotion() {
