@@ -5,12 +5,13 @@
 //! two-fidelity observations and discrepancy-band declarations, model-form
 //! evidence slices, model-card declarations with exact calibration sources,
 //! an opaque strong-identity projection of locally certified scalar evidence,
-//! and its recomputed local decision assessment through separate schemas. It
-//! does not reinterpret
-//! [`crate::ProvenanceHash`], and it publishes only unanchored
-//! [`IdentityReceipt`] values. Origin verification, policy admission,
-//! structural [`crate::Certified`] consistency, and scientific color rank
-//! remain separate axes.
+//! its exact-source binding, and its recomputed local decision assessment
+//! through separate schemas. It never promotes [`crate::ProvenanceHash`] into
+//! strong identity: exact-source helpers use retained values only as legacy
+//! FNV correlation checks and exclude them from strong frames. This module
+//! publishes only unanchored [`IdentityReceipt`] values. Origin verification,
+//! policy admission, structural [`crate::Certified`] consistency, and
+//! scientific color rank remain separate axes.
 
 use core::fmt;
 
@@ -57,6 +58,10 @@ pub const CERTIFIED_F64_DECISION_ASSESSMENT_IDENTITY_VERSION_V1: u32 = 1;
 pub const DECISION_ASSESSMENT_ALGORITHM_VERSION_V1: u32 = 1;
 /// Identity schema version for one locally certified scalar-evidence projection.
 pub const CERTIFIED_F64_EVIDENCE_IDENTITY_VERSION_V1: u32 = 1;
+/// Identity schema version for an exact certified-f64 source artifact.
+pub const CERTIFIED_F64_SOURCE_IDENTITY_VERSION_V1: u32 = 1;
+/// Identity schema version for one exact-source-bound certified-f64 projection.
+pub const SOURCED_CERTIFIED_F64_EVIDENCE_IDENTITY_VERSION_V1: u32 = 1;
 /// Identity schema version for exact model-card calibration source bytes.
 pub const MODEL_CARD_CALIBRATION_SOURCE_IDENTITY_VERSION_V1: u32 = 1;
 /// Identity schema version for one helper-validated model-card declaration.
@@ -69,6 +74,8 @@ pub const MAX_VALIDITY_DOMAIN_FIELD_BYTES_V1: u64 = 1 << 20;
 pub const MAX_MODEL_EVIDENCE_IDENTITY_FIELD_BYTES_V1: u64 = 1 << 20;
 /// Hard payload ceiling for each variable certified-evidence field.
 pub const MAX_CERTIFIED_F64_EVIDENCE_FIELD_BYTES_V1: u64 = 1 << 20;
+/// Hard payload ceiling for each exact certified-f64 source field.
+pub const MAX_CERTIFIED_F64_SOURCE_FIELD_BYTES_V1: u64 = 1 << 20;
 /// Hard payload ceiling for each variable model-card declaration field.
 pub const MAX_MODEL_CARD_IDENTITY_FIELD_BYTES_V1: u64 = 1 << 20;
 /// Hard retained-byte ceiling for one model-card calibration source.
@@ -859,6 +866,196 @@ impl IdentifiedCertifiedF64EvidenceV1 {
     #[must_use]
     pub fn into_certified(self) -> Certified<f64> {
         self.certified
+    }
+}
+
+/// Canonical identity schema for one exact source artifact supplied while
+/// migrating certified scalar evidence away from a legacy FNV correlation.
+pub enum CertifiedF64SourceIdentitySchemaV1 {}
+
+impl CanonicalSchema for CertifiedF64SourceIdentitySchemaV1 {
+    const DOMAIN: &'static str = "org.frankensim.fs-evidence.certified-f64-source.v1";
+    const NAME: &'static str = "certified-f64-source";
+    const VERSION: u32 = CERTIFIED_F64_SOURCE_IDENTITY_VERSION_V1;
+    const CONTEXT: &'static str = "exact caller-retained source domain, source schema version, and canonical bytes supplied for a certified-f64 legacy-FNV crosswalk; no format truth, origin, custody, execution, adjoint validity, scientific authority, or trust";
+    const FIELDS: &'static [FieldSpec] = &[
+        FieldSpec::required("source-domain", WireType::Utf8),
+        FieldSpec::required("source-schema-version", WireType::U64),
+        FieldSpec::required("canonical-source", WireType::Bytes),
+    ];
+}
+
+/// Low-level schema-shaped identity for an exact certified-f64 source.
+///
+/// Direct encoder output does not prove the source-domain/version admission or
+/// correspondence with retained bytes. Those invariants belong to
+/// [`CertifiedF64SourceV1`].
+pub type CertifiedF64SourceIdV1 = SourceId<CertifiedF64SourceIdentitySchemaV1>;
+
+/// Low-level producer receipt for one exact certified-f64 source frame.
+pub type CertifiedF64SourceReceiptV1 = IdentityReceipt<CertifiedF64SourceIdV1>;
+
+/// Exact source metadata and bytes kept attached to their unanchored identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertifiedF64SourceV1 {
+    domain: String,
+    schema_version: u32,
+    canonical_bytes: Vec<u8>,
+    receipt: CertifiedF64SourceReceiptV1,
+}
+
+impl CertifiedF64SourceV1 {
+    /// Exact source-domain UTF-8 committed by this identity.
+    #[must_use]
+    pub fn domain(&self) -> &str {
+        &self.domain
+    }
+
+    /// Nonzero caller-declared source-schema version committed by this identity.
+    #[must_use]
+    pub const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    /// Exact canonical source bytes committed by this identity.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical_bytes
+    }
+
+    /// Typed exact-source identity.
+    #[must_use]
+    pub const fn id(&self) -> CertifiedF64SourceIdV1 {
+        self.receipt.id()
+    }
+
+    /// Complete unanchored source receipt.
+    #[must_use]
+    pub const fn receipt(&self) -> CertifiedF64SourceReceiptV1 {
+        self.receipt
+    }
+
+    /// Fixed-size typed digest bytes.
+    #[must_use]
+    pub fn id_bytes(&self) -> [u8; 32] {
+        *self.id().as_bytes()
+    }
+
+    /// Identity state of a producer receipt. This is always unanchored.
+    #[must_use]
+    pub fn trust_state(&self) -> EvidenceIdentityTrustState {
+        self.receipt.audit_record().trust()
+    }
+
+    /// Surrender the identity attachment and recover exact source inputs.
+    #[must_use]
+    pub fn into_parts(self) -> (String, u32, Vec<u8>) {
+        (self.domain, self.schema_version, self.canonical_bytes)
+    }
+}
+
+static SOURCED_CERTIFIED_F64_EVIDENCE_CHILD_V1: ChildSpec =
+    ChildSpec::for_identity::<CertifiedF64EvidenceIdV1>();
+static SOURCED_CERTIFIED_F64_SOURCE_CHILD_V1: ChildSpec =
+    ChildSpec::for_identity::<CertifiedF64SourceIdV1>();
+
+/// Canonical parent schema attaching exact producer and optional adjoint
+/// sources to one opaque certified-f64 semantic child.
+pub enum SourcedCertifiedF64EvidenceIdentitySchemaV1 {}
+
+impl CanonicalSchema for SourcedCertifiedF64EvidenceIdentitySchemaV1 {
+    const DOMAIN: &'static str = "org.frankensim.fs-evidence.sourced-certified-f64-evidence.v1";
+    const NAME: &'static str = "sourced-certified-f64-evidence";
+    const VERSION: u32 = SOURCED_CERTIFIED_F64_EVIDENCE_IDENTITY_VERSION_V1;
+    const CONTEXT: &'static str = "typed certified-f64 semantic child plus exact typed producer source and optional exact typed adjoint source after pinned legacy-FNV-1a-64 correlation checks; weak FNV values excluded; no origin, custody, execution, units, adjoint correctness, authority, or trust";
+    const FIELDS: &'static [FieldSpec] = &[
+        FieldSpec::child_of(
+            "certified-f64-evidence",
+            &SOURCED_CERTIFIED_F64_EVIDENCE_CHILD_V1,
+        ),
+        FieldSpec::child_of("producer-source", &SOURCED_CERTIFIED_F64_SOURCE_CHILD_V1),
+        FieldSpec::required("adjoint-source-present", WireType::Bool),
+        FieldSpec::ordered_children_of("adjoint-source", &SOURCED_CERTIFIED_F64_SOURCE_CHILD_V1),
+    ];
+}
+
+/// Low-level schema-shaped identity for one exact-source-bound certified child.
+///
+/// Only [`IdentifiedSourcedCertifiedF64EvidenceV1`] proves that retained exact
+/// source bytes passed both legacy-correlation crosswalks.
+pub type SourcedCertifiedF64EvidenceIdV1 = SemanticId<SourcedCertifiedF64EvidenceIdentitySchemaV1>;
+
+/// Low-level producer receipt for one sourced certified-f64 parent frame.
+pub type SourcedCertifiedF64EvidenceReceiptV1 = IdentityReceipt<SourcedCertifiedF64EvidenceIdV1>;
+
+/// A certified-f64 semantic child kept attached to exact producer and optional
+/// adjoint sources whose bytes reproduce its legacy correlation tokens.
+#[derive(Debug, Clone)]
+pub struct IdentifiedSourcedCertifiedF64EvidenceV1 {
+    certified_evidence: IdentifiedCertifiedF64EvidenceV1,
+    producer_source: CertifiedF64SourceV1,
+    adjoint_source: Option<CertifiedF64SourceV1>,
+    receipt: SourcedCertifiedF64EvidenceReceiptV1,
+}
+
+impl IdentifiedSourcedCertifiedF64EvidenceV1 {
+    /// Opaque certified semantic child committed by this parent.
+    #[must_use]
+    pub const fn certified_evidence(&self) -> &IdentifiedCertifiedF64EvidenceV1 {
+        &self.certified_evidence
+    }
+
+    /// Exact producer source attached by the successful legacy crosswalk.
+    #[must_use]
+    pub const fn producer_source(&self) -> &CertifiedF64SourceV1 {
+        &self.producer_source
+    }
+
+    /// Exact adjoint source attached when the certified child carries an
+    /// adjoint correlation.
+    #[must_use]
+    pub const fn adjoint_source(&self) -> Option<&CertifiedF64SourceV1> {
+        self.adjoint_source.as_ref()
+    }
+
+    /// Typed exact-source-bound parent identity.
+    #[must_use]
+    pub const fn id(&self) -> SourcedCertifiedF64EvidenceIdV1 {
+        self.receipt.id()
+    }
+
+    /// Complete unanchored parent receipt.
+    #[must_use]
+    pub const fn receipt(&self) -> SourcedCertifiedF64EvidenceReceiptV1 {
+        self.receipt
+    }
+
+    /// Fixed-size typed digest bytes.
+    #[must_use]
+    pub fn id_bytes(&self) -> [u8; 32] {
+        *self.id().as_bytes()
+    }
+
+    /// Identity state of a producer receipt. This is always unanchored.
+    #[must_use]
+    pub fn trust_state(&self) -> EvidenceIdentityTrustState {
+        self.receipt.audit_record().trust()
+    }
+
+    /// Surrender the parent attachment without discarding either exact source.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        IdentifiedCertifiedF64EvidenceV1,
+        CertifiedF64SourceV1,
+        Option<CertifiedF64SourceV1>,
+    ) {
+        (
+            self.certified_evidence,
+            self.producer_source,
+            self.adjoint_source,
+        )
     }
 }
 
@@ -1763,6 +1960,129 @@ impl From<ValidityDomainIdentityError> for CertifiedF64EvidenceIdentityError {
 }
 
 impl From<CanonicalError> for CertifiedF64EvidenceIdentityError {
+    fn from(error: CanonicalError) -> Self {
+        Self::Canonical(error)
+    }
+}
+
+/// Fail-closed refusal from exact certified-f64 source construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CertifiedF64SourceIdentityError {
+    /// Source domains are required identity-bearing interpretation metadata.
+    EmptySourceDomain,
+    /// Source schema version zero is reserved for invalid/absent metadata.
+    ZeroSourceSchemaVersion,
+    /// Canonical framing, resource admission, or cancellation refused.
+    Canonical(CanonicalError),
+}
+
+impl fmt::Display for CertifiedF64SourceIdentityError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptySourceDomain => {
+                write!(
+                    formatter,
+                    "certified-f64 source identity refused an empty domain"
+                )
+            }
+            Self::ZeroSourceSchemaVersion => write!(
+                formatter,
+                "certified-f64 source identity refused source schema version zero"
+            ),
+            Self::Canonical(error) => {
+                write!(formatter, "certified-f64 source identity refused: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CertifiedF64SourceIdentityError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Canonical(error) => Some(error),
+            Self::EmptySourceDomain | Self::ZeroSourceSchemaVersion => None,
+        }
+    }
+}
+
+impl From<CanonicalError> for CertifiedF64SourceIdentityError {
+    fn from(error: CanonicalError) -> Self {
+        Self::Canonical(error)
+    }
+}
+
+/// Fail-closed refusal from exact-source-bound certified-f64 construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourcedCertifiedF64EvidenceIdentityError {
+    /// The carried adjoint correlation and supplied exact adjoint source
+    /// disagree on presence.
+    AdjointSourcePresenceMismatch {
+        /// Whether the certified record carries a legacy adjoint correlation.
+        declared: bool,
+        /// Whether an exact adjoint source was supplied.
+        supplied: bool,
+    },
+    /// Exact supplied bytes do not reproduce one retained legacy correlation.
+    SourceCorrelationMismatch {
+        /// Stable source role: `producer` or `adjoint`.
+        source: &'static str,
+        /// Legacy FNV value retained by the certified record.
+        declared: u64,
+        /// Incrementally recomputed FNV value over exact source bytes.
+        computed: u64,
+    },
+    /// Cancellation was observed during one incremental legacy crosswalk.
+    SourceCrosswalkCancelled {
+        /// Stable source role: `producer` or `adjoint`.
+        source: &'static str,
+        /// Exact source bytes processed before cancellation observation.
+        processed_bytes: u64,
+    },
+    /// Parent framing, resource admission, or cancellation refused.
+    Canonical(CanonicalError),
+}
+
+impl fmt::Display for SourcedCertifiedF64EvidenceIdentityError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AdjointSourcePresenceMismatch { declared, supplied } => write!(
+                formatter,
+                "sourced certified-f64 identity refused adjoint shape: legacy correlation presence is {declared}, exact-source presence is {supplied}"
+            ),
+            Self::SourceCorrelationMismatch {
+                source,
+                declared,
+                computed,
+            } => write!(
+                formatter,
+                "sourced certified-f64 identity refused {source} crosswalk: legacy FNV 0x{declared:016x} does not match exact-byte FNV 0x{computed:016x}"
+            ),
+            Self::SourceCrosswalkCancelled {
+                source,
+                processed_bytes,
+            } => write!(
+                formatter,
+                "sourced certified-f64 identity cancelled during {source} crosswalk after {processed_bytes} source bytes"
+            ),
+            Self::Canonical(error) => {
+                write!(formatter, "sourced certified-f64 identity refused: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SourcedCertifiedF64EvidenceIdentityError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Canonical(error) => Some(error),
+            Self::AdjointSourcePresenceMismatch { .. }
+            | Self::SourceCorrelationMismatch { .. }
+            | Self::SourceCrosswalkCancelled { .. } => None,
+        }
+    }
+}
+
+impl From<CanonicalError> for SourcedCertifiedF64EvidenceIdentityError {
     fn from(error: CanonicalError) -> Self {
         Self::Canonical(error)
     }
@@ -3261,6 +3581,231 @@ where
     Ok(IdentifiedCertifiedF64EvidenceV1 {
         certified,
         validity_receipt,
+        receipt,
+    })
+}
+
+/// Identify one exact source artifact for a certified-f64 legacy crosswalk.
+///
+/// The helper consumes and retains the exact domain, nonzero source-schema
+/// version, and canonical bytes. Empty byte artifacts are valid and remain
+/// distinct from source absence at the parent layer. The receipt is
+/// content-bound but unanchored.
+///
+/// # Errors
+/// Refuses an empty domain, schema version zero, invalid limits, resource
+/// overflow, or cancellation. No partial source identity is published.
+pub fn identify_certified_f64_source_v1<C>(
+    domain: String,
+    schema_version: u32,
+    canonical_bytes: Vec<u8>,
+    limits: EvidenceIdentityLimits,
+    cancellation: C,
+) -> Result<CertifiedF64SourceV1, CertifiedF64SourceIdentityError>
+where
+    C: EvidenceIdentityCancellationProbe,
+{
+    if domain.is_empty() {
+        return Err(CertifiedF64SourceIdentityError::EmptySourceDomain);
+    }
+    if schema_version == 0 {
+        return Err(CertifiedF64SourceIdentityError::ZeroSourceSchemaVersion);
+    }
+    preflight_bounded_field_bytes_v1(
+        domain.len(),
+        limits,
+        MAX_CERTIFIED_F64_SOURCE_FIELD_BYTES_V1,
+    )?;
+    preflight_bounded_field_bytes_v1(
+        canonical_bytes.len(),
+        limits,
+        MAX_CERTIFIED_F64_SOURCE_FIELD_BYTES_V1,
+    )?;
+    let receipt = CanonicalEncoder::<CertifiedF64SourceIdV1, _>::new(limits, cancellation)?
+        .utf8(Field::new(0, "source-domain"), &domain)?
+        .u64(
+            Field::new(1, "source-schema-version"),
+            u64::from(schema_version),
+        )?
+        .bytes(Field::new(2, "canonical-source"), &canonical_bytes)?
+        .finish()?;
+    Ok(CertifiedF64SourceV1 {
+        domain,
+        schema_version,
+        canonical_bytes,
+        receipt,
+    })
+}
+
+const CERTIFIED_F64_LEGACY_FNV_OFFSET_BASIS_V1: u64 = 0xcbf2_9ce4_8422_2325;
+const CERTIFIED_F64_LEGACY_FNV_PRIME_V1: u64 = 0x0000_0100_0000_01b3;
+const _: () =
+    assert!(CERTIFIED_F64_LEGACY_FNV_OFFSET_BASIS_V1 == MODEL_CARD_LEGACY_FNV_OFFSET_BASIS_V1);
+const _: () = assert!(CERTIFIED_F64_LEGACY_FNV_PRIME_V1 == MODEL_CARD_LEGACY_FNV_PRIME_V1);
+
+fn sourced_certified_f64_legacy_provenance_v1<C>(
+    source: &'static str,
+    bytes: &[u8],
+    limits: EvidenceIdentityLimits,
+    cancellation: &mut C,
+) -> Result<ProvenanceHash, SourcedCertifiedF64EvidenceIdentityError>
+where
+    C: EvidenceIdentityCancellationProbe,
+{
+    if limits.cancellation_poll_bytes() == 0 {
+        return Err(
+            CanonicalError::InvalidLimits("cancellation_poll_bytes must be positive").into(),
+        );
+    }
+    let stride = usize::try_from(limits.cancellation_poll_bytes())
+        .map_err(|_| CanonicalError::LengthOverflow)?;
+    let mut processed_bytes = 0_u64;
+    let mut hash = CERTIFIED_F64_LEGACY_FNV_OFFSET_BASIS_V1;
+    if cancellation.is_cancelled() {
+        return Err(
+            SourcedCertifiedF64EvidenceIdentityError::SourceCrosswalkCancelled {
+                source,
+                processed_bytes,
+            },
+        );
+    }
+    for chunk in bytes.chunks(stride) {
+        if processed_bytes != 0 && cancellation.is_cancelled() {
+            return Err(
+                SourcedCertifiedF64EvidenceIdentityError::SourceCrosswalkCancelled {
+                    source,
+                    processed_bytes,
+                },
+            );
+        }
+        for byte in chunk {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(CERTIFIED_F64_LEGACY_FNV_PRIME_V1);
+        }
+        processed_bytes = processed_bytes
+            .checked_add(bounded_len(chunk.len())?)
+            .ok_or(CanonicalError::LengthOverflow)?;
+    }
+    if cancellation.is_cancelled() {
+        return Err(
+            SourcedCertifiedF64EvidenceIdentityError::SourceCrosswalkCancelled {
+                source,
+                processed_bytes,
+            },
+        );
+    }
+    Ok(ProvenanceHash(hash))
+}
+
+/// Attach exact producer and optional adjoint sources to one opaque certified
+/// scalar semantic identity.
+///
+/// Exact producer bytes must reproduce the certified record's legacy FNV-1a-64
+/// provenance. Exact adjoint-source presence must match `adjoint_ref`, and a
+/// present source must reproduce that correlation too. Both weak `u64` values
+/// are admission crosswalks only and never enter the strong parent frame. The
+/// source domain, source-schema version, and exact bytes remain identity-bearing
+/// through typed children and are retained for inspection and replay.
+///
+/// This v1 helper provides only a leaf-source binding. It cannot recover how a
+/// bare legacy `u64` was formed or distinguish an accidental/adversarial FNV
+/// collision from the intended source. Callers must not represent
+/// `ProvenanceHash::chain` lineage with this API; chained derivations need a
+/// future typed-lineage identity.
+///
+/// # Errors
+/// Refuses adjoint-source presence mismatch, either legacy-FNV correlation
+/// mismatch, invalid limits, resource overflow, or cancellation. No partial
+/// parent identity is published.
+pub fn identify_sourced_certified_f64_evidence_v1<C>(
+    certified_evidence: IdentifiedCertifiedF64EvidenceV1,
+    producer_source: CertifiedF64SourceV1,
+    adjoint_source: Option<CertifiedF64SourceV1>,
+    limits: EvidenceIdentityLimits,
+    mut cancellation: C,
+) -> Result<IdentifiedSourcedCertifiedF64EvidenceV1, SourcedCertifiedF64EvidenceIdentityError>
+where
+    C: EvidenceIdentityCancellationProbe,
+{
+    if limits.cancellation_poll_bytes() == 0 {
+        return Err(
+            CanonicalError::InvalidLimits("cancellation_poll_bytes must be positive").into(),
+        );
+    }
+    poll_identity_cancellation(&mut cancellation)?;
+
+    let (declared_producer, declared_adjoint) = {
+        let evidence = certified_evidence.certified().evidence();
+        (evidence.provenance, evidence.adjoint_ref)
+    };
+    if declared_adjoint.is_some() != adjoint_source.is_some() {
+        return Err(
+            SourcedCertifiedF64EvidenceIdentityError::AdjointSourcePresenceMismatch {
+                declared: declared_adjoint.is_some(),
+                supplied: adjoint_source.is_some(),
+            },
+        );
+    }
+
+    let computed_producer = sourced_certified_f64_legacy_provenance_v1(
+        "producer",
+        producer_source.canonical_bytes(),
+        limits,
+        &mut cancellation,
+    )?;
+    if computed_producer != declared_producer {
+        return Err(
+            SourcedCertifiedF64EvidenceIdentityError::SourceCorrelationMismatch {
+                source: "producer",
+                declared: declared_producer.0,
+                computed: computed_producer.0,
+            },
+        );
+    }
+
+    if let (Some(declared), Some(source)) = (declared_adjoint, adjoint_source.as_ref()) {
+        let computed = sourced_certified_f64_legacy_provenance_v1(
+            "adjoint",
+            source.canonical_bytes(),
+            limits,
+            &mut cancellation,
+        )?;
+        if computed != declared {
+            return Err(
+                SourcedCertifiedF64EvidenceIdentityError::SourceCorrelationMismatch {
+                    source: "adjoint",
+                    declared: declared.0,
+                    computed: computed.0,
+                },
+            );
+        }
+    }
+
+    let producer_source_id = producer_source.id();
+    let adjoint_source_id = adjoint_source.as_ref().map(CertifiedF64SourceV1::id);
+    let adjoint_source_count = u64::from(adjoint_source_id.is_some());
+    let receipt =
+        CanonicalEncoder::<SourcedCertifiedF64EvidenceIdV1, _>::new(limits, cancellation)?
+            .child(
+                Field::new(0, "certified-f64-evidence"),
+                certified_evidence.id(),
+            )?
+            .child(Field::new(1, "producer-source"), producer_source_id)?
+            .flag(
+                Field::new(2, "adjoint-source-present"),
+                adjoint_source_id.is_some(),
+            )?
+            .ordered_children(
+                Field::new(3, "adjoint-source"),
+                adjoint_source_count,
+                adjoint_source_id,
+            )?
+            .finish()?;
+
+    Ok(IdentifiedSourcedCertifiedF64EvidenceV1 {
+        certified_evidence,
+        producer_source,
+        adjoint_source,
         receipt,
     })
 }

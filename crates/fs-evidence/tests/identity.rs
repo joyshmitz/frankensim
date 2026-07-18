@@ -12,28 +12,32 @@ use fs_evidence::{
     Ambition, COLOR_ALGEBRA_VERSION, Certified, CertifiedF64DecisionAssessmentIdV1,
     CertifiedF64DecisionAssessmentIdentityError, CertifiedF64DecisionAssessmentReceiptV1,
     CertifiedF64EvidenceIdV1, CertifiedF64EvidenceIdentityError, CertifiedF64EvidenceReceiptV1,
-    Color, ColorEvidenceCompositionOpV1, ColorEvidenceIdentityError, ColorEvidenceNodeIdV1,
-    ColorEvidenceNodeIdentitySchemaV1, ColorEvidenceNodeKindV1, ColorEvidenceNodeV1,
-    ColorEvidenceOperationV1, ColorEvidenceParentSemanticsV1, ColorEvidenceSourceIdV1,
-    ColorEvidenceSourceV1, DECISION_ASSESSMENT_ALGORITHM_VERSION_V1, DecisionStatus,
-    DiscrepancyBand, DiscrepancyBandIdV1, DiscrepancyBandIdentityError, DiscrepancyBandReceiptV1,
-    EscalationAdvice, Evidence, FidelityPair, FidelityPairIdV1, FidelityPairIdentityError,
-    FidelityPairReceiptV1, IdentifiedCertifiedF64DecisionAssessmentV1,
+    CertifiedF64SourceIdV1, CertifiedF64SourceIdentityError, CertifiedF64SourceReceiptV1,
+    CertifiedF64SourceV1, Color, ColorEvidenceCompositionOpV1, ColorEvidenceIdentityError,
+    ColorEvidenceNodeIdV1, ColorEvidenceNodeIdentitySchemaV1, ColorEvidenceNodeKindV1,
+    ColorEvidenceNodeV1, ColorEvidenceOperationV1, ColorEvidenceParentSemanticsV1,
+    ColorEvidenceSourceIdV1, ColorEvidenceSourceV1, DECISION_ASSESSMENT_ALGORITHM_VERSION_V1,
+    DecisionStatus, DiscrepancyBand, DiscrepancyBandIdV1, DiscrepancyBandIdentityError,
+    DiscrepancyBandReceiptV1, EscalationAdvice, Evidence, FidelityPair, FidelityPairIdV1,
+    FidelityPairIdentityError, FidelityPairReceiptV1, IdentifiedCertifiedF64DecisionAssessmentV1,
     IdentifiedCertifiedF64EvidenceV1, IdentifiedModelBracketV1, IdentifiedModelCardV1,
-    IdentifiedModelEvidenceV1, IdentifiedValidityDomainV1, MAX_MODEL_BRACKET_MEMBERS_V1,
-    ModelBracket, ModelBracketIdV1, ModelBracketIdentityError, ModelBracketReceiptV1, ModelCard,
+    IdentifiedModelEvidenceV1, IdentifiedSourcedCertifiedF64EvidenceV1, IdentifiedValidityDomainV1,
+    MAX_CERTIFIED_F64_SOURCE_FIELD_BYTES_V1, MAX_MODEL_BRACKET_MEMBERS_V1, ModelBracket,
+    ModelBracketIdV1, ModelBracketIdentityError, ModelBracketReceiptV1, ModelCard,
     ModelCardCalibrationSourceIdV1, ModelCardCalibrationSourceReceiptV1, ModelCardIdV1,
     ModelCardIdentityError, ModelCardReceiptV1, ModelEvidence, ModelEvidenceIdV1,
     ModelEvidenceIdentityError, ModelEvidenceReceiptV1, NumericalCertificate,
     NumericalCertificateIdV1, NumericalCertificateIdentityError, NumericalCertificateReceiptV1,
-    NumericalKind, ProvenanceHash, SensitivitySummary, StatisticalCertificate,
-    StatisticalCertificateIdV1, StatisticalCertificateIdentityError,
+    NumericalKind, ProvenanceHash, SensitivitySummary, SourcedCertifiedF64EvidenceIdV1,
+    SourcedCertifiedF64EvidenceIdentityError, SourcedCertifiedF64EvidenceReceiptV1,
+    StatisticalCertificate, StatisticalCertificateIdV1, StatisticalCertificateIdentityError,
     StatisticalCertificateReceiptV1, UncertaintySource, ValidityDomain, ValidityDomainIdV1,
     ValidityDomainIdentityError, compose_color_evidence_nodes_v1,
     identify_certified_f64_decision_assessment_v1, identify_certified_f64_evidence_v1,
-    identify_color_evidence_source_node_v1, identify_color_evidence_source_v1,
-    identify_discrepancy_band_v1, identify_fidelity_pair_v1, identify_model_bracket_v1,
-    identify_model_card_v1, identify_model_evidence_v1, identify_numerical_certificate_v1,
+    identify_certified_f64_source_v1, identify_color_evidence_source_node_v1,
+    identify_color_evidence_source_v1, identify_discrepancy_band_v1, identify_fidelity_pair_v1,
+    identify_model_bracket_v1, identify_model_card_v1, identify_model_evidence_v1,
+    identify_numerical_certificate_v1, identify_sourced_certified_f64_evidence_v1,
     identify_statistical_certificate_v1, identify_validity_domain_v1,
 };
 
@@ -320,6 +324,84 @@ fn certified_fixture() -> Certified<f64> {
 fn identified_certified(certified: Certified<f64>) -> IdentifiedCertifiedF64EvidenceV1 {
     identify_certified_f64_evidence_v1(certified, LIMITS, || false)
         .expect("valid certified-f64 identity")
+}
+
+fn certified_source(
+    domain: &str,
+    schema_version: u32,
+    canonical_bytes: &[u8],
+) -> CertifiedF64SourceV1 {
+    identify_certified_f64_source_v1(
+        domain.to_string(),
+        schema_version,
+        canonical_bytes.to_vec(),
+        LIMITS,
+        || false,
+    )
+    .expect("valid certified-f64 exact source")
+}
+
+fn sourced_certified(
+    value: f64,
+    producer_bytes: &[u8],
+    adjoint_bytes: Option<&[u8]>,
+) -> IdentifiedSourcedCertifiedF64EvidenceV1 {
+    let mut evidence = Evidence::exact(value, ProvenanceHash::of_bytes(producer_bytes));
+    if let Some(bytes) = adjoint_bytes {
+        evidence = evidence.with_adjoint(ProvenanceHash::of_bytes(bytes));
+    }
+    let certified = evidence.certified().expect("valid exact evidence");
+    let child = identified_certified(certified);
+    let producer = certified_source("org.frankensim.tests.producer.v1", 1, producer_bytes);
+    let adjoint =
+        adjoint_bytes.map(|bytes| certified_source("org.frankensim.tests.adjoint.v1", 1, bytes));
+    identify_sourced_certified_f64_evidence_v1(child, producer, adjoint, LIMITS, || false)
+        .expect("matching exact sources")
+}
+
+fn manual_certified_f64_source_receipt(
+    source: &CertifiedF64SourceV1,
+) -> CertifiedF64SourceReceiptV1 {
+    CanonicalEncoder::<CertifiedF64SourceIdV1, _>::new(LIMITS, || false)
+        .expect("source schema")
+        .utf8(Field::new(0, "source-domain"), source.domain())
+        .expect("source domain")
+        .u64(
+            Field::new(1, "source-schema-version"),
+            u64::from(source.schema_version()),
+        )
+        .expect("source schema version")
+        .bytes(Field::new(2, "canonical-source"), source.canonical_bytes())
+        .expect("canonical source")
+        .finish()
+        .expect("manual source identity")
+}
+
+fn manual_sourced_certified_f64_receipt(
+    child: &IdentifiedCertifiedF64EvidenceV1,
+    producer: &CertifiedF64SourceV1,
+    adjoint: Option<&CertifiedF64SourceV1>,
+) -> SourcedCertifiedF64EvidenceReceiptV1 {
+    let adjoint_id = adjoint.map(CertifiedF64SourceV1::id);
+    CanonicalEncoder::<SourcedCertifiedF64EvidenceIdV1, _>::new(LIMITS, || false)
+        .expect("sourced parent schema")
+        .child(Field::new(0, "certified-f64-evidence"), child.id())
+        .expect("certified child")
+        .child(Field::new(1, "producer-source"), producer.id())
+        .expect("producer source")
+        .flag(
+            Field::new(2, "adjoint-source-present"),
+            adjoint_id.is_some(),
+        )
+        .expect("adjoint presence")
+        .ordered_children(
+            Field::new(3, "adjoint-source"),
+            u64::from(adjoint_id.is_some()),
+            adjoint_id,
+        )
+        .expect("optional adjoint source")
+        .finish()
+        .expect("manual sourced parent")
 }
 
 fn identified_decision_assessment(
@@ -3870,6 +3952,568 @@ fn certified_f64_identity_refuses_noncanonical_sets_resources_and_cancellation()
     assert!(matches!(
         late_cancelled,
         Err(CertifiedF64EvidenceIdentityError::Canonical(
+            CanonicalError::Cancelled { absorbed_bytes }
+        )) if absorbed_bytes > 0
+    ));
+}
+
+#[test]
+fn certified_f64_source_identity_binds_descriptor_bytes_and_retains_inputs() {
+    let source = certified_source("org.frankensim.tests.solver-output.v7", 7, b"payload\0v1");
+    let replay = certified_source("org.frankensim.tests.solver-output.v7", 7, b"payload\0v1");
+    let manual = manual_certified_f64_source_receipt(&source);
+
+    assert_eq!(source.id(), replay.id());
+    assert_eq!(source.id(), manual.id());
+    assert_eq!(
+        source.receipt().canonical_preimage(),
+        manual.canonical_preimage()
+    );
+    assert_ne!(
+        source.id(),
+        certified_source("org.frankensim.tests.solver-output.v8", 7, b"payload\0v1").id()
+    );
+    assert_ne!(
+        source.id(),
+        certified_source("org.frankensim.tests.solver-output.v7", 8, b"payload\0v1").id()
+    );
+    assert_ne!(
+        source.id(),
+        certified_source("org.frankensim.tests.solver-output.v7", 7, b"payload\0v2").id()
+    );
+    assert_eq!(source.trust_state(), TrustState::Unanchored);
+    assert_eq!(
+        source.receipt().audit_record().no_claim(),
+        NoClaimState::ExternalTrustRequired
+    );
+
+    let (domain, version, bytes) = source.into_parts();
+    assert_eq!(domain, "org.frankensim.tests.solver-output.v7");
+    assert_eq!(version, 7);
+    assert_eq!(bytes.as_slice(), b"payload\0v1");
+
+    let empty = certified_source("org.frankensim.tests.empty.v1", 1, b"");
+    assert!(empty.canonical_bytes().is_empty());
+    assert!(matches!(
+        identify_certified_f64_source_v1(String::new(), 1, Vec::new(), LIMITS, || false,),
+        Err(CertifiedF64SourceIdentityError::EmptySourceDomain)
+    ));
+    assert!(matches!(
+        identify_certified_f64_source_v1(
+            "org.frankensim.tests.source".to_string(),
+            0,
+            Vec::new(),
+            LIMITS,
+            || false,
+        ),
+        Err(CertifiedF64SourceIdentityError::ZeroSourceSchemaVersion)
+    ));
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one G0/G3 matrix keeps source crosswalk, collision, and mutation semantics together"
+)]
+fn sourced_certified_f64_identity_crosswalks_exact_sources_and_separates_fnv_collisions() {
+    let parent = sourced_certified(3.0, b"producer-v1", Some(b"adjoint-v1"));
+    let manual = manual_sourced_certified_f64_receipt(
+        parent.certified_evidence(),
+        parent.producer_source(),
+        parent.adjoint_source(),
+    );
+    assert_eq!(parent.id(), manual.id());
+    assert_eq!(
+        parent.receipt().canonical_preimage(),
+        manual.canonical_preimage()
+    );
+    assert_eq!(parent.producer_source().canonical_bytes(), b"producer-v1");
+    assert_eq!(
+        parent
+            .adjoint_source()
+            .expect("present adjoint source")
+            .canonical_bytes(),
+        b"adjoint-v1"
+    );
+    assert_eq!(parent.trust_state(), TrustState::Unanchored);
+    assert_eq!(
+        parent.receipt().audit_record().no_claim(),
+        NoClaimState::ExternalTrustRequired
+    );
+
+    let base_id = parent.id();
+    let producer_bytes = b"producer-v1";
+    let adjoint_bytes = b"adjoint-v1";
+    let make_child = |value| {
+        identified_certified(
+            Evidence::exact(value, ProvenanceHash::of_bytes(producer_bytes))
+                .with_adjoint(ProvenanceHash::of_bytes(adjoint_bytes))
+                .certified()
+                .expect("valid sourced fixture"),
+        )
+    };
+    let identify = |child: IdentifiedCertifiedF64EvidenceV1,
+                    producer: CertifiedF64SourceV1,
+                    adjoint: Option<CertifiedF64SourceV1>| {
+        identify_sourced_certified_f64_evidence_v1(child, producer, adjoint, LIMITS, || false)
+            .expect("matching source mutation")
+    };
+
+    let producer_domain_changed = identify(
+        make_child(3.0),
+        certified_source("org.frankensim.tests.producer-v2", 1, producer_bytes),
+        Some(certified_source(
+            "org.frankensim.tests.adjoint.v1",
+            1,
+            adjoint_bytes,
+        )),
+    );
+    let producer_version_changed = identify(
+        make_child(3.0),
+        certified_source("org.frankensim.tests.producer.v1", 2, producer_bytes),
+        Some(certified_source(
+            "org.frankensim.tests.adjoint.v1",
+            1,
+            adjoint_bytes,
+        )),
+    );
+    let adjoint_domain_changed = identify(
+        make_child(3.0),
+        certified_source("org.frankensim.tests.producer.v1", 1, producer_bytes),
+        Some(certified_source(
+            "org.frankensim.tests.adjoint-v2",
+            1,
+            adjoint_bytes,
+        )),
+    );
+    let child_changed = identify(
+        make_child(4.0),
+        certified_source("org.frankensim.tests.producer.v1", 1, producer_bytes),
+        Some(certified_source(
+            "org.frankensim.tests.adjoint.v1",
+            1,
+            adjoint_bytes,
+        )),
+    );
+    for (field, mutation) in [
+        ("producer-domain", producer_domain_changed.id()),
+        ("producer-schema-version", producer_version_changed.id()),
+        ("adjoint-domain", adjoint_domain_changed.id()),
+        ("certified-child", child_changed.id()),
+    ] {
+        assert_ne!(base_id, mutation, "{field} must move the parent root");
+    }
+
+    let collision_hash = ProvenanceHash::of_bytes(FNV1A64_ZERO_PREIMAGE);
+    assert_eq!(
+        collision_hash,
+        ProvenanceHash::of_bytes(FNV1A64_ZERO_EXTENSION_COLLISION),
+        "fixed fixture must remain a real legacy FNV-1a-64 collision"
+    );
+    let collision_child = || {
+        identified_certified(
+            Evidence::exact(9.0, collision_hash)
+                .certified()
+                .expect("collision fixture remains certifiable"),
+        )
+    };
+    let first_source = certified_source(
+        "org.frankensim.tests.collision.v1",
+        1,
+        FNV1A64_ZERO_PREIMAGE,
+    );
+    let second_source = certified_source(
+        "org.frankensim.tests.collision.v1",
+        1,
+        FNV1A64_ZERO_EXTENSION_COLLISION,
+    );
+    let first_source_id = first_source.id();
+    let second_source_id = second_source.id();
+    let first = identify(collision_child(), first_source, None);
+    let second = identify(collision_child(), second_source, None);
+    assert_ne!(first_source_id, second_source_id);
+    assert_ne!(first.id(), second.id());
+
+    let empty_adjoint = sourced_certified(1.0, b"same-producer", Some(b""));
+    let absent_adjoint = sourced_certified(1.0, b"same-producer", None);
+    let absent_manual = manual_sourced_certified_f64_receipt(
+        absent_adjoint.certified_evidence(),
+        absent_adjoint.producer_source(),
+        None,
+    );
+    let same_child_present_empty_manual = manual_sourced_certified_f64_receipt(
+        absent_adjoint.certified_evidence(),
+        absent_adjoint.producer_source(),
+        empty_adjoint.adjoint_source(),
+    );
+    assert_eq!(absent_adjoint.id(), absent_manual.id());
+    assert_ne!(absent_manual.id(), same_child_present_empty_manual.id());
+    assert_ne!(empty_adjoint.id(), absent_adjoint.id());
+    assert!(
+        empty_adjoint
+            .adjoint_source()
+            .expect("present empty artifact")
+            .canonical_bytes()
+            .is_empty()
+    );
+
+    let (child, producer, adjoint) = parent.into_parts();
+    assert_eq!(child.certified().value, 3.0);
+    assert_eq!(producer.canonical_bytes(), b"producer-v1");
+    assert_eq!(
+        adjoint.expect("recovered adjoint source").canonical_bytes(),
+        b"adjoint-v1"
+    );
+}
+
+#[test]
+fn sourced_certified_f64_identity_refuses_shape_and_correlation_mismatch() {
+    let producer_bytes = b"producer";
+    let adjoint_bytes = b"adjoint";
+    let child_with_adjoint = || {
+        identified_certified(
+            Evidence::exact(1.0, ProvenanceHash::of_bytes(producer_bytes))
+                .with_adjoint(ProvenanceHash::of_bytes(adjoint_bytes))
+                .certified()
+                .expect("valid mismatch fixture"),
+        )
+    };
+    let producer = || certified_source("org.frankensim.tests.producer.v1", 1, producer_bytes);
+    let adjoint = || certified_source("org.frankensim.tests.adjoint.v1", 1, adjoint_bytes);
+
+    assert!(matches!(
+        identify_sourced_certified_f64_evidence_v1(
+            child_with_adjoint(),
+            producer(),
+            None,
+            LIMITS,
+            || false,
+        ),
+        Err(
+            SourcedCertifiedF64EvidenceIdentityError::AdjointSourcePresenceMismatch {
+                declared: true,
+                supplied: false,
+            }
+        )
+    ));
+
+    let child_without_adjoint = identified_certified(
+        Evidence::exact(1.0, ProvenanceHash::of_bytes(producer_bytes))
+            .certified()
+            .expect("valid no-adjoint fixture"),
+    );
+    assert!(matches!(
+        identify_sourced_certified_f64_evidence_v1(
+            child_without_adjoint,
+            producer(),
+            Some(adjoint()),
+            LIMITS,
+            || false,
+        ),
+        Err(
+            SourcedCertifiedF64EvidenceIdentityError::AdjointSourcePresenceMismatch {
+                declared: false,
+                supplied: true,
+            }
+        )
+    ));
+
+    assert!(matches!(
+        identify_sourced_certified_f64_evidence_v1(
+            child_with_adjoint(),
+            certified_source("org.frankensim.tests.producer.v1", 1, b"wrong"),
+            Some(adjoint()),
+            LIMITS,
+            || false,
+        ),
+        Err(SourcedCertifiedF64EvidenceIdentityError::SourceCorrelationMismatch {
+            source: "producer",
+            declared,
+            computed,
+        }) if declared != computed
+    ));
+
+    assert!(matches!(
+        identify_sourced_certified_f64_evidence_v1(
+            child_with_adjoint(),
+            producer(),
+            Some(certified_source(
+                "org.frankensim.tests.adjoint.v1",
+                1,
+                b"wrong",
+            )),
+            LIMITS,
+            || false,
+        ),
+        Err(SourcedCertifiedF64EvidenceIdentityError::SourceCorrelationMismatch {
+            source: "adjoint",
+            declared,
+            computed,
+        }) if declared != computed
+    ));
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one G4 refusal matrix shares exact source and parent budgets"
+)]
+fn sourced_certified_f64_identity_enforces_resources_and_cancellation() {
+    let large_limits = CanonicalLimits::new(2 << 20, 2 << 20, 32, 64, 256);
+    let exact_hard_limit = vec![0x5a; MAX_CERTIFIED_F64_SOURCE_FIELD_BYTES_V1 as usize];
+    identify_certified_f64_source_v1(
+        "org.frankensim.tests.large.v1".to_string(),
+        1,
+        exact_hard_limit,
+        large_limits,
+        || false,
+    )
+    .expect("exact hard source-byte limit is admitted");
+    let over_hard_limit = vec![0x5a; MAX_CERTIFIED_F64_SOURCE_FIELD_BYTES_V1 as usize + 1];
+    assert!(matches!(
+        identify_certified_f64_source_v1(
+            "org.frankensim.tests.large.v1".to_string(),
+            1,
+            over_hard_limit,
+            large_limits,
+            || false,
+        ),
+        Err(CertifiedF64SourceIdentityError::Canonical(
+            CanonicalError::LimitExceeded {
+                kind: fs_blake3::identity::LimitKind::FieldBytes,
+                requested,
+                limit,
+            }
+        )) if requested == MAX_CERTIFIED_F64_SOURCE_FIELD_BYTES_V1 + 1
+            && limit == MAX_CERTIFIED_F64_SOURCE_FIELD_BYTES_V1
+    ));
+
+    let field_limits = CanonicalLimits::new(1_024, 64, 32, 64, 8);
+    identify_certified_f64_source_v1("d".to_string(), 1, vec![0x11; 64], field_limits, || false)
+        .expect("exact caller field limit is admitted");
+    assert!(matches!(
+        identify_certified_f64_source_v1("d".to_string(), 1, vec![0x11; 65], field_limits, || {
+            false
+        },),
+        Err(CertifiedF64SourceIdentityError::Canonical(
+            CanonicalError::LimitExceeded {
+                kind: fs_blake3::identity::LimitKind::FieldBytes,
+                requested: 65,
+                limit: 64,
+            }
+        ))
+    ));
+    assert!(matches!(
+        identify_certified_f64_source_v1(
+            "d".to_string(),
+            1,
+            vec![0x11; 8],
+            CanonicalLimits::new(1_024, 64, 32, 64, 0),
+            || false,
+        ),
+        Err(CertifiedF64SourceIdentityError::Canonical(
+            CanonicalError::InvalidLimits("cancellation_poll_bytes must be positive")
+        ))
+    ));
+    assert!(matches!(
+        identify_certified_f64_source_v1("d".to_string(), 1, vec![0x11; 8], field_limits, || true,),
+        Err(CertifiedF64SourceIdentityError::Canonical(
+            CanonicalError::Cancelled { .. }
+        ))
+    ));
+
+    let make_parent_inputs = |bytes: &[u8]| {
+        let child = identified_certified(
+            Evidence::exact(1.0, ProvenanceHash::of_bytes(bytes))
+                .certified()
+                .expect("valid resource fixture"),
+        );
+        let source = certified_source("org.frankensim.tests.producer.v1", 1, bytes);
+        (child, source)
+    };
+    let (child, source) = make_parent_inputs(b"frame");
+    let baseline =
+        identify_sourced_certified_f64_evidence_v1(child, source, None, LIMITS, || false)
+            .expect("baseline parent frame");
+    let frame_limit = baseline
+        .receipt()
+        .canonical_bytes()
+        .checked_sub(1)
+        .expect("non-empty parent frame");
+    let (child, source) = make_parent_inputs(b"frame");
+    assert!(matches!(
+        identify_sourced_certified_f64_evidence_v1(
+            child,
+            source,
+            None,
+            CanonicalLimits::new(frame_limit, 8_192, 32, 64, 256),
+            || false,
+        ),
+        Err(SourcedCertifiedF64EvidenceIdentityError::Canonical(
+            CanonicalError::LimitExceeded {
+                kind: fs_blake3::identity::LimitKind::CanonicalBytes,
+                requested,
+                limit,
+            }
+        )) if requested > limit && limit == frame_limit
+    ));
+
+    let (child, source) = make_parent_inputs(b"cancel-entry");
+    assert!(matches!(
+        identify_sourced_certified_f64_evidence_v1(child, source, None, LIMITS, || true,),
+        Err(SourcedCertifiedF64EvidenceIdentityError::Canonical(
+            CanonicalError::Cancelled { .. }
+        ))
+    ));
+    let (child, source) = make_parent_inputs(b"zero-stride");
+    assert!(matches!(
+        identify_sourced_certified_f64_evidence_v1(
+            child,
+            source,
+            None,
+            CanonicalLimits::new(16_384, 8_192, 32, 64, 0),
+            || false,
+        ),
+        Err(SourcedCertifiedF64EvidenceIdentityError::Canonical(
+            CanonicalError::InvalidLimits("cancellation_poll_bytes must be positive")
+        ))
+    ));
+
+    let (child, source) = make_parent_inputs(b"no-adjoint-collection");
+    identify_sourced_certified_f64_evidence_v1(
+        child,
+        source,
+        None,
+        CanonicalLimits::new(16_384, 8_192, 32, 0, 256),
+        || false,
+    )
+    .expect("zero ordered adjoint children fit a zero collection budget");
+    let producer_bytes = b"producer-collection";
+    let adjoint_bytes = b"adjoint-collection";
+    let make_adjoint_inputs = || {
+        let child = identified_certified(
+            Evidence::exact(1.0, ProvenanceHash::of_bytes(producer_bytes))
+                .with_adjoint(ProvenanceHash::of_bytes(adjoint_bytes))
+                .certified()
+                .expect("valid adjoint collection fixture"),
+        );
+        let producer = certified_source("org.frankensim.tests.producer.v1", 1, producer_bytes);
+        let adjoint = certified_source("org.frankensim.tests.adjoint.v1", 1, adjoint_bytes);
+        (child, producer, adjoint)
+    };
+    let (child, producer, adjoint) = make_adjoint_inputs();
+    identify_sourced_certified_f64_evidence_v1(
+        child,
+        producer,
+        Some(adjoint),
+        CanonicalLimits::new(16_384, 8_192, 32, 1, 256),
+        || false,
+    )
+    .expect("one ordered adjoint child fits an exact collection budget");
+    let (child, producer, adjoint) = make_adjoint_inputs();
+    assert!(matches!(
+        identify_sourced_certified_f64_evidence_v1(
+            child,
+            producer,
+            Some(adjoint),
+            CanonicalLimits::new(16_384, 8_192, 32, 0, 256),
+            || false,
+        ),
+        Err(SourcedCertifiedF64EvidenceIdentityError::Canonical(
+            CanonicalError::LimitExceeded {
+                kind: fs_blake3::identity::LimitKind::CollectionItems,
+                requested: 1,
+                limit: 0,
+            }
+        ))
+    ));
+
+    #[derive(Debug)]
+    struct CancelAfter {
+        successful_polls: usize,
+    }
+    impl CancellationProbe for CancelAfter {
+        fn is_cancelled(&mut self) -> bool {
+            if self.successful_polls == 0 {
+                true
+            } else {
+                self.successful_polls -= 1;
+                false
+            }
+        }
+    }
+
+    let crosswalk_bytes = vec![0x33; 600];
+    let (child, source) = make_parent_inputs(&crosswalk_bytes);
+    assert!(matches!(
+        identify_sourced_certified_f64_evidence_v1(
+            child,
+            source,
+            None,
+            LIMITS,
+            CancelAfter {
+                successful_polls: 2,
+            },
+        ),
+        Err(
+            SourcedCertifiedF64EvidenceIdentityError::SourceCrosswalkCancelled {
+                source: "producer",
+                processed_bytes: 256,
+            }
+        )
+    ));
+
+    let adjoint_crosswalk_bytes = vec![0x44; 600];
+    let producer_bytes = b"adjoint-cancel-producer";
+    let child = identified_certified(
+        Evidence::exact(1.0, ProvenanceHash::of_bytes(producer_bytes))
+            .with_adjoint(ProvenanceHash::of_bytes(&adjoint_crosswalk_bytes))
+            .certified()
+            .expect("valid adjoint cancellation fixture"),
+    );
+    let producer = certified_source("org.frankensim.tests.producer.v1", 1, producer_bytes);
+    let adjoint = certified_source(
+        "org.frankensim.tests.adjoint.v1",
+        1,
+        &adjoint_crosswalk_bytes,
+    );
+    assert!(matches!(
+        identify_sourced_certified_f64_evidence_v1(
+            child,
+            producer,
+            Some(adjoint),
+            LIMITS,
+            CancelAfter {
+                successful_polls: 4,
+            },
+        ),
+        Err(
+            SourcedCertifiedF64EvidenceIdentityError::SourceCrosswalkCancelled {
+                source: "adjoint",
+                processed_bytes: 256,
+            }
+        )
+    ));
+
+    let poll_count = std::cell::Cell::new(0_usize);
+    let (child, source) = make_parent_inputs(b"late-frame");
+    identify_sourced_certified_f64_evidence_v1(child, source, None, LIMITS, || {
+        poll_count.set(poll_count.get() + 1);
+        false
+    })
+    .expect("baseline sourced-parent poll count");
+    let (child, source) = make_parent_inputs(b"late-frame");
+    assert!(matches!(
+        identify_sourced_certified_f64_evidence_v1(
+            child,
+            source,
+            None,
+            LIMITS,
+            CancelAfter {
+                successful_polls: poll_count.get() - 1,
+            },
+        ),
+        Err(SourcedCertifiedF64EvidenceIdentityError::Canonical(
             CanonicalError::Cancelled { absorbed_bytes }
         )) if absorbed_bytes > 0
     ));

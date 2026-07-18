@@ -162,6 +162,25 @@ telemetry/legacy correlation.
   remains inspectable only through the attached certified record. Low-level
   identity/receipt aliases remain schema-shaped framing and do not prove the
   opaque helper relationship.
+- `identity` module (sj31i.52.2 sourced-certified tranche) —
+  `CertifiedF64SourceIdV1` is a dedicated `SourceId` over exact caller-owned
+  source-domain UTF-8, a nonzero source-schema version, and canonical source
+  bytes. `SourcedCertifiedF64EvidenceIdV1` is a separate strong parent over one
+  typed `CertifiedF64EvidenceIdV1` child, one required typed producer source,
+  exact adjoint-source presence, and zero or one typed adjoint source. The
+  opaque helpers consume and retain the certified child and both source
+  attachments. Before publishing the parent, they incrementally recompute the
+  pinned legacy FNV-1a-64 correlation over the producer bytes and, when
+  present, the adjoint bytes; both must match the weak tokens retained by the
+  certified record. The weak `u64` values never enter either strong source or
+  parent frame. Empty source bytes are valid, while absent adjoint source and
+  present empty adjoint source are structurally distinct. Source fields are
+  hard-capped at 1 MiB and caller frame/field/collection/cancellation limits
+  remain authoritative. Numeric FNV agreement cannot reveal whether a bare
+  token came from `of_bytes`, `chain`, or a collision; callers must not use this
+  leaf-source API for derived lineage, which requires a future typed-lineage
+  identity. Raw aliases prove schema-shaped framing only, not the retained
+  source or crosswalk correspondence.
 - `identity` module (sj31i.52.2 decision-assessment tranche) —
   `CertifiedF64DecisionAssessmentIdV1` is a strong `SemanticId` for the current
   local uncertainty assessment over one typed `CertifiedF64EvidenceIdV1`
@@ -437,6 +456,19 @@ telemetry/legacy correlation.
     refusal, exact field/count/chunk/frame overflow, zero cancellation stride,
     and entry, traversal, or late cancellation publish no opaque result. Raw
     aliases do not prove retained bracket correspondence.
+22. Opaque exact-source-bound certified-f64 identities (sj31i.52.2, G0/G3/G4)
+    retain one typed certified child, an exact producer source, and an optional
+    exact adjoint source while agreeing with independently framed source and
+    parent receipts. Domain, source-schema version, every exact byte, typed
+    child, and adjoint presence/child mutation moves the relevant root. Known
+    distinct byte strings that collide under legacy FNV remain distinct strong
+    sources and parents. Empty source artifacts remain valid and cannot alias
+    absent adjoint state. Empty domains, zero source versions, source/adjoint
+    presence mismatch, legacy-correlation mismatch, exact hard/caller
+    field/frame overflow, zero cancellation stride, and entry, mid-crosswalk,
+    or late framing cancellation publish no opaque result. Both source and
+    parent receipts remain explicitly unanchored; raw aliases prove neither
+    retained correspondence nor the crosswalk.
 
 ## Error model
 Structured teaching errors throughout: `CertifyError`, `RegistryError`,
@@ -444,8 +476,10 @@ Structured teaching errors throughout: `CertifyError`, `RegistryError`,
 `ModelEvidenceIdentityError`, `ModelCardIdentityError`,
 `NumericalCertificateIdentityError`, `StatisticalCertificateIdentityError`,
 `FidelityPairIdentityError`, `DiscrepancyBandIdentityError`,
-`ModelBracketIdentityError`, and `CertifiedF64DecisionAssessmentIdentityError` — all
-`core::error::Error` with actionable Display text. Constructors are total
+`ModelBracketIdentityError`, `CertifiedF64SourceIdentityError`,
+`SourcedCertifiedF64EvidenceIdentityError`, and
+`CertifiedF64DecisionAssessmentIdentityError` — all `core::error::Error` with
+actionable Display text. Constructors are total
 (enclosure bounds normalize by swapping); no panics cross the boundary.
 
 ## Determinism class
@@ -458,8 +492,9 @@ divergence.
 ## Cancellation behavior
 Core certificate/color algebra is bounded small synchronous work. Typed color,
 validity-domain, standalone-certificate, fidelity/discrepancy, model-bracket,
-model-evidence, certified-f64, decision-assessment, and model-card identity
-helpers accept an explicit cancellation probe. Standalone certificate,
+model-evidence, certified-f64, exact-source-bound certified-f64,
+decision-assessment, and model-card identity helpers accept an explicit
+cancellation probe. Standalone certificate,
 discrepancy-band, and decision-assessment helpers poll at entry before bounded
 recomputation and throughout fixed-size canonical framing. Fidelity-pair and
 model-bracket helpers additionally poll while preflighting and streaming exact
@@ -467,10 +502,10 @@ name/value rows.
 Color payload copies poll at the
 configured byte stride; validity and sensitivity rows poll at stream
 boundaries; set/row preflights poll while traversing caller data. Model-card
-calibration crosswalks recompute legacy FNV incrementally with entry, exact
-byte-stride, and final polls before a second bounded encoder pass binds the
-strong source child. Every refusal consumes any in-flight encoder and publishes
-no partial opaque result.
+calibration and sourced-certified producer/adjoint crosswalks recompute legacy
+FNV incrementally with entry, exact byte-stride, and final polls before a
+second bounded encoder pass binds strong typed source children. Every refusal
+consumes any in-flight encoder and publishes no partial opaque result.
 Falsifier allocation
 and history review iterate caller data without a `Cx`; allocation length and
 distinct history rows are defensively capped, but these diagnostic APIs are not
@@ -904,6 +939,20 @@ physical validation, process-standard conformance, or decision fitness.
   adjoint presence is bound. A raw
   `CertifiedF64EvidenceIdV1`/receipt is merely schema-shaped framing and can
   encode a frame that disagrees with any purported attached record.
+- `CertifiedF64SourceV1` proves exact local source framing only.
+  `IdentifiedSourcedCertifiedF64EvidenceV1` additionally proves attachment to
+  the retained typed certified child and numeric consistency with its legacy
+  FNV correlations. Self-declared source domains and versions do not prove the
+  truth of a format claim. Exact bytes and matching weak tokens prove no
+  origin, custody, freshness, completeness, signature,
+  ledger admission, actual execution or derivation, solver/run identity,
+  replayability, units or QoI meaning, seeds, budgets, capabilities, hardware,
+  model-card contents, scientific correctness, differentiability, adjoint or
+  gradient validity, authorization, or external trust. Numeric agreement does
+  not prove that a chained legacy token is a leaf-source correlation or that a
+  colliding source is the intended source. Raw source/parent ID or receipt
+  aliases do not prove helper admission, retained-input correspondence, or
+  either crosswalk.
 - `IdentifiedCertifiedF64DecisionAssessmentV1` proves only exact replay of the
   current local first-order breakdown, declaration-order dominance rule,
   threshold comparison, status, and advice over its retained typed child. It
