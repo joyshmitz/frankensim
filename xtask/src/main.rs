@@ -2314,6 +2314,8 @@ fn workspace_rust_sources(root: &Path) -> Result<BTreeMap<String, String>, Strin
     let roots = ["crates", "tools", "xtask"].map(|directory| root.join(directory));
     let mut stack = Vec::from(roots);
     let mut paths = Vec::new();
+    let mut directory_count = stack.len();
+    let mut entry_count = 0usize;
     while let Some(directory) = stack.pop() {
         let metadata = std::fs::symlink_metadata(&directory)
             .map_err(|error| format!("cannot inspect {}: {error}", directory.display()))?;
@@ -2326,6 +2328,11 @@ fn workspace_rust_sources(root: &Path) -> Result<BTreeMap<String, String>, Strin
         let entries = std::fs::read_dir(&directory)
             .map_err(|error| format!("cannot read {}: {error}", directory.display()))?;
         for entry in entries {
+            casual_increment_bounded_count(
+                &mut entry_count,
+                CASUAL_MAX_INVENTORY_ENTRIES,
+                "Rust-source inventory entry",
+            )?;
             let entry = entry
                 .map_err(|error| format!("cannot enumerate {}: {error}", directory.display()))?;
             let path = entry.path();
@@ -2343,14 +2350,19 @@ fn workspace_rust_sources(root: &Path) -> Result<BTreeMap<String, String>, Strin
                 // `target/`, which is outside these three explicitly-owned
                 // source roots. A directory merely named `target` below a
                 // source root is ordinary source and must be inventoried.
+                casual_increment_bounded_count(
+                    &mut directory_count,
+                    CASUAL_MAX_INVENTORY_DIRECTORIES,
+                    "Rust-source inventory directory",
+                )?;
                 stack.push(path);
             } else if file_type.is_file() && path.extension().is_some_and(|ext| ext == "rs") {
-                paths.push(path);
-                if paths.len() > CASUAL_MAX_SOURCE_FILES {
+                if paths.len() == CASUAL_MAX_SOURCE_FILES {
                     return Err(format!(
                         "Rust-source inventory exceeds the {CASUAL_MAX_SOURCE_FILES}-file audit cap"
                     ));
                 }
+                paths.push(path);
             }
         }
     }
@@ -2482,6 +2494,9 @@ const CASUAL_PRINT_CHECK: &str = "casual-print";
 const CASUAL_MAX_SOURCE_FILES: usize = 8_192;
 const CASUAL_MAX_SOURCE_BYTES: usize = 256 * 1024 * 1024;
 const CASUAL_MAX_MANIFEST_BYTES: usize = 1024 * 1024;
+const CASUAL_MAX_INVENTORY_DIRECTORIES: usize = 32_768;
+const CASUAL_MAX_INVENTORY_ENTRIES: usize = 131_072;
+const CASUAL_MAX_PACKAGE_ENTRIES: usize = 16_384;
 const CASUAL_MAX_TOKENS_PER_SOURCE: usize = 2_000_000;
 const CASUAL_MAX_TOTAL_TOKENS: usize = 32_000_000;
 const CASUAL_MAX_REACHABLE_SOURCES: usize = 16_384;
@@ -2489,6 +2504,20 @@ const CASUAL_MAX_MODULE_EDGES: usize = 65_536;
 const CASUAL_MAX_MODULE_DEPTH: usize = 1_024;
 const CASUAL_MAX_PORTABLE_PATH_BYTES: usize = 16 * 1_024;
 const CASUAL_MAX_DIAGNOSTICS: usize = 256;
+
+fn casual_increment_bounded_count(
+    count: &mut usize,
+    limit: usize,
+    kind: &str,
+) -> Result<(), String> {
+    if *count >= limit {
+        return Err(format!("{kind} count exceeds the {limit}-entry audit cap"));
+    }
+    *count = count
+        .checked_add(1)
+        .ok_or_else(|| format!("{kind} count overflowed"))?;
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy)]
 struct CasualPrintAllowance {
@@ -3081,6 +3110,63 @@ fn casual_cfg_test_attribute(
         .then_some((close, inner))
 }
 
+fn casual_following_item_start(
+    tokens: &[CasualRustToken<'_>],
+    pairs: &[Option<usize>],
+    mut cursor: usize,
+) -> Result<usize, String> {
+    while tokens.get(cursor).is_some_and(|token| token.text == "#") {
+        if tokens
+            .get(cursor + 1)
+            .is_some_and(|token| token.text == "!")
+        {
+            return Err(format!(
+                "inner attribute at byte {} cannot be an outer item attribute",
+                tokens[cursor].start
+            ));
+        }
+        let bracket = cursor + 1;
+        if tokens.get(bracket).is_none_or(|token| token.text != "[") {
+            break;
+        }
+        cursor = pairs[bracket].ok_or_else(|| "unpaired following item attribute".to_string())? + 1;
+    }
+    Ok(cursor)
+}
+
+fn casual_braced_macro_item_end(
+    tokens: &[CasualRustToken<'_>],
+    pairs: &[Option<usize>],
+    start: usize,
+) -> Option<usize> {
+    let open = if tokens.get(start)?.text == "macro_rules" {
+        if tokens.get(start + 1)?.text != "!" {
+            return None;
+        }
+        let (_, cursor) = casual_identifier_at(tokens, start + 2)?;
+        cursor
+    } else {
+        let mut cursor = start;
+        if tokens.get(cursor)?.text == ":" && tokens.get(cursor + 1)?.text == ":" {
+            cursor += 2;
+        }
+        loop {
+            let (_, after_identifier) = casual_identifier_at(tokens, cursor)?;
+            cursor = after_identifier;
+            if tokens.get(cursor)?.text == "!" {
+                break cursor + 1;
+            }
+            if tokens.get(cursor)?.text != ":" || tokens.get(cursor + 1)?.text != ":" {
+                return None;
+            }
+            cursor += 2;
+        }
+    };
+    (tokens.get(open)?.text == "{")
+        .then(|| pairs[open])
+        .flatten()
+}
+
 fn casual_cfg_test_spans(
     tokens: &[CasualRustToken<'_>],
     pairs: &[Option<usize>],
@@ -3126,36 +3212,46 @@ fn casual_cfg_test_spans(
             continue;
         }
 
-        let mut cursor = attribute_close + 1;
-        let span_end = loop {
-            let Some(token) = tokens.get(cursor) else {
-                return Err(format!(
-                    "#[cfg(test)] at byte {} has no following item",
-                    tokens[index].start
-                ));
-            };
-            if let Some(close) = macro_span_ends[cursor] {
-                cursor = close + 1;
-                continue;
-            }
-            match token.text {
-                "(" | "[" => {
-                    cursor = pairs[cursor]
-                        .ok_or_else(|| "unpaired item-header delimiter".to_string())?
-                        + 1;
-                }
-                "{" => {
-                    break pairs[cursor]
-                        .ok_or_else(|| "unpaired cfg(test) item body".to_string())?;
-                }
-                ";" => break cursor,
-                "}" => {
+        let item_start = casual_following_item_start(tokens, pairs, attribute_close + 1)?;
+        let span_end = if let Some(close) = casual_braced_macro_item_end(tokens, pairs, item_start)
+        {
+            // A braced item macro or macro_rules definition is complete at its
+            // closing brace; Rust does not require a semicolon. Continuing to
+            // the next brace would incorrectly confer cfg(test) authority on
+            // the following production item.
+            close
+        } else {
+            let mut cursor = item_start;
+            loop {
+                let Some(token) = tokens.get(cursor) else {
                     return Err(format!(
-                        "#[cfg(test)] at byte {} is not attached to a complete item",
+                        "#[cfg(test)] at byte {} has no following item",
                         tokens[index].start
                     ));
+                };
+                if let Some(close) = macro_span_ends[cursor] {
+                    cursor = close + 1;
+                    continue;
                 }
-                _ => cursor += 1,
+                match token.text {
+                    "(" | "[" => {
+                        cursor = pairs[cursor]
+                            .ok_or_else(|| "unpaired item-header delimiter".to_string())?
+                            + 1;
+                    }
+                    "{" => {
+                        break pairs[cursor]
+                            .ok_or_else(|| "unpaired cfg(test) item body".to_string())?;
+                    }
+                    ";" => break cursor,
+                    "}" => {
+                        return Err(format!(
+                            "#[cfg(test)] at byte {} is not attached to a complete item",
+                            tokens[index].start
+                        ));
+                    }
+                    _ => cursor += 1,
+                }
             }
         };
         // `cfg(test)` applies to the item, not merely to attributes which
@@ -3468,7 +3564,61 @@ fn casual_module_edges(
         {
             inline_modules.pop();
         }
-        if structural_mask[index] || test_mask[index] || tokens[index].text != "mod" {
+        if structural_mask[index] || test_mask[index] {
+            continue;
+        }
+        let current_dir = inline_modules
+            .last()
+            .map_or(module_dir, |(_, directory)| directory.as_str());
+
+        if tokens[index].text == "include"
+            && tokens.get(index + 1).is_some_and(|token| token.text == "!")
+        {
+            let open = index + 2;
+            if tokens
+                .get(open)
+                .is_none_or(|token| !matches!(token.text, "(" | "[" | "{"))
+            {
+                return Err(format!(
+                    "production include! in {path} lacks a balanced token tree"
+                ));
+            }
+            let close =
+                pairs[open].ok_or_else(|| format!("production include! in {path} is unpaired"))?;
+            if close != open + 2 {
+                return Err(format!(
+                    "production include! in {path} is not one bounded literal; generated or compound include paths are unsupported and refused"
+                ));
+            }
+            let literal = casual_path_literal(tokens[open + 1].text)
+                .map_err(|error| format!("cannot decode production include! in {path}: {error}"))?;
+            let target = casual_normalized_inclusion(path, &literal).map_err(|error| {
+                format!("cannot resolve production include! in {path}: {error}")
+            })?;
+            if !target.ends_with(".rs") || !casual_path_is_inside(&target, package_root) {
+                return Err(format!(
+                    "production include! in {path} resolves outside package root {package_root} or to unsupported non-.rs input: {target}"
+                ));
+            }
+            if !sources.contains_key(&target) {
+                return Err(format!(
+                    "production include! in {path} resolves to absent Rust source {target}"
+                ));
+            }
+            edges.push(CasualModuleEdge {
+                target,
+                module_dir: current_dir.to_string(),
+                declaration: format!("{path}:include! at byte {}", tokens[index].start),
+            });
+            if edges.len() > CASUAL_MAX_MODULE_EDGES {
+                return Err(format!(
+                    "{path} exceeds the {CASUAL_MAX_MODULE_EDGES}-edge module/include audit cap"
+                ));
+            }
+            continue;
+        }
+
+        if tokens[index].text != "mod" {
             continue;
         }
         let Some((name, cursor)) = casual_module_name(&tokens, index + 1) else {
@@ -3492,9 +3642,6 @@ fn casual_module_edges(
                 }
             }
         }
-        let current_dir = inline_modules
-            .last()
-            .map_or(module_dir, |(_, directory)| directory.as_str());
         let child_identity_bytes = current_dir
             .len()
             .checked_add(if current_dir.is_empty() { 0 } else { 1 })
@@ -3737,6 +3884,65 @@ fn casual_module_frame(
     Ok(CasualModuleFrame { context, edges })
 }
 
+fn casual_toml_basic_string(token: &str) -> Result<String, String> {
+    if !token.starts_with('"') || !token.ends_with('"') || token.len() < 2 {
+        return Err("expected a single-line TOML basic string".to_string());
+    }
+    let mut characters = token[1..token.len() - 1].chars();
+    let mut output = String::new();
+    while let Some(character) = characters.next() {
+        let decoded = if character != '\\' {
+            if (character <= '\u{001f}' && character != '\t') || character == '\u{007f}' {
+                return Err("unescaped control character in TOML basic string".to_string());
+            }
+            character
+        } else {
+            let escaped = characters
+                .next()
+                .ok_or_else(|| "truncated TOML basic-string escape".to_string())?;
+            match escaped {
+                'b' => '\u{0008}',
+                't' => '\t',
+                'n' => '\n',
+                'f' => '\u{000c}',
+                'r' => '\r',
+                '"' => '"',
+                '\\' => '\\',
+                'u' | 'U' => {
+                    let digits = if escaped == 'u' { 4 } else { 8 };
+                    let mut scalar = 0u32;
+                    for _ in 0..digits {
+                        let digit = characters
+                            .next()
+                            .and_then(|digit| digit.to_digit(16))
+                            .ok_or_else(|| {
+                                format!("invalid \\{escaped} escape in TOML basic string")
+                            })?;
+                        scalar = scalar
+                            .checked_mul(16)
+                            .and_then(|value| value.checked_add(digit))
+                            .ok_or_else(|| "overflowing TOML Unicode escape".to_string())?;
+                    }
+                    char::from_u32(scalar)
+                        .ok_or_else(|| "non-scalar TOML Unicode escape".to_string())?
+                }
+                _ => {
+                    return Err(format!(
+                        "unsupported \\{escaped} escape in TOML basic string"
+                    ));
+                }
+            }
+        };
+        output.push(decoded);
+        if output.len() > CASUAL_MAX_PORTABLE_PATH_BYTES {
+            return Err(format!(
+                "TOML string exceeds the {CASUAL_MAX_PORTABLE_PATH_BYTES}-byte portable-path cap"
+            ));
+        }
+    }
+    Ok(output)
+}
+
 fn casual_manifest_string(value: &str) -> Result<String, String> {
     let value = value.trim();
     let Some(delimiter) = value.as_bytes().first().copied() else {
@@ -3751,7 +3957,13 @@ fn casual_manifest_string(value: &str) -> Result<String, String> {
         if !tail.is_empty() && !tail.starts_with('#') {
             return Err("unexpected tokens after TOML string".to_string());
         }
-        return Ok(value[1..close].to_string());
+        let literal = &value[1..close];
+        if literal.len() > CASUAL_MAX_PORTABLE_PATH_BYTES {
+            return Err(format!(
+                "TOML string exceeds the {CASUAL_MAX_PORTABLE_PATH_BYTES}-byte portable-path cap"
+            ));
+        }
+        return Ok(literal.to_string());
     }
     if delimiter != b'"' {
         return Err("expected a quoted TOML string".to_string());
@@ -3773,13 +3985,14 @@ fn casual_manifest_string(value: &str) -> Result<String, String> {
     if !tail.is_empty() && !tail.starts_with('#') {
         return Err("unexpected tokens after TOML string".to_string());
     }
-    casual_path_literal(&value[..=close])
+    casual_toml_basic_string(&value[..=close])
 }
 
 fn casual_manifest_key_path(input: &str) -> Result<Vec<String>, String> {
     let mut cursor = 0usize;
     let bytes = input.as_bytes();
     let mut keys = Vec::new();
+    let mut key_path_bytes = 0usize;
     loop {
         while bytes
             .get(cursor)
@@ -3812,7 +4025,7 @@ fn casual_manifest_key_path(input: &str) -> Result<Vec<String>, String> {
             if delimiter == b'\'' {
                 input[start + 1..close].to_string()
             } else {
-                casual_path_literal(&input[start..cursor])
+                casual_toml_basic_string(&input[start..cursor])
                     .map_err(|error| format!("invalid quoted TOML key: {error}"))?
             }
         } else {
@@ -3831,6 +4044,20 @@ fn casual_manifest_key_path(input: &str) -> Result<Vec<String>, String> {
             }
             input[start..cursor].to_string()
         };
+        if key.len() > CASUAL_MAX_PORTABLE_PATH_BYTES {
+            return Err(format!(
+                "TOML key exceeds the {CASUAL_MAX_PORTABLE_PATH_BYTES}-byte portable-path cap"
+            ));
+        }
+        key_path_bytes = key_path_bytes
+            .checked_add(if keys.is_empty() { 0 } else { 1 })
+            .and_then(|bytes| bytes.checked_add(key.len()))
+            .ok_or_else(|| "TOML key-path byte count overflowed".to_string())?;
+        if key_path_bytes > CASUAL_MAX_PORTABLE_PATH_BYTES {
+            return Err(format!(
+                "TOML key path exceeds the {CASUAL_MAX_PORTABLE_PATH_BYTES}-byte portable-path cap"
+            ));
+        }
         keys.push(key);
 
         while bytes
@@ -4055,14 +4282,22 @@ fn casual_workspace_library_roots(
     sources: &BTreeMap<String, String>,
 ) -> Result<Vec<(String, String)>, String> {
     let crates = root.join("crates");
-    let mut packages = std::fs::read_dir(&crates)
-        .map_err(|error| format!("cannot read {}: {error}", crates.display()))?
-        .map(|entry| {
+    let entries = std::fs::read_dir(&crates)
+        .map_err(|error| format!("cannot read {}: {error}", crates.display()))?;
+    let mut packages = Vec::new();
+    let mut package_count = 0usize;
+    for entry in entries {
+        casual_increment_bounded_count(
+            &mut package_count,
+            CASUAL_MAX_PACKAGE_ENTRIES,
+            "Cargo package candidate",
+        )?;
+        packages.push(
             entry
-                .map(|entry| entry.path())
-                .map_err(|error| format!("cannot enumerate {}: {error}", crates.display()))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+                .map_err(|error| format!("cannot enumerate {}: {error}", crates.display()))?
+                .path(),
+        );
+    }
     packages.sort();
     let mut roots = Vec::new();
     for package in packages {
@@ -4102,6 +4337,11 @@ fn casual_raw_identifier_start(tokens: &[CasualRustToken<'_>], identifier: usize
     } else {
         identifier
     }
+}
+
+fn casual_unraw_keyword_at(tokens: &[CasualRustToken<'_>], index: usize, keyword: &str) -> bool {
+    tokens.get(index).is_some_and(|token| token.text == keyword)
+        && !(index >= 2 && tokens[index - 2].text == "r" && tokens[index - 1].text == "#")
 }
 
 fn casual_macro_path_start(tokens: &[CasualRustToken<'_>], identifier: usize) -> usize {
@@ -4169,7 +4409,7 @@ fn casual_use_statement_mask(
     let mut mask = vec![false; tokens.len()];
     let mut in_use = false;
     for index in 0..tokens.len() {
-        if !structural_mask[index] && tokens[index].text == "use" {
+        if !structural_mask[index] && casual_unraw_keyword_at(tokens, index, "use") {
             in_use = true;
         }
         mask[index] = in_use;
@@ -4178,6 +4418,95 @@ fn casual_use_statement_mask(
         }
     }
     mask
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CasualUseGroupAuthority {
+    inherited_local: bool,
+    branch_local: bool,
+    at_branch_start: bool,
+}
+
+fn casual_use_glob_authority(
+    tokens: &[CasualRustToken<'_>],
+    start: usize,
+    end: usize,
+) -> (bool, bool) {
+    let mut groups = vec![CasualUseGroupAuthority {
+        inherited_local: false,
+        branch_local: false,
+        at_branch_start: true,
+    }];
+    let mut has_glob = false;
+    let mut every_glob_local = true;
+    for index in start..end {
+        let text = tokens[index].text;
+        match text {
+            "{" => {
+                let inherited_local = groups
+                    .last()
+                    .expect("the synthetic root use group remains present")
+                    .branch_local;
+                groups
+                    .last_mut()
+                    .expect("the synthetic root use group remains present")
+                    .at_branch_start = false;
+                groups.push(CasualUseGroupAuthority {
+                    inherited_local,
+                    branch_local: inherited_local,
+                    at_branch_start: true,
+                });
+            }
+            "}" => {
+                if groups.len() > 1 {
+                    groups.pop();
+                }
+            }
+            "," => {
+                let current = groups
+                    .last_mut()
+                    .expect("the synthetic root use group remains present");
+                current.branch_local = current.inherited_local;
+                current.at_branch_start = true;
+            }
+            "*" => {
+                let current = groups
+                    .last_mut()
+                    .expect("the synthetic root use group remains present");
+                has_glob = true;
+                every_glob_local &= current.branch_local;
+                current.at_branch_start = false;
+            }
+            ":" if groups
+                .last()
+                .expect("the synthetic root use group remains present")
+                .at_branch_start =>
+            {
+                // A leading `::` explicitly selects the extern prelude and
+                // overrides any inherited local prefix conservatively.
+                let current = groups
+                    .last_mut()
+                    .expect("the synthetic root use group remains present");
+                current.branch_local = false;
+                current.at_branch_start = false;
+            }
+            _ if groups
+                .last()
+                .expect("the synthetic root use group remains present")
+                .at_branch_start
+                && casual_token_is_identifier(text) =>
+            {
+                let current = groups
+                    .last_mut()
+                    .expect("the synthetic root use group remains present");
+                current.branch_local =
+                    current.inherited_local || matches!(text, "crate" | "self" | "super");
+                current.at_branch_start = false;
+            }
+            _ => {}
+        }
+    }
+    (has_glob, every_glob_local)
 }
 
 fn casual_macro_authority_hazards(
@@ -4194,20 +4523,20 @@ fn casual_macro_authority_hazards(
         }
         let interior = &tokens[attribute.bracket + 1..attribute.close];
         let attribute_name = casual_identifier_at(interior, 0).map(|(name, _)| name);
+        let can_remove_std = attribute_name
+            .is_some_and(|name| matches!(name, "no_std" | "no_core" | "no_implicit_prelude"))
+            || (attribute_name == Some("cfg_attr")
+                && interior.iter().any(|token| {
+                    matches!(token.text, "no_std" | "no_core" | "no_implicit_prelude")
+                }));
+        if can_remove_std {
+            casual_push_authority_hazard(
+                &mut hazards,
+                casual_line_for_byte(line_starts, tokens[attribute.hash].start),
+                "an allowlisted absolute ::std macro requires the compiler-provided std extern-prelude binding; no_std/no_core/no_implicit_prelude can remove or rebind that authority".to_string(),
+            )?;
+        }
         if attribute.inner {
-            let can_remove_std = attribute_name
-                .is_some_and(|name| matches!(name, "no_std" | "no_core"))
-                || (attribute_name == Some("cfg_attr")
-                    && interior
-                        .iter()
-                        .any(|token| matches!(token.text, "no_std" | "no_core")));
-            if can_remove_std {
-                casual_push_authority_hazard(
-                    &mut hazards,
-                    casual_line_for_byte(line_starts, tokens[attribute.hash].start),
-                    "an allowlisted absolute ::std macro requires the compiler-provided std extern-prelude binding; no_std/no_core can rebind that authority".to_string(),
-                )?;
-            }
             continue;
         }
         let imports_macros = attribute_name == Some("macro_use")
@@ -4222,19 +4551,51 @@ fn casual_macro_authority_hazards(
         }
     }
 
+    for index in 0..tokens.len() {
+        if structural_mask[index]
+            || test_mask[index]
+            || !casual_unraw_keyword_at(tokens, index, "extern")
+            || !casual_unraw_keyword_at(tokens, index + 1, "crate")
+        {
+            continue;
+        }
+        let Some((source_name, after_source)) = casual_identifier_at(tokens, index + 2) else {
+            continue;
+        };
+        if tokens
+            .get(after_source)
+            .is_none_or(|token| token.text != "as")
+        {
+            continue;
+        }
+        let Some((alias, _)) = casual_identifier_at(tokens, after_source + 1) else {
+            continue;
+        };
+        if alias == "std" && source_name != "std" {
+            casual_push_authority_hazard(
+                &mut hazards,
+                casual_line_for_byte(line_starts, tokens[index].start),
+                format!(
+                    "explicit extern crate {source_name} as std rebinds the absolute ::std authority"
+                ),
+            )?;
+        }
+    }
+
     let mut index = 0usize;
     while index < tokens.len() {
-        if structural_mask[index] || test_mask[index] || tokens[index].text != "use" {
+        if structural_mask[index]
+            || test_mask[index]
+            || !casual_unraw_keyword_at(tokens, index, "use")
+        {
             index += 1;
             continue;
         }
         let mut cursor = index + 1;
-        let mut has_glob = false;
         while let Some(token) = tokens.get(cursor) {
             if token.text == ";" {
                 break;
             }
-            has_glob |= token.text == "*";
             cursor += 1;
         }
         if tokens.get(cursor).is_none_or(|token| token.text != ";") {
@@ -4243,14 +4604,12 @@ fn casual_macro_authority_hazards(
                 tokens[index].start
             ));
         }
+        let (has_glob, every_glob_local) = casual_use_glob_authority(tokens, index + 1, cursor);
         if !has_glob {
             index = cursor + 1;
             continue;
         }
-        let local_root = tokens
-            .get(index + 1)
-            .is_some_and(|token| matches!(token.text, "crate" | "self" | "super"));
-        if !local_root {
+        if !every_glob_local {
             casual_push_authority_hazard(
                 &mut hazards,
                 casual_line_for_byte(line_starts, tokens[index].start),
@@ -6364,17 +6723,18 @@ mod tests {
                 || violation.detail.contains("macro-authority hazard")
         }));
 
-        let external_glob = [(
+        let mixed_external_glob = [(
             "crates/fs-propcheck/src/lib.rs".to_string(),
             concat!(
-                "use evil::*;\n",
+                "mod local {}\n",
+                "use {crate::local::*, evil::*};\n",
                 "fn check_structured() { ::std::println!(\"{failure_row}\"); }\n",
             )
             .to_string(),
         )]
         .into_iter()
         .collect();
-        let glob_violations = audit_casual_print_sources(&external_glob);
+        let glob_violations = audit_casual_print_sources(&mixed_external_glob);
         assert!(
             glob_violations
                 .iter()
@@ -6384,9 +6744,9 @@ mod tests {
         let exhaustively_local_glob = [(
             "crates/fs-propcheck/src/lib.rs".to_string(),
             concat!(
-                "mod local {}\n",
-                "use crate::local::*;\n",
-                "fn check_structured() { ::std::println!(\"{failure_row}\"); }\n",
+                "mod local { pub mod nested {} }\n",
+                "use {crate::local::*, self::local::{nested::*, nested::{*}}};\n",
+                "fn check_structured() { let r#use = 2 * 3; let _ = r#use; ::std::println!(\"{failure_row}\"); }\n",
             )
             .to_string(),
         )]
@@ -6397,21 +6757,45 @@ mod tests {
             "a crate-rooted glob cannot change the explicitly pinned ::std macro path"
         );
 
-        for crate_attribute in ["#![no_std]", "#![cfg_attr(all(), no_std)]"] {
-            let rebound_std = [(
+        for crate_attribute in [
+            "#![no_std]",
+            "#![cfg_attr(all(), no_std)]",
+            "#![no_implicit_prelude]",
+            "#![cfg_attr(all(), cfg_attr(all(), no_implicit_prelude))]",
+        ] {
+            let authority_removed = [(
                 "crates/fs-propcheck/src/lib.rs".to_string(),
                 format!(
-                    "{crate_attribute}\nextern crate evil as std;\nfn check_structured() {{ ::std::println!(\"{{failure_row}}\"); }}\n"
+                    "{crate_attribute}\nfn check_structured() {{ ::std::println!(\"{{failure_row}}\"); }}\n"
                 ),
             )]
             .into_iter()
             .collect();
-            let rebound_std_violations = audit_casual_print_sources(&rebound_std);
-            assert!(rebound_std_violations.iter().any(|violation| {
-                violation.detail.contains("compiler-provided std")
-                    || violation.detail.contains("macro-authority hazard")
-            }));
+            let authority_violations = audit_casual_print_sources(&authority_removed);
+            assert!(
+                authority_violations.iter().any(|violation| {
+                    violation.detail.contains("compiler-provided std")
+                        || violation.detail.contains("macro-authority hazard")
+                }),
+                "{crate_attribute}: {authority_violations:?}"
+            );
         }
+
+        let rebound_std = [(
+            "crates/fs-propcheck/src/lib.rs".to_string(),
+            concat!(
+                "extern crate evil as std;\n",
+                "fn check_structured() { ::std::println!(\"{failure_row}\"); }\n",
+            )
+            .to_string(),
+        )]
+        .into_iter()
+        .collect();
+        let rebound_std_violations = audit_casual_print_sources(&rebound_std);
+        assert!(rebound_std_violations.iter().any(|violation| {
+            violation.detail.contains("extern crate evil as std")
+                || violation.detail.contains("macro-authority hazard")
+        }));
     }
 
     #[test]
@@ -6514,6 +6898,19 @@ mod tests {
         let error = casual_read_bounded_utf8(&path, 8, "fixture source")
             .expect_err("metadata must refuse the oversized file before reading it");
         assert!(error.contains("exceeds the remaining 8-byte"), "{error}");
+    }
+
+    #[test]
+    fn casual_print_inventory_caps_directory_and_package_growth_before_push() {
+        let mut count = 0usize;
+        casual_increment_bounded_count(&mut count, 2, "fixture entry")
+            .expect("first bounded entry");
+        casual_increment_bounded_count(&mut count, 2, "fixture entry")
+            .expect("second bounded entry");
+        let error = casual_increment_bounded_count(&mut count, 2, "fixture entry")
+            .expect_err("the third entry must refuse before collection growth");
+        assert_eq!(count, 2, "a refused entry cannot mutate the bounded count");
+        assert!(error.contains("2-entry audit cap"), "{error}");
     }
 
     #[cfg(unix)]
@@ -6676,6 +7073,129 @@ mod tests {
     }
 
     #[test]
+    fn casual_print_cfg_braced_macro_items_do_not_hide_following_production_items() {
+        let following_function = [(
+            "crates/fs-new/src/lib.rs".to_string(),
+            concat!(
+                "#[cfg(test)] #[allow(unused)] macro_rules! diagnostics { () => {}; }\n",
+                "fn leak() { println!(\"production after macro_rules\"); }\n",
+            )
+            .to_string(),
+        )]
+        .into_iter()
+        .collect();
+        let function_violations = audit_casual_print_sources(&following_function);
+        assert_eq!(function_violations.len(), 1, "{function_violations:?}");
+        assert!(
+            function_violations[0]
+                .detail
+                .contains("println! in fn leak")
+        );
+
+        let following_module = [
+            (
+                "crates/fs-new/src/lib.rs",
+                "#[cfg(test)] diagnostics! {}\nmod live;\n",
+            ),
+            (
+                "crates/fs-new/src/live.rs",
+                "fn leak() { eprintln!(\"production module after item macro\"); }\n",
+            ),
+        ]
+        .into_iter()
+        .map(|(path, source)| (path.to_string(), source.to_string()))
+        .collect();
+        let module_violations = audit_casual_print_sources(&following_module);
+        assert_eq!(module_violations.len(), 1, "{module_violations:?}");
+        assert!(module_violations[0].detail.contains("src/live.rs"));
+    }
+
+    #[test]
+    fn casual_print_scanner_follows_literal_includes_and_refuses_ambiguous_include_authority() {
+        let transitive = [
+            ("crates/fs-new/src/lib.rs", "include!(\"included.rs\");\n"),
+            (
+                "crates/fs-new/src/included.rs",
+                "include!(\"nested.rs\");\n",
+            ),
+            (
+                "crates/fs-new/src/nested.rs",
+                "fn leak() { println!(\"transitively included production\"); }\n",
+            ),
+        ]
+        .into_iter()
+        .map(|(path, source)| (path.to_string(), source.to_string()))
+        .collect();
+        let transitive_violations = audit_casual_print_sources(&transitive);
+        assert_eq!(transitive_violations.len(), 1, "{transitive_violations:?}");
+        assert!(transitive_violations[0].detail.contains("src/nested.rs"));
+
+        let cases: [(&str, Vec<(&str, &str)>); 4] = [
+            (
+                "cyclic module inclusion",
+                vec![
+                    ("crates/fs-new/src/lib.rs", "include!(\"a.rs\");"),
+                    ("crates/fs-new/src/a.rs", "include!(\"lib.rs\");"),
+                ],
+            ),
+            (
+                "outside package root",
+                vec![
+                    (
+                        "crates/fs-new/src/lib.rs",
+                        "include!(\"../../../outside.rs\");",
+                    ),
+                    ("outside.rs", ""),
+                ],
+            ),
+            (
+                "not one bounded literal",
+                vec![(
+                    "crates/fs-new/src/lib.rs",
+                    "include!(concat!(\"included\", \".rs\"));",
+                )],
+            ),
+            (
+                "aliased module target",
+                vec![
+                    (
+                        "crates/fs-new/src/lib.rs",
+                        "include!(\"shared.rs\"); include!(\"shared.rs\");",
+                    ),
+                    ("crates/fs-new/src/shared.rs", ""),
+                ],
+            ),
+        ];
+        for (expected, rows) in cases {
+            let sources = rows
+                .into_iter()
+                .map(|(path, source)| (path.to_string(), source.to_string()))
+                .collect();
+            let violations = audit_casual_print_sources(&sources);
+            assert_eq!(violations.len(), 1, "{expected}: {violations:?}");
+            assert!(
+                violations[0].detail.contains(expected),
+                "expected {expected:?}: {violations:?}"
+            );
+        }
+
+        let test_only = [
+            (
+                "crates/fs-new/src/lib.rs",
+                "#[cfg(test)] include!(\"diagnostics.rs\");\n",
+            ),
+            (
+                "crates/fs-new/src/diagnostics.rs",
+                "fn diagnostic() { println!(\"test-only include\"); }\n",
+            ),
+        ]
+        .into_iter()
+        .map(|(path, source)| (path.to_string(), source.to_string()))
+        .collect();
+        assert!(audit_casual_print_sources(&test_only).is_empty());
+    }
+
+    #[test]
     fn casual_print_scanner_refuses_ambiguous_missing_cyclic_escaped_or_aliased_modules() {
         let cases: [(&str, Vec<(&str, &str)>); 4] = [
             (
@@ -6804,6 +7324,9 @@ mod tests {
         for manifest in [
             "['package']\nname = 'fs-new'\n['lib']\n'path' = 'src/hidden.rs'\n",
             "package.name = 'fs-new'\nlib.path = 'src/hidden.rs'\n",
+            r#""\u0070ackage"."n\u0061me" = "fs-new"
+"l\u0069b"."p\U00000061th" = "src/h\u0069dden.rs"
+"#,
         ] {
             let root = casual_manifest_library_root("crates/fs-new", manifest, &sources)
                 .expect("Cargo-equivalent key spelling must parse")
@@ -6814,6 +7337,13 @@ mod tests {
                 &[(root, "crates/fs-new".to_string())],
             );
             assert_eq!(violations.len(), 1, "{manifest:?}: {violations:?}");
+        }
+
+        for invalid in [r#""\x70ackage""#, r#""\uD800""#, "\"line\nfeed\""] {
+            assert!(
+                casual_toml_basic_string(invalid).is_err(),
+                "invalid single-line TOML basic string must refuse: {invalid:?}"
+            );
         }
 
         let inline = casual_manifest_library_root(
