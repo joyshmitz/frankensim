@@ -818,53 +818,88 @@ admitted derived-geometry boundary.
   assembly feasibility, contact behavior, interference freedom, or reliability;
   authenticate catalog sources; integrate gear backlash; or transport links
   across lineage.
-- `machine::manufacturing::assembly` is the additive native ordered-assembly
-  seed. `MachineAssemblyDraftV1::admit_against` binds one exact admitted Machine
-  graph, one explicit initially available body, and at most 4,096 operations
-  whose submitted ordinals must be exactly zero through N minus one. Caller
-  collection order is non-semantic; the checked ordinal is semantic. Every
-  operation has an already-available base body/contact feature, an incoming
-  body/contact feature, a closed join-family tag, and nominally distinct
-  procedure, approach-path, and execution-evidence artifact coordinates.
-- `AttachIncoming` requires the base body to be available and the incoming body
-  not yet present, then adds that body to the growing assembly.
-  `ContinueExisting` requires both bodies already present and permits another
-  distinct joint between them. Each durable contact feature is one-shot across
-  the sequence, so a second fastener, weld locus/pass, or hybrid joint needs its
-  own stable feature. Each endpoint body and contact feature must exist and
-  share one subsystem owner; this proves structural co-ownership, not physical
-  feature containment. Endpoint bodies/features must differ. Cross-subsystem
-  attachment is permitted and does not fabricate or imply an `InterfaceBinding`.
-- Version one admits preloaded-bolt, weld, adhesive-bond, key, spline, and
-  interference-fit family tags. `PreloadedBolt` requires one finite positive
-  target retaining submitted binary64 bits, explicit newton/kilonewton unit,
-  and deterministic coherent-SI newton bits; every other family forbids the
-  preload field. The numeric target is a retained declaration, not achieved
-  force, torque conversion, or joint authority. Required evidence coordinates
-  remain nominal and do not authenticate bytes or prove execution.
-- `MachineAssemblyIdV1` binds the assembly and FrankenScript IR schema versions,
-  exact graph identity, initial body identity/key, contiguous ordinal and
-  operation ID, availability mode, role-ordered body/feature identities and
-  keys, join kind, preload presence/source/unit/SI bits, and all three artifact
-  coordinates. Admission refuses empty/raw one-over input, unknown initial or
-  endpoint bodies/features, cross-owner selectors, duplicate IDs/ordinals,
-  ordinal gaps, same-body/feature endpoints, preload mismatch, unavailable or
-  already-attached bodies, feature reuse, and identity failure.
-  `tests/machine_manufacturing_assembly.rs` supplies G0/G3/G5 evidence for all
-  six families, attach/continue availability, explicit-unit retention,
-  order/field/graph identity movement, deterministic structured refusals,
-  exact-cap/N+1 preflight, and complete receipt replay.
+- `machine::manufacturing::assembly` V2 separates physical joint topology from
+  chronological availability. `MachineAssemblyDraftV2::admit_against` binds one
+  exact admitted Machine graph, a nonempty canonical initial-availability set,
+  at most 4,096 separately identified `JointOccurrenceV2` values, and at most
+  4,096 `AssemblyStepV2` transitions whose submitted ordinals must be exactly
+  zero through N minus one. Caller collection order is non-semantic. A step may
+  introduce zero, one, or up to 64 graph-owned bodies and schedule one through
+  64 occurrences. Every scheduled participant must be available before that
+  step or introduced by it, every introduced body must participate in a
+  scheduled occurrence, and the complete canonical before/after availability
+  transition publishes only after the whole step validates. Each admitted step
+  retains the exact before/after counts and domain-separated set digests; the
+  complete sets remain deterministically replayable from the retained initial
+  set and canonical introductions, avoiding quadratic receipt storage and
+  serialization. Every occurrence is scheduled exactly once. Chronology has no
+  base/incoming endpoint order and V2 exposes no ambiguous `ContinueExisting`
+  representation.
+- Each occurrence carries a closed family-specific topology of at most 64 typed
+  participants. A preloaded-bolt hyperedge has at least two canonically unordered
+  clamped members, a contiguous bolt-head-to-thread-end fastener stack with
+  exactly one bolt and at most one nut, and the only preload payload in the
+  grammar. Weld and adhesive topologies are unordered member/adherend hyperedges
+  with at least two bodies. Key topology retains distinct shaft, hub, and key
+  bodies. Spline and interference-fit topologies retain physically directed
+  external/internal roles. Participant bodies and features are distinct within
+  an occurrence. Only genuinely unordered sets canonicalize symmetrically;
+  reversing a directed physical role or fastener-stack position is semantic.
+- `ContactFeatureId` remains a durable physical feature, not a consumable
+  operation token. Every occurrence-local selection therefore has a globally
+  unique `JointFeatureUseIdV2`. Repeated physical-feature use across weld passes,
+  rework, and hybrid joints is admitted under the explicit `Reusable` policy;
+  `ExclusiveWithinAssembly` is an opt-in typed policy and conflicts
+  deterministically with any second use. One physical feature may not acquire
+  conflicting declared bodies across uses. Each selected body and feature must
+  exist and share one subsystem owner, but this proves only structural
+  co-ownership, never feature containment; a same-owner "wrong body" selector
+  remains an authority-free caller declaration. Different participants may be
+  graph-owned by different subsystems without fabricating an
+  `InterfaceBinding`.
+- `AssemblyLifecycleV2` is closed over truthful `Planned { procedure, path }`
+  and `ExecutionClaimed { procedure, path, evidence }` states. The latter is a
+  retained caller claim, not verified execution; V2 has no verified-execution
+  state or transition authority. Underlying content coordinates may be equal
+  across typed artifact roles because one artifact can intentionally serve more
+  than one nominal role; the lifecycle discriminant, each role position, and
+  every coordinate remain separately bound. Coordinates are not authenticated.
+  The preloaded-bolt force must be finite and positive and retains submitted
+  binary64 bits, explicit newton/kilonewton unit, and deterministic coherent-SI
+  newton bits. It is not achieved force, torque conversion, or joint authority.
+- `MachineAssemblyIdV2` binds the V2 assembly and FrankenScript IR schema
+  versions, exact admitted-against graph, canonical initial availability,
+  occurrence/use/step identities, family payloads and typed roles, every body
+  and feature identity/key, explicit reuse policy, lifecycle and artifacts,
+  preload source/unit/SI bits, scheduled occurrence links, introduced bodies,
+  and every canonical availability-before/after count and digest. Its explicit
+  160 MiB field / 256 MiB aggregate envelope covers the computed maximum-width
+  occurrence, step, and initial-set fields without quadratic availability-set
+  rows. Admission refuses raw N+1 inputs before nested graph/canonical-row work;
+  duplicate identities, ordinals, references, or stack positions;
+  family-cardinality/role defects; unknown or cross-owner selectors;
+  conflicting declared bodies or exclusivity; unavailable or unused
+  introductions; multiply scheduled or unscheduled occurrences; and identity
+  failure. `tests/machine_manufacturing_assembly.rs` supplies G0/G3/G5 evidence
+  for all six families, zero/one/multi-body transitions, reusable and exclusive
+  features, both lifecycle states, artifact-coordinate equality, symmetric and
+  directed permutations, isolated semantic mutations, deterministic refusals,
+  exact 4,096/N+1 and 64/N+1 boundaries, an independent canonical-preimage
+  oracle, and pinned maximum-grammar-width row/field arithmetic.
 - This structural seed does not find or validate collision-free insertion
   paths, tool access, order optimality, inventory, occurrence/configuration or
-  effectivity, mating/alignment, independent subassembly merging, or actual
-  process execution. It does not establish bolt torque/preload retention;
-  weld metallurgy, quality, or residual stress; adhesive cure, thickness, or
-  strength; key/spline load sharing, backlash, or wear; or interference-fit
-  pressure, insertion force, stress, thermal behavior, retention, or slip. It
-  does not cross-check the native fit/GD&T catalogs, parse PMI or standards,
-  authenticate artifacts, prove assembly/manufacturability, mutate the Machine
-  graph, or transport operations across lineage; successor graphs require
-  explicit readmission.
+  effectivity, mating/alignment, detached-subassembly connectivity, or actual or
+  verified process execution. It does not establish bolt torque/preload
+  retention; weld metallurgy, quality, passes, or residual stress; adhesive
+  cure, thickness, or strength; key/spline load sharing, backlash, or wear; or
+  interference-fit pressure, insertion force, stress, thermal behavior,
+  retention, or slip. It does not cross-check native fit/GD&T catalogs, parse
+  PMI or standards, authenticate artifacts, prove assembly/manufacturability,
+  mutate the Machine graph, or transport declarations across lineage; successor
+  graphs require explicit readmission. This assembly section first became
+  effective with source and tests at `9054f830`; its premature text had landed
+  in parent `8a143b23`. V2 supersedes that rejected V1 model without rewriting
+  shared-main history.
 - `query` (addendum Proposal 8 — declarative query language v0): a query is
   `(QoI, Target, budget_usd, deadline_s)` where `Qoi` is a fixed MENU —
   `MaxOverRegion`, `Integral` (linear), `Exceedance` (probabilistic, needs a

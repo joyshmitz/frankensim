@@ -1,121 +1,234 @@
-//! Machine-IR ordered structural assembly admission (Gauntlet G0/G3/G5).
+//! Machine-IR V2 assembly chronology/topology admission (Gauntlet G0/G3/G5).
 
 use core::num::NonZeroU64;
 
+use std::collections::BTreeSet;
+
 use fs_blake3::ContentHash;
+use fs_blake3::identity::{CanonicalEncoder, Field, NeverCancel, StrongIdentity};
+use fs_ir::IR_VERSION;
 use fs_ir::machine::manufacturing::ManufacturingArtifactRefV1;
 use fs_ir::machine::manufacturing::assembly::{
-    AssemblyEndpointRoleV1, AssemblyExecutionEvidenceRefV1, AssemblyFeatureSelectorV1,
-    AssemblyJoinKindV1, AssemblyOperationIdV1, AssemblyOperationModeV1, AssemblyOperationV1,
-    AssemblyPathRefV1, AssemblyPreloadErrorV1, AssemblyPreloadUnitV1, AssemblyPreloadUseIssueV1,
-    AssemblyPreloadV1, AssemblyProcedureRefV1, MAX_MACHINE_ASSEMBLY_OPERATIONS_V1,
-    MachineAssemblyAdmissionErrorV1, MachineAssemblyDraftV1,
+    AdmittedMachineAssemblyV2, AssemblyExecutionEvidenceRefV2, AssemblyJointFamilyV2,
+    AssemblyLifecycleV2, AssemblyPathRefV2, AssemblyPreloadErrorV2, AssemblyPreloadUnitV2,
+    AssemblyPreloadV2, AssemblyProcedureRefV2, AssemblyStepIdV2, AssemblyStepV2,
+    AssemblyTopologyIssueV2, BoltStackParticipantV2, BoltStackRoleV2, JointFeatureUseIdV2,
+    JointFeatureUseV2, JointOccurrenceIdV2, JointOccurrenceV2, JointTopologyV2,
+    MACHINE_ASSEMBLY_IDENTITY_LIMITS_V2, MACHINE_ASSEMBLY_SCHEMA_VERSION_V2,
+    MAX_MACHINE_ASSEMBLY_INITIAL_BODIES_V2, MAX_MACHINE_ASSEMBLY_INTRODUCTIONS_PER_STEP_V2,
+    MAX_MACHINE_ASSEMBLY_OCCURRENCES_PER_STEP_V2, MAX_MACHINE_ASSEMBLY_OCCURRENCES_V2,
+    MAX_MACHINE_ASSEMBLY_PARTICIPANTS_PER_OCCURRENCE_V2, MAX_MACHINE_ASSEMBLY_STEPS_V2,
+    MachineAssemblyAdmissionErrorV2, MachineAssemblyDraftV2, MachineAssemblyIdV2,
+    PhysicalFeatureUsePolicyV2,
 };
 use fs_ir::machine::{
     AdmittedMachineGraph, BodyId, ContactFeatureId, MachineGraphDraft, MaterialBinding,
     MaterialCardRef, MaterialTarget, ModelRef, SubsystemId, SubsystemSpec,
 };
 
-fn nz(value: u64) -> NonZeroU64 {
-    NonZeroU64::new(value).expect("fixture version is nonzero")
+fn nz_v2(value: u64) -> NonZeroU64 {
+    NonZeroU64::new(value).expect("fixture version must be nonzero")
 }
 
-fn body(key: &str) -> BodyId {
-    BodyId::new(key).expect("fixture body key is canonical")
+fn body_v2(key: &str) -> BodyId {
+    BodyId::new(key).unwrap_or_else(|error| panic!("fixture body key {key:?} must admit: {error}"))
 }
 
-fn feature(key: &str) -> ContactFeatureId {
-    ContactFeatureId::new(key).expect("fixture contact-feature key is canonical")
+fn feature_v2(key: &str) -> ContactFeatureId {
+    ContactFeatureId::new(key)
+        .unwrap_or_else(|error| panic!("fixture feature key {key:?} must admit: {error}"))
 }
 
-fn operation_id(key: &str) -> AssemblyOperationIdV1 {
-    AssemblyOperationIdV1::new(key).expect("fixture operation key is canonical")
+fn step_id_v2(key: &str) -> AssemblyStepIdV2 {
+    AssemblyStepIdV2::new(key)
+        .unwrap_or_else(|error| panic!("fixture step key {key:?} must admit: {error}"))
 }
 
-fn selector(body_key: &str, feature_key: &str) -> AssemblyFeatureSelectorV1 {
-    AssemblyFeatureSelectorV1::new(body(body_key), feature(feature_key))
+fn occurrence_id_v2(key: &str) -> JointOccurrenceIdV2 {
+    JointOccurrenceIdV2::new(key)
+        .unwrap_or_else(|error| panic!("fixture occurrence key {key:?} must admit: {error}"))
 }
 
-fn preload(value: f64, unit: AssemblyPreloadUnitV1) -> AssemblyPreloadV1 {
-    AssemblyPreloadV1::try_new(value, unit).expect("fixture preload is positive and finite")
+fn use_id_v2(key: &str) -> JointFeatureUseIdV2 {
+    JointFeatureUseIdV2::new(key)
+        .unwrap_or_else(|error| panic!("fixture feature-use key {key:?} must admit: {error}"))
 }
 
-fn artifact(namespace: &str, byte: u8) -> ManufacturingArtifactRefV1 {
-    ManufacturingArtifactRefV1::new(namespace, nz(1), ContentHash([byte; 32]))
-        .expect("fixture artifact coordinate is canonical")
+fn artifact_v2(namespace: &str, byte: u8) -> ManufacturingArtifactRefV1 {
+    artifact_coordinate_v2(namespace, 1, byte)
 }
 
-fn procedure(byte: u8) -> AssemblyProcedureRefV1 {
-    AssemblyProcedureRefV1::new(artifact("assembly/procedure", byte))
+fn artifact_coordinate_v2(
+    namespace: &str,
+    schema_version: u64,
+    byte: u8,
+) -> ManufacturingArtifactRefV1 {
+    ManufacturingArtifactRefV1::new(namespace, nz_v2(schema_version), ContentHash([byte; 32]))
+        .unwrap_or_else(|error| panic!("fixture artifact {namespace:?} must admit: {error}"))
 }
 
-fn path(byte: u8) -> AssemblyPathRefV1 {
-    AssemblyPathRefV1::new(artifact("assembly/path", byte))
+fn planned_v2(procedure_byte: u8, path_byte: u8) -> AssemblyLifecycleV2 {
+    planned_coordinates_v2(
+        "assembly-v2/procedure",
+        1,
+        procedure_byte,
+        "assembly-v2/path",
+        1,
+        path_byte,
+    )
 }
 
-fn execution_evidence(byte: u8) -> AssemblyExecutionEvidenceRefV1 {
-    AssemblyExecutionEvidenceRefV1::new(artifact("assembly/execution-evidence", byte))
+fn planned_coordinates_v2(
+    procedure_namespace: &str,
+    procedure_schema_version: u64,
+    procedure_byte: u8,
+    path_namespace: &str,
+    path_schema_version: u64,
+    path_byte: u8,
+) -> AssemblyLifecycleV2 {
+    AssemblyLifecycleV2::Planned {
+        procedure: AssemblyProcedureRefV2::new(artifact_coordinate_v2(
+            procedure_namespace,
+            procedure_schema_version,
+            procedure_byte,
+        )),
+        path: AssemblyPathRefV2::new(artifact_coordinate_v2(
+            path_namespace,
+            path_schema_version,
+            path_byte,
+        )),
+    }
 }
 
-fn material(target: BodyId, key: &str, byte: u8) -> MaterialBinding {
+fn execution_claimed_v2(
+    procedure_byte: u8,
+    path_byte: u8,
+    evidence_byte: u8,
+) -> AssemblyLifecycleV2 {
+    AssemblyLifecycleV2::ExecutionClaimed {
+        procedure: AssemblyProcedureRefV2::new(artifact_v2(
+            "assembly-v2/procedure",
+            procedure_byte,
+        )),
+        path: AssemblyPathRefV2::new(artifact_v2("assembly-v2/path", path_byte)),
+        evidence: AssemblyExecutionEvidenceRefV2::new(artifact_v2(
+            "assembly-v2/execution-evidence",
+            evidence_byte,
+        )),
+    }
+}
+
+fn preload_v2(value: f64, unit: AssemblyPreloadUnitV2) -> AssemblyPreloadV2 {
+    AssemblyPreloadV2::try_new(value, unit).unwrap_or_else(|error| {
+        panic!(
+            "fixture preload {value} {} must admit: {error}",
+            unit.symbol()
+        )
+    })
+}
+
+fn feature_use_v2(use_key: &str, body_key: &str, feature_key: &str) -> JointFeatureUseV2 {
+    feature_use_with_policy_v2(
+        use_key,
+        body_key,
+        feature_key,
+        PhysicalFeatureUsePolicyV2::Reusable,
+    )
+}
+
+fn feature_use_with_policy_v2(
+    use_key: &str,
+    body_key: &str,
+    feature_key: &str,
+    policy: PhysicalFeatureUsePolicyV2,
+) -> JointFeatureUseV2 {
+    JointFeatureUseV2::new(
+        use_id_v2(use_key),
+        fs_ir::machine::manufacturing::assembly::AssemblyFeatureSelectorV2::new(
+            body_v2(body_key),
+            feature_v2(feature_key),
+        ),
+        policy,
+    )
+}
+
+fn material_v2(target: BodyId, key: &str, byte: u8) -> MaterialBinding {
     MaterialBinding {
         target: MaterialTarget::Body(target),
-        material: MaterialCardRef::new(key, nz(1), [byte; 32])
-            .expect("fixture material is canonical"),
+        material: MaterialCardRef::new(key, nz_v2(1), [byte; 32])
+            .unwrap_or_else(|error| panic!("fixture material {key:?} must admit: {error}")),
     }
 }
 
-fn admitted_graph(model_byte: u8) -> AdmittedMachineGraph {
-    let base = body("body/base");
-    let base_alternate = body("body/base-alternate");
-    let parts = (0..6)
-        .map(|index| body(&format!("body/part-{index}")))
-        .collect::<Vec<_>>();
-    let other = body("body/other");
+const ASSEMBLY_BODY_KEYS_V2: &[&str] = &[
+    "body/base-a",
+    "body/base-b",
+    "body/bolt",
+    "body/nut",
+    "body/washer",
+    "body/shaft",
+    "body/hub",
+    "body/key",
+    "body/external",
+    "body/internal",
+    "body/spare",
+];
 
-    let mut assembly_bodies = vec![base.clone(), base_alternate.clone()];
-    assembly_bodies.extend(parts.iter().cloned());
-    let mut assembly_features = (0..8)
-        .map(|index| feature(&format!("contact/base/join-{index}")))
-        .collect::<Vec<_>>();
-    assembly_features.push(feature("contact/base-alternate/join-0"));
-    for index in 0..6 {
-        assembly_features.push(feature(&format!("contact/part-{index}/join")));
-    }
-    assembly_features.push(feature("contact/part-0/join-alternate"));
+fn assembly_feature_keys_v2() -> Vec<String> {
+    ASSEMBLY_BODY_KEYS_V2
+        .iter()
+        .flat_map(|body_key| {
+            let suffix = body_key.strip_prefix("body/").expect("fixture body prefix");
+            [
+                format!("contact/{suffix}/main"),
+                format!("contact/{suffix}/alternate"),
+            ]
+        })
+        .collect()
+}
 
-    let mut materials = vec![
-        material(base, "materials/base", 1),
-        material(base_alternate, "materials/base-alternate", 2),
-    ];
-    materials.extend(parts.into_iter().enumerate().map(|(index, part)| {
-        material(
-            part,
-            &format!("materials/part-{index}"),
-            u8::try_from(index + 3).expect("fixture byte fits"),
-        )
-    }));
-    materials.push(material(other.clone(), "materials/other", 0x21));
+fn admitted_graph_v2(model_byte: u8) -> AdmittedMachineGraph {
+    let assembly_bodies = ASSEMBLY_BODY_KEYS_V2
+        .iter()
+        .map(|key| body_v2(key))
+        .collect::<Vec<_>>();
+    let mut materials = assembly_bodies
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, body)| {
+            material_v2(
+                body,
+                &format!("materials/assembly-v2-{index}"),
+                u8::try_from(index + 1).expect("fixture material byte fits"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let other = body_v2("body/other");
+    materials.push(material_v2(other.clone(), "materials/other-v2", 0x7e));
 
     MachineGraphDraft {
         clocks: Vec::new(),
         subsystems: vec![
             SubsystemSpec {
-                id: SubsystemId::new("subsystem/assembly").expect("canonical subsystem"),
-                model: ModelRef::new("models/assembly", nz(1), [model_byte; 32])
+                id: SubsystemId::new("subsystem/assembly-v2").expect("canonical subsystem"),
+                model: ModelRef::new("models/assembly-v2", nz_v2(1), [model_byte; 32])
                     .expect("canonical model"),
                 bodies: assembly_bodies,
                 surface_patches: Vec::new(),
-                contact_features: assembly_features,
+                contact_features: assembly_feature_keys_v2()
+                    .iter()
+                    .map(|key| feature_v2(key))
+                    .collect(),
                 state_slots: Vec::new(),
             },
             SubsystemSpec {
-                id: SubsystemId::new("subsystem/other").expect("canonical subsystem"),
-                model: ModelRef::new("models/assembly-other", nz(1), [0x52; 32])
+                id: SubsystemId::new("subsystem/other-v2").expect("canonical subsystem"),
+                model: ModelRef::new("models/other-v2", nz_v2(1), [0x7f; 32])
                     .expect("canonical model"),
                 bodies: vec![other],
                 surface_patches: Vec::new(),
-                contact_features: vec![feature("contact/other/join")],
+                contact_features: vec![feature_v2("contact/other/main")],
                 state_slots: Vec::new(),
             },
         ],
@@ -126,848 +239,1935 @@ fn admitted_graph(model_byte: u8) -> AdmittedMachineGraph {
         interfaces: Vec::new(),
     }
     .admit()
-    .expect("assembly fixture graph admits")
+    .expect("V2 assembly fixture graph must admit")
 }
 
-#[allow(clippy::too_many_arguments)]
-fn operation(
-    id: &str,
-    ordinal: u32,
-    mode: AssemblyOperationModeV1,
-    base_body: &str,
-    base_feature: &str,
-    incoming_body: &str,
-    incoming_feature: &str,
-    join_kind: AssemblyJoinKindV1,
-    declared_preload: Option<AssemblyPreloadV1>,
-    procedure_byte: u8,
-    path_byte: u8,
-    evidence_byte: u8,
-) -> AssemblyOperationV1 {
-    AssemblyOperationV1::new(
-        operation_id(id),
-        ordinal,
-        mode,
-        selector(base_body, base_feature),
-        selector(incoming_body, incoming_feature),
-        join_kind,
-        declared_preload,
-        procedure(procedure_byte),
-        path(path_byte),
-        execution_evidence(evidence_byte),
+fn bolt_occurrence_v2() -> JointOccurrenceV2 {
+    JointOccurrenceV2::new(
+        occurrence_id_v2("occurrence/bolt"),
+        JointTopologyV2::PreloadedBolt {
+            clamped_members: vec![
+                feature_use_v2("use/bolt/clamped-b", "body/base-b", "contact/base-b/main"),
+                feature_use_v2("use/bolt/clamped-a", "body/base-a", "contact/base-a/main"),
+            ],
+            fastener_stack: vec![
+                BoltStackParticipantV2::new(
+                    2,
+                    BoltStackRoleV2::Nut,
+                    feature_use_v2("use/bolt/nut", "body/nut", "contact/nut/main"),
+                ),
+                BoltStackParticipantV2::new(
+                    0,
+                    BoltStackRoleV2::Bolt,
+                    feature_use_v2("use/bolt/bolt", "body/bolt", "contact/bolt/main"),
+                ),
+                BoltStackParticipantV2::new(
+                    1,
+                    BoltStackRoleV2::Washer,
+                    feature_use_v2("use/bolt/washer", "body/washer", "contact/washer/main"),
+                ),
+            ],
+            preload: preload_v2(2.0, AssemblyPreloadUnitV2::Kilonewton),
+        },
+        planned_v2(0x10, 0x11),
     )
 }
 
-#[derive(Clone)]
-struct OperationFixture {
-    id: &'static str,
-    ordinal: u32,
-    mode: AssemblyOperationModeV1,
-    base_body: &'static str,
-    base_feature: &'static str,
-    incoming_body: &'static str,
-    incoming_feature: &'static str,
-    join_kind: AssemblyJoinKindV1,
-    preload: Option<AssemblyPreloadV1>,
-    procedure_byte: u8,
-    path_byte: u8,
-    evidence_byte: u8,
+fn weld_occurrence_v2() -> JointOccurrenceV2 {
+    JointOccurrenceV2::new(
+        occurrence_id_v2("occurrence/weld"),
+        JointTopologyV2::Weld {
+            members: vec![
+                feature_use_v2("use/weld/base-a", "body/base-a", "contact/base-a/main"),
+                feature_use_v2("use/weld/base-b", "body/base-b", "contact/base-b/main"),
+            ],
+        },
+        execution_claimed_v2(0x20, 0x21, 0x22),
+    )
 }
 
-impl OperationFixture {
-    fn baseline() -> Self {
-        Self {
-            id: "assembly/single",
-            ordinal: 0,
-            mode: AssemblyOperationModeV1::AttachIncoming,
-            base_body: "body/base",
-            base_feature: "contact/base/join-0",
-            incoming_body: "body/part-0",
-            incoming_feature: "contact/part-0/join",
-            join_kind: AssemblyJoinKindV1::PreloadedBolt,
-            preload: Some(preload(2.0, AssemblyPreloadUnitV1::Kilonewton)),
-            procedure_byte: 0x61,
-            path_byte: 0x62,
-            evidence_byte: 0x63,
+fn adhesive_occurrence_v2() -> JointOccurrenceV2 {
+    JointOccurrenceV2::new(
+        occurrence_id_v2("occurrence/adhesive"),
+        JointTopologyV2::AdhesiveBond {
+            adherends: vec![
+                feature_use_v2("use/adhesive/base-a", "body/base-a", "contact/base-a/main"),
+                feature_use_v2("use/adhesive/base-b", "body/base-b", "contact/base-b/main"),
+            ],
+        },
+        planned_v2(0x30, 0x31),
+    )
+}
+
+fn key_occurrence_v2() -> JointOccurrenceV2 {
+    JointOccurrenceV2::new(
+        occurrence_id_v2("occurrence/key"),
+        JointTopologyV2::Key {
+            shaft: feature_use_v2("use/key/shaft", "body/shaft", "contact/shaft/main"),
+            hub: feature_use_v2("use/key/hub", "body/hub", "contact/hub/main"),
+            key: feature_use_v2("use/key/body", "body/key", "contact/key/main"),
+        },
+        planned_v2(0x40, 0x41),
+    )
+}
+
+fn spline_occurrence_v2() -> JointOccurrenceV2 {
+    JointOccurrenceV2::new(
+        occurrence_id_v2("occurrence/spline"),
+        JointTopologyV2::Spline {
+            external: feature_use_v2(
+                "use/spline/external",
+                "body/external",
+                "contact/external/main",
+            ),
+            internal: feature_use_v2(
+                "use/spline/internal",
+                "body/internal",
+                "contact/internal/main",
+            ),
+        },
+        planned_v2(0x50, 0x51),
+    )
+}
+
+fn interference_occurrence_v2() -> JointOccurrenceV2 {
+    JointOccurrenceV2::new(
+        occurrence_id_v2("occurrence/interference"),
+        JointTopologyV2::InterferenceFit {
+            external: feature_use_v2(
+                "use/interference/external",
+                "body/external",
+                "contact/external/main",
+            ),
+            internal: feature_use_v2(
+                "use/interference/internal",
+                "body/internal",
+                "contact/internal/main",
+            ),
+        },
+        execution_claimed_v2(0x60, 0x61, 0x62),
+    )
+}
+
+fn valid_draft_v2() -> MachineAssemblyDraftV2 {
+    MachineAssemblyDraftV2 {
+        initial_available_bodies: vec![
+            body_v2("body/internal"),
+            body_v2("body/base-b"),
+            body_v2("body/shaft"),
+            body_v2("body/external"),
+            body_v2("body/base-a"),
+            body_v2("body/hub"),
+        ],
+        steps: vec![
+            AssemblyStepV2::new(
+                step_id_v2("step/key"),
+                2,
+                vec![body_v2("body/key")],
+                vec![occurrence_id_v2("occurrence/key")],
+            ),
+            AssemblyStepV2::new(
+                step_id_v2("step/bolt"),
+                0,
+                vec![
+                    body_v2("body/washer"),
+                    body_v2("body/bolt"),
+                    body_v2("body/nut"),
+                ],
+                vec![occurrence_id_v2("occurrence/bolt")],
+            ),
+            AssemblyStepV2::new(
+                step_id_v2("step/directed"),
+                3,
+                Vec::new(),
+                vec![
+                    occurrence_id_v2("occurrence/spline"),
+                    occurrence_id_v2("occurrence/interference"),
+                ],
+            ),
+            AssemblyStepV2::new(
+                step_id_v2("step/hybrid"),
+                1,
+                Vec::new(),
+                vec![
+                    occurrence_id_v2("occurrence/weld"),
+                    occurrence_id_v2("occurrence/adhesive"),
+                ],
+            ),
+        ],
+        occurrences: vec![
+            spline_occurrence_v2(),
+            bolt_occurrence_v2(),
+            interference_occurrence_v2(),
+            key_occurrence_v2(),
+            adhesive_occurrence_v2(),
+            weld_occurrence_v2(),
+        ],
+    }
+}
+
+fn oracle_append_bytes_v2(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+    out.extend_from_slice(bytes);
+}
+
+fn oracle_append_rows_v2(out: &mut Vec<u8>, rows: impl IntoIterator<Item = Vec<u8>>) {
+    let rows = rows.into_iter().collect::<Vec<_>>();
+    out.extend_from_slice(&(rows.len() as u64).to_le_bytes());
+    for row in rows {
+        oracle_append_bytes_v2(out, &row);
+    }
+}
+
+fn oracle_body_row_v2(body: &BodyId) -> Vec<u8> {
+    let mut row = Vec::new();
+    oracle_append_bytes_v2(&mut row, body.identity().as_bytes());
+    oracle_append_bytes_v2(&mut row, body.canonical_key().as_bytes());
+    row
+}
+
+fn oracle_availability_digest_v2(bodies: &[BodyId]) -> fs_blake3::identity::ContentId {
+    let mut preimage =
+        b"org.frankensim.fs-ir.machine.manufacturing-assembly.v2/availability-set".to_vec();
+    oracle_append_rows_v2(&mut preimage, bodies.iter().map(oracle_body_row_v2));
+    fs_blake3::identity::ContentId::of_bytes(&preimage)
+}
+
+fn oracle_feature_row_v2(feature: &ContactFeatureId) -> Vec<u8> {
+    let mut row = Vec::new();
+    oracle_append_bytes_v2(&mut row, feature.identity().as_bytes());
+    oracle_append_bytes_v2(&mut row, feature.canonical_key().as_bytes());
+    row
+}
+
+fn oracle_artifact_row_v2(artifact: &ManufacturingArtifactRefV1) -> Vec<u8> {
+    let mut row = Vec::new();
+    oracle_append_bytes_v2(&mut row, artifact.namespace().as_bytes());
+    row.extend_from_slice(&artifact.schema_version().get().to_le_bytes());
+    row.extend_from_slice(artifact.content_hash().as_bytes());
+    row
+}
+
+fn oracle_use_row_v2(feature_use: &JointFeatureUseV2) -> Vec<u8> {
+    let mut selector = Vec::new();
+    oracle_append_bytes_v2(
+        &mut selector,
+        feature_use.selector().declared_body().identity().as_bytes(),
+    );
+    oracle_append_bytes_v2(
+        &mut selector,
+        feature_use
+            .selector()
+            .declared_body()
+            .canonical_key()
+            .as_bytes(),
+    );
+    let feature_row = oracle_feature_row_v2(feature_use.selector().contact_feature());
+    selector.extend_from_slice(&feature_row);
+
+    let mut row = Vec::new();
+    oracle_append_bytes_v2(&mut row, feature_use.id().canonical_key().as_bytes());
+    row.push(feature_use.policy().tag());
+    oracle_append_bytes_v2(&mut row, &selector);
+    row
+}
+
+fn oracle_lifecycle_row_v2(lifecycle: &AssemblyLifecycleV2) -> Vec<u8> {
+    let mut row = vec![lifecycle.tag()];
+    oracle_append_bytes_v2(
+        &mut row,
+        &oracle_artifact_row_v2(lifecycle.procedure().artifact()),
+    );
+    oracle_append_bytes_v2(
+        &mut row,
+        &oracle_artifact_row_v2(lifecycle.path().artifact()),
+    );
+    if let Some(evidence) = lifecycle.execution_evidence() {
+        oracle_append_bytes_v2(&mut row, &oracle_artifact_row_v2(evidence.artifact()));
+    }
+    row
+}
+
+fn oracle_topology_row_v2(topology: &JointTopologyV2) -> Vec<u8> {
+    let mut row = vec![topology.family().tag()];
+    match topology {
+        JointTopologyV2::PreloadedBolt {
+            clamped_members,
+            fastener_stack,
+            preload,
+        } => {
+            oracle_append_rows_v2(&mut row, clamped_members.iter().map(oracle_use_row_v2));
+            oracle_append_rows_v2(
+                &mut row,
+                fastener_stack.iter().map(|participant| {
+                    let mut participant_row = Vec::new();
+                    participant_row.extend_from_slice(&participant.position().to_le_bytes());
+                    participant_row.push(participant.role().tag());
+                    oracle_append_bytes_v2(
+                        &mut participant_row,
+                        &oracle_use_row_v2(participant.feature_use()),
+                    );
+                    participant_row
+                }),
+            );
+            row.extend_from_slice(&preload.submitted_bits().to_le_bytes());
+            row.push(preload.unit().tag());
+            row.extend_from_slice(&preload.newtons_bits().to_le_bytes());
+        }
+        JointTopologyV2::Weld { members } => {
+            oracle_append_rows_v2(&mut row, members.iter().map(oracle_use_row_v2));
+        }
+        JointTopologyV2::AdhesiveBond { adherends } => {
+            oracle_append_rows_v2(&mut row, adherends.iter().map(oracle_use_row_v2));
+        }
+        JointTopologyV2::Key { shaft, hub, key } => {
+            oracle_append_bytes_v2(&mut row, &oracle_use_row_v2(shaft));
+            oracle_append_bytes_v2(&mut row, &oracle_use_row_v2(hub));
+            oracle_append_bytes_v2(&mut row, &oracle_use_row_v2(key));
+        }
+        JointTopologyV2::Spline { external, internal }
+        | JointTopologyV2::InterferenceFit { external, internal } => {
+            oracle_append_bytes_v2(&mut row, &oracle_use_row_v2(external));
+            oracle_append_bytes_v2(&mut row, &oracle_use_row_v2(internal));
         }
     }
+    row
+}
 
-    fn build(self) -> AssemblyOperationV1 {
-        operation(
-            self.id,
-            self.ordinal,
-            self.mode,
-            self.base_body,
-            self.base_feature,
-            self.incoming_body,
-            self.incoming_feature,
-            self.join_kind,
-            self.preload,
-            self.procedure_byte,
-            self.path_byte,
-            self.evidence_byte,
-        )
+fn oracle_occurrence_row_v2(occurrence: &JointOccurrenceV2) -> Vec<u8> {
+    let mut row = Vec::new();
+    oracle_append_bytes_v2(&mut row, occurrence.id().canonical_key().as_bytes());
+    oracle_append_bytes_v2(&mut row, &oracle_topology_row_v2(occurrence.topology()));
+    oracle_append_bytes_v2(&mut row, &oracle_lifecycle_row_v2(occurrence.lifecycle()));
+    row
+}
+
+fn oracle_step_row_v2(
+    step: &fs_ir::machine::manufacturing::assembly::AdmittedAssemblyStepV2,
+    available_before: &[BodyId],
+    available_after: &[BodyId],
+) -> Vec<u8> {
+    let mut row = Vec::new();
+    oracle_append_bytes_v2(&mut row, step.step().id().canonical_key().as_bytes());
+    row.extend_from_slice(&step.step().ordinal().to_le_bytes());
+    oracle_append_rows_v2(
+        &mut row,
+        step.step()
+            .introduced_bodies()
+            .iter()
+            .map(oracle_body_row_v2),
+    );
+    oracle_append_rows_v2(
+        &mut row,
+        step.step().occurrence_ids().iter().map(|id| {
+            let mut id_row = Vec::new();
+            oracle_append_bytes_v2(&mut id_row, id.canonical_key().as_bytes());
+            id_row
+        }),
+    );
+    row.extend_from_slice(&(available_before.len() as u64).to_le_bytes());
+    oracle_append_bytes_v2(
+        &mut row,
+        oracle_availability_digest_v2(available_before).as_bytes(),
+    );
+    row.extend_from_slice(&(available_after.len() as u64).to_le_bytes());
+    oracle_append_bytes_v2(
+        &mut row,
+        oracle_availability_digest_v2(available_after).as_bytes(),
+    );
+    row
+}
+
+fn oracle_receipt_v2(
+    admitted: &AdmittedMachineAssemblyV2,
+    assembly_schema_version: u32,
+    ir_version: u32,
+) -> fs_blake3::identity::IdentityReceipt<MachineAssemblyIdV2> {
+    let initial_rows = admitted
+        .initial_available_bodies()
+        .iter()
+        .map(oracle_body_row_v2)
+        .collect::<Vec<_>>();
+    let occurrence_rows = admitted
+        .occurrences()
+        .iter()
+        .map(oracle_occurrence_row_v2)
+        .collect::<Vec<_>>();
+    let mut available = admitted
+        .initial_available_bodies()
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut step_rows = Vec::with_capacity(admitted.steps().len());
+    for step in admitted.steps() {
+        let available_before = available.iter().cloned().collect::<Vec<_>>();
+        available.extend(step.step().introduced_bodies().iter().cloned());
+        let available_after = available.iter().cloned().collect::<Vec<_>>();
+        step_rows.push(oracle_step_row_v2(
+            step,
+            &available_before,
+            &available_after,
+        ));
+    }
+
+    CanonicalEncoder::<MachineAssemblyIdV2, _>::new(
+        MACHINE_ASSEMBLY_IDENTITY_LIMITS_V2,
+        NeverCancel,
+    )
+    .expect("oracle encoder initializes")
+    .u64(
+        Field::new(0, "assembly-schema-version"),
+        u64::from(assembly_schema_version),
+    )
+    .expect("oracle schema version encodes")
+    .u64(
+        Field::new(1, "frankenscript-ir-version"),
+        u64::from(ir_version),
+    )
+    .expect("oracle IR version encodes")
+    .bytes(
+        Field::new(2, "machine-graph"),
+        admitted.admitted_against_graph().as_bytes(),
+    )
+    .expect("oracle graph encodes")
+    .ordered_bytes(
+        Field::new(3, "initial-available-bodies"),
+        initial_rows.len() as u64,
+        initial_rows.iter().map(Vec::as_slice),
+    )
+    .expect("oracle initial availability encodes")
+    .ordered_bytes(
+        Field::new(4, "joint-occurrences"),
+        occurrence_rows.len() as u64,
+        occurrence_rows.iter().map(Vec::as_slice),
+    )
+    .expect("oracle occurrences encode")
+    .ordered_bytes(
+        Field::new(5, "assembly-steps"),
+        step_rows.len() as u64,
+        step_rows.iter().map(Vec::as_slice),
+    )
+    .expect("oracle steps encode")
+    .finish()
+    .expect("oracle frame finishes")
+}
+
+fn singleton_draft_v2(
+    occurrence: JointOccurrenceV2,
+    initial_available_bodies: Vec<BodyId>,
+    introduced_bodies: Vec<BodyId>,
+) -> MachineAssemblyDraftV2 {
+    let occurrence_id = occurrence.id().clone();
+    MachineAssemblyDraftV2 {
+        initial_available_bodies,
+        steps: vec![AssemblyStepV2::new(
+            step_id_v2("step/single"),
+            0,
+            introduced_bodies,
+            vec![occurrence_id],
+        )],
+        occurrences: vec![occurrence],
     }
 }
 
-fn singleton(operation: AssemblyOperationV1) -> MachineAssemblyDraftV1 {
-    MachineAssemblyDraftV1 {
-        initial_body: body("body/base"),
-        operations: vec![operation],
-    }
+#[test]
+fn mas2_001_all_families_multi_body_chronology_and_independent_oracle_agree() {
+    let graph = admitted_graph_v2(0x41);
+    let admitted = valid_draft_v2()
+        .admit_against(&graph)
+        .expect("complete V2 family fixture must admit");
+
+    let families = admitted
+        .occurrences()
+        .iter()
+        .map(|occurrence| occurrence.topology().family())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        families,
+        BTreeSet::from([
+            AssemblyJointFamilyV2::PreloadedBolt,
+            AssemblyJointFamilyV2::Weld,
+            AssemblyJointFamilyV2::AdhesiveBond,
+            AssemblyJointFamilyV2::Key,
+            AssemblyJointFamilyV2::Spline,
+            AssemblyJointFamilyV2::InterferenceFit,
+        ]),
+        "every closed family must survive V2 admission"
+    );
+    assert_eq!(
+        admitted.steps()[0].step().introduced_bodies().len(),
+        3,
+        "bolt/nut/washer must enter atomically in one multi-body step"
+    );
+    assert!(
+        admitted.steps()[1].step().introduced_bodies().is_empty(),
+        "hybrid weld/adhesive continuation must require no chronology-derived endpoint order"
+    );
+    assert_eq!(
+        admitted.steps()[2].step().introduced_bodies(),
+        &[body_v2("body/key")],
+        "the physically distinct key body must enter in its own one-body transition"
+    );
+    assert_eq!(
+        admitted.steps()[0].available_before_count() + 3,
+        admitted.steps()[0].available_after_count(),
+        "availability may publish only after the complete bolt-stack step validates"
+    );
+
+    let oracle = oracle_receipt_v2(&admitted, MACHINE_ASSEMBLY_SCHEMA_VERSION_V2, IR_VERSION);
+    assert_eq!(
+        admitted.identity(),
+        oracle.id(),
+        "independently serialized canonical rows must reproduce the production identity"
+    );
+    assert_eq!(
+        admitted.identity_receipt().canonical_preimage(),
+        oracle.canonical_preimage(),
+        "independent preimage oracle must match, not merely a second production replay"
+    );
+    assert_eq!(
+        admitted.identity_receipt().canonical_bytes(),
+        oracle.canonical_bytes(),
+        "independent frame accounting must pin the exact canonical byte count"
+    );
+
+    let stale_schema = oracle_receipt_v2(
+        &admitted,
+        MACHINE_ASSEMBLY_SCHEMA_VERSION_V2 - 1,
+        IR_VERSION,
+    );
+    let stale_ir = oracle_receipt_v2(
+        &admitted,
+        MACHINE_ASSEMBLY_SCHEMA_VERSION_V2,
+        IR_VERSION - 1,
+    );
+    assert_ne!(
+        oracle.id(),
+        stale_schema.id(),
+        "assembly schema version must be an independent semantic field"
+    );
+    assert_ne!(
+        oracle.id(),
+        stale_ir.id(),
+        "FrankenScript IR version must be an independent semantic field"
+    );
 }
 
-fn valid_draft() -> MachineAssemblyDraftV1 {
-    let declarations = [
-        (
-            AssemblyJoinKindV1::PreloadedBolt,
-            Some(preload(2.0, AssemblyPreloadUnitV1::Kilonewton)),
-        ),
-        (AssemblyJoinKindV1::Weld, None),
-        (AssemblyJoinKindV1::AdhesiveBond, None),
-        (AssemblyJoinKindV1::Key, None),
-        (AssemblyJoinKindV1::Spline, None),
-        (AssemblyJoinKindV1::InterferenceFit, None),
-    ];
-    let mut operations = declarations
+#[test]
+fn mas2_002_unordered_sets_are_symmetric_while_directed_roles_remain_distinct() {
+    let graph = admitted_graph_v2(0x42);
+    let baseline = valid_draft_v2()
+        .admit_against(&graph)
+        .expect("baseline V2 fixture must admit");
+
+    let mut permuted = valid_draft_v2();
+    permuted.initial_available_bodies.reverse();
+    permuted.steps = permuted
+        .steps
         .into_iter()
-        .enumerate()
-        .map(|(index, (join_kind, declared_preload))| {
-            let ordinal = u32::try_from(index).expect("fixture ordinal fits u32");
-            operation(
-                &format!("assembly/op-{index}"),
+        .map(|step| {
+            let mut introduced = step.introduced_bodies().to_vec();
+            let mut occurrence_ids = step.occurrence_ids().to_vec();
+            introduced.reverse();
+            occurrence_ids.reverse();
+            AssemblyStepV2::new(
+                step.id().clone(),
+                step.ordinal(),
+                introduced,
+                occurrence_ids,
+            )
+        })
+        .rev()
+        .collect();
+    permuted.occurrences = permuted
+        .occurrences
+        .into_iter()
+        .map(|occurrence| {
+            let mut topology = occurrence.topology().clone();
+            match &mut topology {
+                JointTopologyV2::PreloadedBolt {
+                    clamped_members,
+                    fastener_stack,
+                    ..
+                } => {
+                    clamped_members.reverse();
+                    fastener_stack.reverse();
+                }
+                JointTopologyV2::Weld { members } => members.reverse(),
+                JointTopologyV2::AdhesiveBond { adherends } => adherends.reverse(),
+                JointTopologyV2::Key { .. }
+                | JointTopologyV2::Spline { .. }
+                | JointTopologyV2::InterferenceFit { .. } => {}
+            }
+            JointOccurrenceV2::new(
+                occurrence.id().clone(),
+                topology,
+                occurrence.lifecycle().clone(),
+            )
+        })
+        .rev()
+        .collect();
+    let permuted = permuted
+        .admit_against(&graph)
+        .expect("symmetric permutations must admit");
+    assert_eq!(
+        baseline.identity(),
+        permuted.identity(),
+        "caller order and genuinely unordered hyperedge-member order must be non-semantic"
+    );
+
+    let mut reversed = valid_draft_v2();
+    reversed.occurrences = reversed
+        .occurrences
+        .into_iter()
+        .map(|occurrence| match occurrence.topology().clone() {
+            JointTopologyV2::Spline { external, internal } => JointOccurrenceV2::new(
+                occurrence.id().clone(),
+                JointTopologyV2::Spline {
+                    external: internal,
+                    internal: external,
+                },
+                occurrence.lifecycle().clone(),
+            ),
+            topology => JointOccurrenceV2::new(
+                occurrence.id().clone(),
+                topology,
+                occurrence.lifecycle().clone(),
+            ),
+        })
+        .collect();
+    let reversed = reversed
+        .admit_against(&graph)
+        .expect("directed role reversal remains structurally admissible");
+    assert_ne!(
+        baseline.identity(),
+        reversed.identity(),
+        "external/internal reversal must move identity even though chronology is unchanged"
+    );
+}
+
+#[test]
+fn mas2_003_lifecycle_is_truthful_and_equal_underlying_artifacts_are_allowed() {
+    let graph = admitted_graph_v2(0x43);
+    let shared = artifact_v2("assembly-v2/shared-coordinate", 0x71);
+    let planned = JointOccurrenceV2::new(
+        occurrence_id_v2("occurrence/equal-artifacts"),
+        JointTopologyV2::Weld {
+            members: vec![
+                feature_use_v2(
+                    "use/equal/base-a",
+                    "body/base-a",
+                    "contact/base-a/alternate",
+                ),
+                feature_use_v2(
+                    "use/equal/base-b",
+                    "body/base-b",
+                    "contact/base-b/alternate",
+                ),
+            ],
+        },
+        AssemblyLifecycleV2::Planned {
+            procedure: AssemblyProcedureRefV2::new(shared.clone()),
+            path: AssemblyPathRefV2::new(shared.clone()),
+        },
+    );
+    let planned = singleton_draft_v2(
+        planned,
+        vec![body_v2("body/base-a"), body_v2("body/base-b")],
+        Vec::new(),
+    )
+    .admit_against(&graph)
+    .expect("equal underlying procedure/path coordinates are valid nominal role reuse");
+    assert!(
+        planned.occurrences()[0]
+            .lifecycle()
+            .execution_evidence()
+            .is_none(),
+        "Planned must not fabricate execution evidence"
+    );
+
+    let claimed = JointOccurrenceV2::new(
+        occurrence_id_v2("occurrence/equal-artifacts"),
+        JointTopologyV2::Weld {
+            members: vec![
+                feature_use_v2(
+                    "use/equal/base-a",
+                    "body/base-a",
+                    "contact/base-a/alternate",
+                ),
+                feature_use_v2(
+                    "use/equal/base-b",
+                    "body/base-b",
+                    "contact/base-b/alternate",
+                ),
+            ],
+        },
+        AssemblyLifecycleV2::ExecutionClaimed {
+            procedure: AssemblyProcedureRefV2::new(shared.clone()),
+            path: AssemblyPathRefV2::new(shared.clone()),
+            evidence: AssemblyExecutionEvidenceRefV2::new(shared),
+        },
+    );
+    let claimed = singleton_draft_v2(
+        claimed,
+        vec![body_v2("body/base-a"), body_v2("body/base-b")],
+        Vec::new(),
+    )
+    .admit_against(&graph)
+    .expect("equal coordinates across three typed claimed roles are allowed");
+    assert!(
+        claimed.occurrences()[0]
+            .lifecycle()
+            .execution_evidence()
+            .is_some(),
+        "ExecutionClaimed must bind an evidence coordinate"
+    );
+    assert_ne!(
+        planned.identity(),
+        claimed.identity(),
+        "lifecycle discriminant and evidence payload must move identity"
+    );
+}
+
+#[test]
+fn mas2_004_reusable_features_support_hybrid_and_rework_occurrences() {
+    let graph = admitted_graph_v2(0x44);
+    let admitted = valid_draft_v2()
+        .admit_against(&graph)
+        .expect("reusable physical features across bolt/weld/adhesive occurrences must admit");
+    let reuse_count = admitted
+        .occurrences()
+        .iter()
+        .flat_map(|occurrence| occurrence.topology().participants())
+        .filter(|(_, feature_use)| {
+            feature_use.selector().contact_feature() == &feature_v2("contact/base-a/main")
+        })
+        .count();
+    assert_eq!(
+        reuse_count, 3,
+        "one durable physical feature must support three separately identified uses"
+    );
+}
+
+#[test]
+fn mas2_005_duplicate_occurrence_and_use_identities_refuse_deterministically() {
+    let graph = admitted_graph_v2(0x45);
+
+    let mut duplicate_occurrence = valid_draft_v2();
+    duplicate_occurrence
+        .occurrences
+        .push(duplicate_occurrence.occurrences[0].clone());
+    let error = duplicate_occurrence
+        .admit_against(&graph)
+        .expect_err("duplicate physical occurrence identity must refuse");
+    assert_eq!(
+        error,
+        MachineAssemblyAdmissionErrorV2::DuplicateOccurrence {
+            occurrence: occurrence_id_v2("occurrence/spline"),
+        },
+        "sorted duplicate occurrence diagnosis must retain the exact durable ID"
+    );
+    assert_eq!(error.code(), "MachineAssemblyDuplicateOccurrence");
+
+    let duplicate_use = JointOccurrenceV2::new(
+        occurrence_id_v2("occurrence/duplicate-use"),
+        JointTopologyV2::Weld {
+            members: vec![
+                feature_use_v2("use/duplicate", "body/base-a", "contact/base-a/alternate"),
+                feature_use_v2("use/duplicate", "body/base-b", "contact/base-b/alternate"),
+            ],
+        },
+        planned_v2(0x72, 0x73),
+    );
+    let error = singleton_draft_v2(
+        duplicate_use,
+        vec![body_v2("body/base-a"), body_v2("body/base-b")],
+        Vec::new(),
+    )
+    .admit_against(&graph)
+    .expect_err("duplicate feature-use identity must refuse before chronology publication");
+    assert_eq!(
+        error,
+        MachineAssemblyAdmissionErrorV2::DuplicateFeatureUse {
+            feature_use: use_id_v2("use/duplicate"),
+            first: occurrence_id_v2("occurrence/duplicate-use"),
+            duplicate: occurrence_id_v2("occurrence/duplicate-use"),
+        },
+        "duplicate-use refusal must retain both occurrence coordinates"
+    );
+}
+
+#[test]
+fn mas2_006_exclusive_policy_is_explicit_while_reusable_policy_is_not_one_shot() {
+    let graph = admitted_graph_v2(0x46);
+    let first = JointOccurrenceV2::new(
+        occurrence_id_v2("occurrence/exclusive-a"),
+        JointTopologyV2::Weld {
+            members: vec![
+                feature_use_v2(
+                    "use/exclusive-a/base-a",
+                    "body/base-a",
+                    "contact/base-a/alternate",
+                ),
+                feature_use_v2(
+                    "use/exclusive-a/base-b",
+                    "body/base-b",
+                    "contact/base-b/alternate",
+                ),
+            ],
+        },
+        planned_v2(0x74, 0x75),
+    );
+    let second = JointOccurrenceV2::new(
+        occurrence_id_v2("occurrence/exclusive-b"),
+        JointTopologyV2::AdhesiveBond {
+            adherends: vec![
+                feature_use_with_policy_v2(
+                    "use/exclusive-b/base-a",
+                    "body/base-a",
+                    "contact/base-a/alternate",
+                    PhysicalFeatureUsePolicyV2::ExclusiveWithinAssembly,
+                ),
+                feature_use_v2(
+                    "use/exclusive-b/base-b",
+                    "body/base-b",
+                    "contact/base-b/alternate",
+                ),
+            ],
+        },
+        planned_v2(0x76, 0x77),
+    );
+    let draft = MachineAssemblyDraftV2 {
+        initial_available_bodies: vec![body_v2("body/base-a"), body_v2("body/base-b")],
+        steps: vec![AssemblyStepV2::new(
+            step_id_v2("step/exclusive"),
+            0,
+            Vec::new(),
+            vec![first.id().clone(), second.id().clone()],
+        )],
+        occurrences: vec![second, first],
+    };
+    let error = draft
+        .admit_against(&graph)
+        .expect_err("an explicit exclusive use must reject a competing reusable use");
+    assert_eq!(
+        error,
+        MachineAssemblyAdmissionErrorV2::ExclusiveFeatureReuse {
+            feature: feature_v2("contact/base-a/alternate"),
+            first: use_id_v2("use/exclusive-a/base-a"),
+            duplicate: use_id_v2("use/exclusive-b/base-a"),
+        },
+        "exclusive reuse diagnosis must be caller-order invariant"
+    );
+}
+
+#[test]
+fn mas2_007_coownership_does_not_fabricate_containment_authority() {
+    let graph = admitted_graph_v2(0x47);
+    let same_owner_wrong_body = JointOccurrenceV2::new(
+        occurrence_id_v2("occurrence/no-containment"),
+        JointTopologyV2::Weld {
+            members: vec![
+                feature_use_v2(
+                    "use/no-containment/shaft",
+                    "body/shaft",
+                    "contact/base-a/main",
+                ),
+                feature_use_v2(
+                    "use/no-containment/base-b",
+                    "body/base-b",
+                    "contact/base-b/main",
+                ),
+            ],
+        },
+        planned_v2(0x78, 0x79),
+    );
+    let admitted = singleton_draft_v2(
+        same_owner_wrong_body,
+        vec![body_v2("body/shaft"), body_v2("body/base-b")],
+        Vec::new(),
+    )
+    .admit_against(&graph)
+    .expect("same-subsystem body/feature selection cannot be rejected as false containment proof");
+    let retained = admitted.occurrences()[0]
+        .topology()
+        .participants()
+        .into_iter()
+        .find(|(_, feature_use)| feature_use.id() == &use_id_v2("use/no-containment/shaft"))
+        .expect("wrong-body selector use must remain in the receipt");
+    assert_eq!(
+        retained.1.selector().contact_feature(),
+        &feature_v2("contact/base-a/main"),
+        "receipt must retain the authority-free caller selector exactly"
+    );
+
+    let cross_owner = JointOccurrenceV2::new(
+        occurrence_id_v2("occurrence/cross-owner"),
+        JointTopologyV2::Weld {
+            members: vec![
+                feature_use_v2(
+                    "use/cross-owner/base-a",
+                    "body/base-a",
+                    "contact/other/main",
+                ),
+                feature_use_v2(
+                    "use/cross-owner/base-b",
+                    "body/base-b",
+                    "contact/base-b/main",
+                ),
+            ],
+        },
+        planned_v2(0x7a, 0x7b),
+    );
+    let error = singleton_draft_v2(
+        cross_owner,
+        vec![body_v2("body/base-a"), body_v2("body/base-b")],
+        Vec::new(),
+    )
+    .admit_against(&graph)
+    .expect_err("cross-owner selector must refuse even though containment remains unclaimed");
+    assert!(
+        matches!(
+            error,
+            MachineAssemblyAdmissionErrorV2::ParticipantOwnerMismatch {
+                occurrence,
+                body,
+                feature,
+                ..
+            } if occurrence == occurrence_id_v2("occurrence/cross-owner")
+                && body == body_v2("body/base-a")
+                && feature == feature_v2("contact/other/main")
+        ),
+        "cross-owner refusal must retain occurrence, body, and feature; got {error:?}"
+    );
+}
+
+#[test]
+fn mas2_008_closed_topology_invariants_and_preload_constructor_fail_closed() {
+    assert_eq!(
+        AssemblyPreloadV2::try_new(f64::NAN, AssemblyPreloadUnitV2::Newton),
+        Err(AssemblyPreloadErrorV2::NonFinite),
+        "NaN preload must refuse at construction"
+    );
+    assert_eq!(
+        AssemblyPreloadV2::try_new(0.0, AssemblyPreloadUnitV2::Newton),
+        Err(AssemblyPreloadErrorV2::NonPositive),
+        "zero preload must refuse at construction"
+    );
+    assert_eq!(
+        AssemblyPreloadV2::try_new(f64::MAX, AssemblyPreloadUnitV2::Kilonewton),
+        Err(AssemblyPreloadErrorV2::SiNonFinite),
+        "SI normalization overflow must refuse at construction"
+    );
+
+    let graph = admitted_graph_v2(0x48);
+    let invalid_bolt = JointOccurrenceV2::new(
+        occurrence_id_v2("occurrence/invalid-bolt"),
+        JointTopologyV2::PreloadedBolt {
+            clamped_members: vec![
+                feature_use_v2(
+                    "use/invalid-bolt/a",
+                    "body/base-a",
+                    "contact/base-a/alternate",
+                ),
+                feature_use_v2(
+                    "use/invalid-bolt/b",
+                    "body/base-b",
+                    "contact/base-b/alternate",
+                ),
+            ],
+            fastener_stack: vec![BoltStackParticipantV2::new(
+                0,
+                BoltStackRoleV2::Washer,
+                feature_use_v2(
+                    "use/invalid-bolt/washer",
+                    "body/washer",
+                    "contact/washer/alternate",
+                ),
+            )],
+            preload: preload_v2(100.0, AssemblyPreloadUnitV2::Newton),
+        },
+        planned_v2(0x7c, 0x7d),
+    );
+    let error = singleton_draft_v2(
+        invalid_bolt,
+        vec![body_v2("body/base-a"), body_v2("body/base-b")],
+        vec![body_v2("body/washer")],
+    )
+    .admit_against(&graph)
+    .expect_err("preloaded-bolt topology without exactly one bolt must refuse");
+    assert_eq!(
+        error,
+        MachineAssemblyAdmissionErrorV2::InvalidTopology {
+            occurrence: occurrence_id_v2("occurrence/invalid-bolt"),
+            issue: AssemblyTopologyIssueV2::BoltCount { actual: 0 },
+        }
+    );
+}
+
+fn mutation_weld_v2(
+    occurrence_key: &str,
+    use_a_key: &str,
+    feature_a_key: &str,
+    policy_a: PhysicalFeatureUsePolicyV2,
+    topology_is_adhesive: bool,
+    lifecycle: AssemblyLifecycleV2,
+) -> JointOccurrenceV2 {
+    mutation_weld_on_body_v2(
+        occurrence_key,
+        use_a_key,
+        "body/base-a",
+        feature_a_key,
+        policy_a,
+        topology_is_adhesive,
+        lifecycle,
+    )
+}
+
+fn mutation_weld_on_body_v2(
+    occurrence_key: &str,
+    use_a_key: &str,
+    body_a_key: &str,
+    feature_a_key: &str,
+    policy_a: PhysicalFeatureUsePolicyV2,
+    topology_is_adhesive: bool,
+    lifecycle: AssemblyLifecycleV2,
+) -> JointOccurrenceV2 {
+    let left = feature_use_with_policy_v2(use_a_key, body_a_key, feature_a_key, policy_a);
+    let right = feature_use_v2(
+        "use/mutation/base-b",
+        "body/base-b",
+        "contact/base-b/alternate",
+    );
+    let topology = if topology_is_adhesive {
+        JointTopologyV2::AdhesiveBond {
+            adherends: vec![left, right],
+        }
+    } else {
+        JointTopologyV2::Weld {
+            members: vec![left, right],
+        }
+    };
+    JointOccurrenceV2::new(occurrence_id_v2(occurrence_key), topology, lifecycle)
+}
+
+fn admit_mutation_weld_v2(
+    graph: &AdmittedMachineGraph,
+    occurrence: JointOccurrenceV2,
+) -> MachineAssemblyIdV2 {
+    singleton_draft_v2(
+        occurrence,
+        vec![
+            body_v2("body/base-a"),
+            body_v2("body/base-b"),
+            body_v2("body/shaft"),
+        ],
+        Vec::new(),
+    )
+    .admit_against(graph)
+    .expect("isolated semantic mutation fixture must remain admissible")
+    .identity()
+}
+
+#[test]
+fn mas2_009_isolated_semantic_mutations_move_every_occurrence_field() {
+    let graph = admitted_graph_v2(0x49);
+    let baseline = admit_mutation_weld_v2(
+        &graph,
+        mutation_weld_v2(
+            "occurrence/mutation",
+            "use/mutation/base-a",
+            "contact/base-a/alternate",
+            PhysicalFeatureUsePolicyV2::Reusable,
+            false,
+            planned_v2(0x80, 0x81),
+        ),
+    );
+
+    let mutations = [
+        (
+            "occurrence-id",
+            mutation_weld_v2(
+                "occurrence/mutation-changed",
+                "use/mutation/base-a",
+                "contact/base-a/alternate",
+                PhysicalFeatureUsePolicyV2::Reusable,
+                false,
+                planned_v2(0x80, 0x81),
+            ),
+        ),
+        (
+            "feature-use-id",
+            mutation_weld_v2(
+                "occurrence/mutation",
+                "use/mutation/base-a-changed",
+                "contact/base-a/alternate",
+                PhysicalFeatureUsePolicyV2::Reusable,
+                false,
+                planned_v2(0x80, 0x81),
+            ),
+        ),
+        (
+            "feature-use-policy",
+            mutation_weld_v2(
+                "occurrence/mutation",
+                "use/mutation/base-a",
+                "contact/base-a/alternate",
+                PhysicalFeatureUsePolicyV2::ExclusiveWithinAssembly,
+                false,
+                planned_v2(0x80, 0x81),
+            ),
+        ),
+        (
+            "declared-body-selector",
+            mutation_weld_on_body_v2(
+                "occurrence/mutation",
+                "use/mutation/base-a",
+                "body/shaft",
+                "contact/base-a/alternate",
+                PhysicalFeatureUsePolicyV2::Reusable,
+                false,
+                planned_v2(0x80, 0x81),
+            ),
+        ),
+        (
+            "physical-feature-selector",
+            mutation_weld_v2(
+                "occurrence/mutation",
+                "use/mutation/base-a",
+                "contact/base-a/main",
+                PhysicalFeatureUsePolicyV2::Reusable,
+                false,
+                planned_v2(0x80, 0x81),
+            ),
+        ),
+        (
+            "family-payload",
+            mutation_weld_v2(
+                "occurrence/mutation",
+                "use/mutation/base-a",
+                "contact/base-a/alternate",
+                PhysicalFeatureUsePolicyV2::Reusable,
+                true,
+                planned_v2(0x80, 0x81),
+            ),
+        ),
+        (
+            "procedure-artifact-namespace",
+            mutation_weld_v2(
+                "occurrence/mutation",
+                "use/mutation/base-a",
+                "contact/base-a/alternate",
+                PhysicalFeatureUsePolicyV2::Reusable,
+                false,
+                planned_coordinates_v2(
+                    "assembly-v2/procedure-changed",
+                    1,
+                    0x80,
+                    "assembly-v2/path",
+                    1,
+                    0x81,
+                ),
+            ),
+        ),
+        (
+            "procedure-artifact-schema-version",
+            mutation_weld_v2(
+                "occurrence/mutation",
+                "use/mutation/base-a",
+                "contact/base-a/alternate",
+                PhysicalFeatureUsePolicyV2::Reusable,
+                false,
+                planned_coordinates_v2(
+                    "assembly-v2/procedure",
+                    2,
+                    0x80,
+                    "assembly-v2/path",
+                    1,
+                    0x81,
+                ),
+            ),
+        ),
+        (
+            "procedure-artifact-content-hash",
+            mutation_weld_v2(
+                "occurrence/mutation",
+                "use/mutation/base-a",
+                "contact/base-a/alternate",
+                PhysicalFeatureUsePolicyV2::Reusable,
+                false,
+                planned_v2(0x82, 0x81),
+            ),
+        ),
+        (
+            "path-artifact-namespace",
+            mutation_weld_v2(
+                "occurrence/mutation",
+                "use/mutation/base-a",
+                "contact/base-a/alternate",
+                PhysicalFeatureUsePolicyV2::Reusable,
+                false,
+                planned_coordinates_v2(
+                    "assembly-v2/procedure",
+                    1,
+                    0x80,
+                    "assembly-v2/path-changed",
+                    1,
+                    0x81,
+                ),
+            ),
+        ),
+        (
+            "path-artifact-schema-version",
+            mutation_weld_v2(
+                "occurrence/mutation",
+                "use/mutation/base-a",
+                "contact/base-a/alternate",
+                PhysicalFeatureUsePolicyV2::Reusable,
+                false,
+                planned_coordinates_v2(
+                    "assembly-v2/procedure",
+                    1,
+                    0x80,
+                    "assembly-v2/path",
+                    2,
+                    0x81,
+                ),
+            ),
+        ),
+        (
+            "path-artifact-content-hash",
+            mutation_weld_v2(
+                "occurrence/mutation",
+                "use/mutation/base-a",
+                "contact/base-a/alternate",
+                PhysicalFeatureUsePolicyV2::Reusable,
+                false,
+                planned_v2(0x80, 0x83),
+            ),
+        ),
+        (
+            "lifecycle-discriminant-and-evidence",
+            mutation_weld_v2(
+                "occurrence/mutation",
+                "use/mutation/base-a",
+                "contact/base-a/alternate",
+                PhysicalFeatureUsePolicyV2::Reusable,
+                false,
+                execution_claimed_v2(0x80, 0x81, 0x84),
+            ),
+        ),
+    ];
+
+    for (field, occurrence) in mutations {
+        let mutated = admit_mutation_weld_v2(&graph, occurrence);
+        assert_ne!(
+            baseline, mutated,
+            "isolated {field} mutation must move aggregate identity"
+        );
+    }
+
+    let claimed_baseline = admit_mutation_weld_v2(
+        &graph,
+        mutation_weld_v2(
+            "occurrence/mutation",
+            "use/mutation/base-a",
+            "contact/base-a/alternate",
+            PhysicalFeatureUsePolicyV2::Reusable,
+            false,
+            execution_claimed_v2(0x80, 0x81, 0x84),
+        ),
+    );
+    let claimed_evidence_mutation = admit_mutation_weld_v2(
+        &graph,
+        mutation_weld_v2(
+            "occurrence/mutation",
+            "use/mutation/base-a",
+            "contact/base-a/alternate",
+            PhysicalFeatureUsePolicyV2::Reusable,
+            false,
+            execution_claimed_v2(0x80, 0x81, 0x85),
+        ),
+    );
+    assert_ne!(
+        claimed_baseline, claimed_evidence_mutation,
+        "execution-evidence content must move identity with the lifecycle discriminant held fixed"
+    );
+
+    let graph_mutated = admitted_graph_v2(0x4a);
+    let graph_mutated_id = admit_mutation_weld_v2(
+        &graph_mutated,
+        mutation_weld_v2(
+            "occurrence/mutation",
+            "use/mutation/base-a",
+            "contact/base-a/alternate",
+            PhysicalFeatureUsePolicyV2::Reusable,
+            false,
+            planned_v2(0x80, 0x81),
+        ),
+    );
+    assert_ne!(
+        baseline, graph_mutated_id,
+        "exact admitted Machine graph identity must move assembly identity"
+    );
+}
+
+#[test]
+fn mas2_010_preload_stack_and_availability_transition_fields_move_identity() {
+    let graph = admitted_graph_v2(0x4b);
+    let baseline = singleton_draft_v2(
+        bolt_occurrence_v2(),
+        vec![body_v2("body/base-a"), body_v2("body/base-b")],
+        vec![
+            body_v2("body/bolt"),
+            body_v2("body/nut"),
+            body_v2("body/washer"),
+        ],
+    )
+    .admit_against(&graph)
+    .expect("baseline bolt transition must admit");
+
+    let mut source_unit_occurrence = bolt_occurrence_v2();
+    let JointTopologyV2::PreloadedBolt {
+        clamped_members,
+        fastener_stack,
+        ..
+    } = source_unit_occurrence.topology().clone()
+    else {
+        unreachable!("bolt fixture topology")
+    };
+    source_unit_occurrence = JointOccurrenceV2::new(
+        source_unit_occurrence.id().clone(),
+        JointTopologyV2::PreloadedBolt {
+            clamped_members,
+            fastener_stack,
+            preload: preload_v2(2_000.0, AssemblyPreloadUnitV2::Newton),
+        },
+        source_unit_occurrence.lifecycle().clone(),
+    );
+    let source_unit = singleton_draft_v2(
+        source_unit_occurrence,
+        vec![body_v2("body/base-a"), body_v2("body/base-b")],
+        vec![
+            body_v2("body/bolt"),
+            body_v2("body/nut"),
+            body_v2("body/washer"),
+        ],
+    )
+    .admit_against(&graph)
+    .expect("equal-SI alternative source-unit declaration must admit");
+    assert_ne!(
+        baseline.identity(),
+        source_unit.identity(),
+        "submitted preload bits and unit must move identity even when SI force is equal"
+    );
+
+    let mut stack_occurrence = bolt_occurrence_v2();
+    let JointTopologyV2::PreloadedBolt {
+        clamped_members,
+        mut fastener_stack,
+        preload,
+    } = stack_occurrence.topology().clone()
+    else {
+        unreachable!("bolt fixture topology")
+    };
+    let washer_index = fastener_stack
+        .iter()
+        .position(|participant| participant.role() == BoltStackRoleV2::Washer)
+        .expect("fixture washer");
+    let washer_use = fastener_stack[washer_index].feature_use().clone();
+    fastener_stack[washer_index] =
+        BoltStackParticipantV2::new(1, BoltStackRoleV2::Spacer, washer_use);
+    stack_occurrence = JointOccurrenceV2::new(
+        stack_occurrence.id().clone(),
+        JointTopologyV2::PreloadedBolt {
+            clamped_members,
+            fastener_stack,
+            preload,
+        },
+        stack_occurrence.lifecycle().clone(),
+    );
+    let stack_role = singleton_draft_v2(
+        stack_occurrence,
+        vec![body_v2("body/base-a"), body_v2("body/base-b")],
+        vec![
+            body_v2("body/bolt"),
+            body_v2("body/nut"),
+            body_v2("body/washer"),
+        ],
+    )
+    .admit_against(&graph)
+    .expect("typed stack-role mutation remains admissible");
+    assert_ne!(
+        baseline.identity(),
+        stack_role.identity(),
+        "typed fastener-stack role must move identity"
+    );
+
+    let stack_position_occurrence = bolt_occurrence_v2();
+    let JointTopologyV2::PreloadedBolt {
+        clamped_members,
+        fastener_stack,
+        preload,
+    } = stack_position_occurrence.topology().clone()
+    else {
+        unreachable!("bolt fixture topology")
+    };
+    let fastener_stack = fastener_stack
+        .into_iter()
+        .map(|participant| {
+            let position = match participant.position() {
+                0 => 1,
+                1 => 0,
+                position => position,
+            };
+            BoltStackParticipantV2::new(
+                position,
+                participant.role(),
+                participant.feature_use().clone(),
+            )
+        })
+        .collect();
+    let stack_position_occurrence = JointOccurrenceV2::new(
+        stack_position_occurrence.id().clone(),
+        JointTopologyV2::PreloadedBolt {
+            clamped_members,
+            fastener_stack,
+            preload,
+        },
+        stack_position_occurrence.lifecycle().clone(),
+    );
+    let stack_position = singleton_draft_v2(
+        stack_position_occurrence,
+        vec![body_v2("body/base-a"), body_v2("body/base-b")],
+        vec![
+            body_v2("body/bolt"),
+            body_v2("body/nut"),
+            body_v2("body/washer"),
+        ],
+    )
+    .admit_against(&graph)
+    .expect("contiguous stack-position reassignment remains admissible");
+    assert_ne!(
+        baseline.identity(),
+        stack_position.identity(),
+        "physical fastener-stack position must move identity independently of role and feature use"
+    );
+
+    let key_introduced = singleton_draft_v2(
+        key_occurrence_v2(),
+        vec![body_v2("body/shaft"), body_v2("body/hub")],
+        vec![body_v2("body/key")],
+    )
+    .admit_against(&graph)
+    .expect("key introduction transition must admit");
+    let key_initial = singleton_draft_v2(
+        key_occurrence_v2(),
+        vec![
+            body_v2("body/shaft"),
+            body_v2("body/hub"),
+            body_v2("body/key"),
+        ],
+        Vec::new(),
+    )
+    .admit_against(&graph)
+    .expect("already-available key topology must admit");
+    assert_ne!(
+        key_introduced.identity(),
+        key_initial.identity(),
+        "initial availability plus explicit before/introduction/after transition must be semantic"
+    );
+}
+
+#[test]
+fn mas2_011_step_identity_ordinal_and_occurrence_schedule_are_semantic() {
+    let graph = admitted_graph_v2(0x4c);
+    let baseline = valid_draft_v2()
+        .admit_against(&graph)
+        .expect("baseline chronology must admit");
+
+    let mut step_id_mutation = valid_draft_v2();
+    step_id_mutation.steps = step_id_mutation
+        .steps
+        .into_iter()
+        .map(|step| {
+            let id = if step.id() == &step_id_v2("step/hybrid") {
+                step_id_v2("step/hybrid-renamed")
+            } else {
+                step.id().clone()
+            };
+            AssemblyStepV2::new(
+                id,
+                step.ordinal(),
+                step.introduced_bodies().to_vec(),
+                step.occurrence_ids().to_vec(),
+            )
+        })
+        .collect();
+    let step_id_mutation = step_id_mutation
+        .admit_against(&graph)
+        .expect("step identity mutation must remain admissible");
+    assert_ne!(
+        baseline.identity(),
+        step_id_mutation.identity(),
+        "chronological step ID must move identity"
+    );
+
+    let mut ordinal_mutation = valid_draft_v2();
+    ordinal_mutation.steps = ordinal_mutation
+        .steps
+        .into_iter()
+        .map(|step| {
+            let ordinal = match step.id().canonical_key() {
+                "step/hybrid" => 2,
+                "step/key" => 1,
+                _ => step.ordinal(),
+            };
+            AssemblyStepV2::new(
+                step.id().clone(),
                 ordinal,
-                AssemblyOperationModeV1::AttachIncoming,
-                "body/base",
-                &format!("contact/base/join-{index}"),
-                &format!("body/part-{index}"),
-                &format!("contact/part-{index}/join"),
-                join_kind,
-                declared_preload,
-                0x70 + u8::try_from(index).expect("fixture byte fits"),
-                0x80 + u8::try_from(index).expect("fixture byte fits"),
-                0x90 + u8::try_from(index).expect("fixture byte fits"),
+                step.introduced_bodies().to_vec(),
+                step.occurrence_ids().to_vec(),
+            )
+        })
+        .collect();
+    let ordinal_mutation = ordinal_mutation
+        .admit_against(&graph)
+        .expect("independent key/hybrid step ordinal swap must remain admissible");
+    assert_ne!(
+        baseline.identity(),
+        ordinal_mutation.identity(),
+        "contiguous ordinal assignment and derived before/after rows must move identity"
+    );
+
+    let mut schedule_mutation = valid_draft_v2();
+    schedule_mutation.steps = schedule_mutation
+        .steps
+        .into_iter()
+        .map(|step| {
+            let occurrence_ids = match step.id().canonical_key() {
+                "step/hybrid" => vec![
+                    occurrence_id_v2("occurrence/weld"),
+                    occurrence_id_v2("occurrence/interference"),
+                ],
+                "step/directed" => vec![
+                    occurrence_id_v2("occurrence/spline"),
+                    occurrence_id_v2("occurrence/adhesive"),
+                ],
+                _ => step.occurrence_ids().to_vec(),
+            };
+            AssemblyStepV2::new(
+                step.id().clone(),
+                step.ordinal(),
+                step.introduced_bodies().to_vec(),
+                occurrence_ids,
+            )
+        })
+        .collect();
+    let schedule_mutation = schedule_mutation
+        .admit_against(&graph)
+        .expect("schedule reassignment over already available bodies must admit");
+    assert_ne!(
+        baseline.identity(),
+        schedule_mutation.identity(),
+        "step-to-occurrence schedule links must move identity"
+    );
+}
+
+#[test]
+fn mas2_012_atomic_chronology_refuses_unavailable_unused_and_duplicate_links() {
+    let graph = admitted_graph_v2(0x4d);
+
+    let unavailable = singleton_draft_v2(
+        key_occurrence_v2(),
+        vec![body_v2("body/shaft"), body_v2("body/hub")],
+        Vec::new(),
+    );
+    let error = unavailable
+        .admit_against(&graph)
+        .expect_err("key participant unavailable at the atomic step must refuse");
+    assert!(
+        matches!(
+            error,
+            MachineAssemblyAdmissionErrorV2::ParticipantBodyUnavailable {
+                step,
+                occurrence,
+                body,
+                ..
+            } if step == step_id_v2("step/single")
+                && occurrence == occurrence_id_v2("occurrence/key")
+                && body == body_v2("body/key")
+        ),
+        "unavailable-body refusal must identify step, occurrence, and body; got {error:?}"
+    );
+
+    let unused = singleton_draft_v2(
+        weld_occurrence_v2(),
+        vec![body_v2("body/base-a"), body_v2("body/base-b")],
+        vec![body_v2("body/spare")],
+    );
+    assert_eq!(
+        unused.admit_against(&graph),
+        Err(
+            MachineAssemblyAdmissionErrorV2::IntroducedBodyDoesNotParticipate {
+                step: step_id_v2("step/single"),
+                body: body_v2("body/spare"),
+            }
+        ),
+        "an introduction must not publish unless the new body participates in the complete step"
+    );
+
+    let occurrence = weld_occurrence_v2();
+    let occurrence_id = occurrence.id().clone();
+    let duplicate_reference = MachineAssemblyDraftV2 {
+        initial_available_bodies: vec![body_v2("body/base-a"), body_v2("body/base-b")],
+        steps: vec![AssemblyStepV2::new(
+            step_id_v2("step/duplicate-reference"),
+            0,
+            Vec::new(),
+            vec![occurrence_id.clone(), occurrence_id.clone()],
+        )],
+        occurrences: vec![occurrence],
+    };
+    assert_eq!(
+        duplicate_reference.admit_against(&graph),
+        Err(
+            MachineAssemblyAdmissionErrorV2::DuplicateOccurrenceReference {
+                step: step_id_v2("step/duplicate-reference"),
+                occurrence: occurrence_id,
+            }
+        ),
+        "one step cannot schedule the same physical occurrence twice"
+    );
+
+    let occurrence = weld_occurrence_v2();
+    let occurrence_id = occurrence.id().clone();
+    let scheduled_twice = MachineAssemblyDraftV2 {
+        initial_available_bodies: vec![body_v2("body/base-a"), body_v2("body/base-b")],
+        steps: vec![
+            AssemblyStepV2::new(
+                step_id_v2("step/first-schedule"),
+                0,
+                Vec::new(),
+                vec![occurrence_id.clone()],
+            ),
+            AssemblyStepV2::new(
+                step_id_v2("step/second-schedule"),
+                1,
+                Vec::new(),
+                vec![occurrence_id.clone()],
+            ),
+        ],
+        occurrences: vec![occurrence],
+    };
+    assert_eq!(
+        scheduled_twice.admit_against(&graph),
+        Err(MachineAssemblyAdmissionErrorV2::OccurrenceScheduledTwice {
+            occurrence: occurrence_id,
+            first: step_id_v2("step/first-schedule"),
+            duplicate: step_id_v2("step/second-schedule"),
+        }),
+        "a physical occurrence belongs to exactly one chronological step"
+    );
+}
+
+fn boundary_occurrence_v2(index: usize) -> JointOccurrenceV2 {
+    JointOccurrenceV2::new(
+        occurrence_id_v2(&format!("occurrence/boundary-{index:04}")),
+        JointTopologyV2::Spline {
+            external: feature_use_v2(
+                &format!("use/boundary-{index:04}/external"),
+                "body/external",
+                "contact/external/main",
+            ),
+            internal: feature_use_v2(
+                &format!("use/boundary-{index:04}/internal"),
+                "body/internal",
+                "contact/internal/main",
+            ),
+        },
+        planned_v2(0x90, 0x91),
+    )
+}
+
+fn boundary_draft_v2() -> MachineAssemblyDraftV2 {
+    let occurrences = (0..MAX_MACHINE_ASSEMBLY_OCCURRENCES_V2)
+        .map(boundary_occurrence_v2)
+        .collect::<Vec<_>>();
+    let steps = occurrences
+        .iter()
+        .enumerate()
+        .map(|(index, occurrence)| {
+            AssemblyStepV2::new(
+                step_id_v2(&format!("step/boundary-{index:04}")),
+                u32::try_from(index).expect("step boundary fits u32"),
+                Vec::new(),
+                vec![occurrence.id().clone()],
+            )
+        })
+        .collect();
+    MachineAssemblyDraftV2 {
+        initial_available_bodies: vec![body_v2("body/external"), body_v2("body/internal")],
+        steps,
+        occurrences,
+    }
+}
+
+#[test]
+fn mas2_013_exact_step_occurrence_and_participant_caps_preflight_n_plus_one() {
+    let graph = admitted_graph_v2(0x4e);
+    let exact = boundary_draft_v2();
+    let admitted = exact
+        .clone()
+        .admit_against(&graph)
+        .expect("exact 4,096-step/occurrence boundary must admit");
+    assert_eq!(
+        admitted.steps().len(),
+        MAX_MACHINE_ASSEMBLY_STEPS_V2,
+        "exact chronological step cap must be retained"
+    );
+    assert_eq!(
+        admitted.occurrences().len(),
+        MAX_MACHINE_ASSEMBLY_OCCURRENCES_V2,
+        "exact physical occurrence cap must be retained"
+    );
+
+    let mut occurrence_over = exact.clone();
+    occurrence_over.occurrences.push(boundary_occurrence_v2(0));
+    assert_eq!(
+        occurrence_over.admit_against(&graph),
+        Err(MachineAssemblyAdmissionErrorV2::OccurrenceLimit {
+            actual: MAX_MACHINE_ASSEMBLY_OCCURRENCES_V2 + 1,
+            max: MAX_MACHINE_ASSEMBLY_OCCURRENCES_V2,
+        }),
+        "raw occurrence N+1 must refuse before duplicate-ID or nested processing"
+    );
+
+    let mut step_over = exact;
+    step_over.steps.push(AssemblyStepV2::new(
+        step_id_v2("step/boundary-over"),
+        u32::try_from(MAX_MACHINE_ASSEMBLY_STEPS_V2).expect("step boundary fits u32"),
+        Vec::new(),
+        vec![occurrence_id_v2("occurrence/boundary-0000")],
+    ));
+    assert_eq!(
+        step_over.admit_against(&graph),
+        Err(MachineAssemblyAdmissionErrorV2::StepLimit {
+            actual: MAX_MACHINE_ASSEMBLY_STEPS_V2 + 1,
+            max: MAX_MACHINE_ASSEMBLY_STEPS_V2,
+        }),
+        "raw chronological step N+1 must refuse before schedule validation"
+    );
+
+    let too_many_members = (0..=MAX_MACHINE_ASSEMBLY_PARTICIPANTS_PER_OCCURRENCE_V2)
+        .map(|index| {
+            feature_use_v2(
+                &format!("use/participant-over-{index}"),
+                if index % 2 == 0 {
+                    "body/base-a"
+                } else {
+                    "body/base-b"
+                },
+                if index % 2 == 0 {
+                    "contact/base-a/main"
+                } else {
+                    "contact/base-b/main"
+                },
+            )
+        })
+        .collect();
+    let participant_over = JointOccurrenceV2::new(
+        occurrence_id_v2("occurrence/participant-over"),
+        JointTopologyV2::Weld {
+            members: too_many_members,
+        },
+        planned_v2(0x92, 0x93),
+    );
+    let error = singleton_draft_v2(
+        participant_over,
+        vec![body_v2("body/base-a"), body_v2("body/base-b")],
+        Vec::new(),
+    )
+    .admit_against(&graph)
+    .expect_err("raw participant N+1 must refuse before sorting or graph traversal");
+    assert_eq!(
+        error,
+        MachineAssemblyAdmissionErrorV2::InvalidTopology {
+            occurrence: occurrence_id_v2("occurrence/participant-over"),
+            issue: AssemblyTopologyIssueV2::ParticipantLimit {
+                actual: MAX_MACHINE_ASSEMBLY_PARTICIPANTS_PER_OCCURRENCE_V2 + 1,
+                max: MAX_MACHINE_ASSEMBLY_PARTICIPANTS_PER_OCCURRENCE_V2,
+            },
+        }
+    );
+}
+
+fn maximum_key_v2(prefix: &str, index: usize) -> String {
+    let mut key = format!("{prefix}{index}a");
+    assert!(key.len() <= 128, "maximum-key prefix must fit");
+    key.extend(std::iter::repeat_n('a', 128 - key.len()));
+    assert_eq!(key.len(), 128, "maximum grammar key must be 128 bytes");
+    key
+}
+
+fn maximum_width_graph_v2() -> (AdmittedMachineGraph, Vec<(String, String)>) {
+    let pairs = (0..MAX_MACHINE_ASSEMBLY_PARTICIPANTS_PER_OCCURRENCE_V2)
+        .map(|index| {
+            (
+                maximum_key_v2("body", index),
+                maximum_key_v2("feature", index),
             )
         })
         .collect::<Vec<_>>();
-    operations.reverse();
-    MachineAssemblyDraftV1 {
-        initial_body: body("body/base"),
-        operations,
-    }
-}
-
-#[test]
-#[allow(clippy::too_many_lines)]
-fn mas_001_order_families_units_and_semantic_fields_reach_identity() {
-    let graph = admitted_graph(0x41);
-    let draft = valid_draft();
-    let baseline = draft
-        .clone()
-        .admit_against(&graph)
-        .expect("all six joining families admit");
-    let mut reordered = draft;
-    reordered.operations.reverse();
-    let reordered = reordered
-        .admit_against(&graph)
-        .expect("caller collection order is non-semantic");
-
-    assert_eq!(baseline.graph(), graph.identity());
-    assert_eq!(baseline.initial_body(), &body("body/base"));
-    assert_eq!(baseline.identity(), reordered.identity());
-    assert_eq!(
-        baseline.identity_receipt().canonical_preimage(),
-        reordered.identity_receipt().canonical_preimage()
-    );
-    assert_eq!(
-        baseline
-            .operations()
-            .iter()
-            .map(|entry| (entry.ordinal(), entry.join_kind()))
-            .collect::<Vec<_>>(),
-        [
-            (0, AssemblyJoinKindV1::PreloadedBolt),
-            (1, AssemblyJoinKindV1::Weld),
-            (2, AssemblyJoinKindV1::AdhesiveBond),
-            (3, AssemblyJoinKindV1::Key),
-            (4, AssemblyJoinKindV1::Spline),
-            (5, AssemblyJoinKindV1::InterferenceFit),
-        ]
-    );
-    assert!(AssemblyJoinKindV1::PreloadedBolt.requires_preload());
-    assert_eq!(
-        AssemblyJoinKindV1::InterferenceFit.name(),
-        "interference-fit"
-    );
-    let retained_preload = baseline.operations()[0]
-        .preload()
-        .expect("preloaded bolt retains target");
-    assert_eq!(retained_preload.unit().symbol(), "kN");
-    assert_eq!(retained_preload.newtons().to_bits(), 2_000.0_f64.to_bits());
-    assert_eq!(
-        baseline.operations()[0].procedure().artifact().namespace(),
-        "assembly/procedure"
-    );
-    assert_eq!(
-        baseline.operations()[0].path().artifact().namespace(),
-        "assembly/path"
-    );
-    assert_eq!(
-        baseline.operations()[0]
-            .execution_evidence()
-            .artifact()
-            .namespace(),
-        "assembly/execution-evidence"
-    );
-
-    let thousand_newtons = preload(1_000.0, AssemblyPreloadUnitV1::Newton);
-    let one_kilonewton = preload(1.0, AssemblyPreloadUnitV1::Kilonewton);
-    assert_eq!(
-        thousand_newtons.newtons().to_bits(),
-        one_kilonewton.newtons().to_bits()
-    );
-    assert_ne!(thousand_newtons, one_kilonewton);
-
-    let base_single = singleton(OperationFixture::baseline().build())
-        .admit_against(&graph)
-        .expect("baseline singleton admits");
-    let mutations = [
-        OperationFixture {
-            id: "assembly/single-renamed",
-            ..OperationFixture::baseline()
-        },
-        OperationFixture {
-            base_feature: "contact/base/join-6",
-            ..OperationFixture::baseline()
-        },
-        OperationFixture {
-            incoming_body: "body/part-1",
-            incoming_feature: "contact/part-1/join",
-            ..OperationFixture::baseline()
-        },
-        OperationFixture {
-            incoming_feature: "contact/part-0/join-alternate",
-            ..OperationFixture::baseline()
-        },
-        OperationFixture {
-            preload: Some(preload(3.0, AssemblyPreloadUnitV1::Kilonewton)),
-            ..OperationFixture::baseline()
-        },
-        OperationFixture {
-            preload: Some(preload(2_000.0, AssemblyPreloadUnitV1::Newton)),
-            ..OperationFixture::baseline()
-        },
-        OperationFixture {
-            procedure_byte: 0x64,
-            ..OperationFixture::baseline()
-        },
-        OperationFixture {
-            path_byte: 0x65,
-            ..OperationFixture::baseline()
-        },
-        OperationFixture {
-            evidence_byte: 0x66,
-            ..OperationFixture::baseline()
-        },
-    ];
-    for mutation in mutations {
-        let changed = singleton(mutation.build())
-            .admit_against(&graph)
-            .expect("identity mutation remains structurally admissible");
-        assert_ne!(base_single.identity(), changed.identity());
-    }
-
-    let weld = singleton(
-        OperationFixture {
-            join_kind: AssemblyJoinKindV1::Weld,
-            preload: None,
-            ..OperationFixture::baseline()
-        }
-        .build(),
-    )
-    .admit_against(&graph)
-    .expect("weld singleton admits");
-    let adhesive = singleton(
-        OperationFixture {
-            join_kind: AssemblyJoinKindV1::AdhesiveBond,
-            preload: None,
-            ..OperationFixture::baseline()
-        }
-        .build(),
-    )
-    .admit_against(&graph)
-    .expect("adhesive singleton admits");
-    assert_ne!(weld.identity(), adhesive.identity());
-
-    let ordered = MachineAssemblyDraftV1 {
-        initial_body: body("body/base"),
-        operations: vec![
-            OperationFixture {
-                id: "assembly/order-a",
-                join_kind: AssemblyJoinKindV1::Weld,
-                preload: None,
-                ..OperationFixture::baseline()
-            }
-            .build(),
-            OperationFixture {
-                id: "assembly/order-b",
-                ordinal: 1,
-                base_feature: "contact/base/join-1",
-                incoming_body: "body/part-1",
-                incoming_feature: "contact/part-1/join",
-                join_kind: AssemblyJoinKindV1::Weld,
-                preload: None,
-                ..OperationFixture::baseline()
-            }
-            .build(),
-        ],
-    }
-    .admit_against(&graph)
-    .expect("two independent incoming bodies admit");
-    let swapped = MachineAssemblyDraftV1 {
-        initial_body: body("body/base"),
-        operations: vec![
-            OperationFixture {
-                id: "assembly/order-a",
-                ordinal: 1,
-                join_kind: AssemblyJoinKindV1::Weld,
-                preload: None,
-                ..OperationFixture::baseline()
-            }
-            .build(),
-            OperationFixture {
-                id: "assembly/order-b",
-                ordinal: 0,
-                base_feature: "contact/base/join-1",
-                incoming_body: "body/part-1",
-                incoming_feature: "contact/part-1/join",
-                join_kind: AssemblyJoinKindV1::Weld,
-                preload: None,
-                ..OperationFixture::baseline()
-            }
-            .build(),
-        ],
-    }
-    .admit_against(&graph)
-    .expect("swapped total order remains structurally available");
-    assert_ne!(ordered.identity(), swapped.identity());
-
-    let other_graph = admitted_graph(0x42);
-    let graph_changed = singleton(OperationFixture::baseline().build())
-        .admit_against(&other_graph)
-        .expect("same declarations admit against changed graph");
-    assert_ne!(base_single.identity(), graph_changed.identity());
-
-    let alternate_initial = MachineAssemblyDraftV1 {
-        initial_body: body("body/base-alternate"),
-        operations: vec![
-            OperationFixture {
-                base_body: "body/base-alternate",
-                base_feature: "contact/base-alternate/join-0",
-                ..OperationFixture::baseline()
-            }
-            .build(),
-        ],
-    }
-    .admit_against(&graph)
-    .expect("alternate initial body and matching endpoint admit");
-    assert_ne!(base_single.identity(), alternate_initial.identity());
-
-    let cross_subsystem = MachineAssemblyDraftV1 {
-        initial_body: body("body/base"),
-        operations: vec![
-            OperationFixture {
-                incoming_body: "body/other",
-                incoming_feature: "contact/other/join",
-                join_kind: AssemblyJoinKindV1::Weld,
-                preload: None,
-                ..OperationFixture::baseline()
-            }
-            .build(),
-        ],
-    }
-    .admit_against(&graph)
-    .expect("cross-subsystem endpoints remain explicit and structurally admissible");
-    assert_eq!(cross_subsystem.operations().len(), 1);
-
-    let continued = MachineAssemblyDraftV1 {
-        initial_body: body("body/base"),
-        operations: vec![
-            OperationFixture {
-                id: "assembly/continue-attach",
-                join_kind: AssemblyJoinKindV1::Weld,
-                preload: None,
-                ..OperationFixture::baseline()
-            }
-            .build(),
-            OperationFixture {
-                id: "assembly/continue-existing",
-                ordinal: 1,
-                mode: AssemblyOperationModeV1::ContinueExisting,
-                base_feature: "contact/base/join-1",
-                incoming_feature: "contact/part-0/join-alternate",
-                join_kind: AssemblyJoinKindV1::AdhesiveBond,
-                preload: None,
-                ..OperationFixture::baseline()
-            }
-            .build(),
-        ],
-    }
-    .admit_against(&graph)
-    .expect("a distinct continuation joint between attached bodies admits");
-    assert_eq!(
-        continued.operations()[1].mode(),
-        AssemblyOperationModeV1::ContinueExisting
-    );
-    let reversed_continuation = MachineAssemblyDraftV1 {
-        initial_body: body("body/base"),
-        operations: vec![
-            OperationFixture {
-                id: "assembly/continue-attach",
-                join_kind: AssemblyJoinKindV1::Weld,
-                preload: None,
-                ..OperationFixture::baseline()
-            }
-            .build(),
-            OperationFixture {
-                id: "assembly/continue-existing",
-                ordinal: 1,
-                mode: AssemblyOperationModeV1::ContinueExisting,
-                base_body: "body/part-0",
-                base_feature: "contact/part-0/join-alternate",
-                incoming_body: "body/base",
-                incoming_feature: "contact/base/join-1",
-                join_kind: AssemblyJoinKindV1::AdhesiveBond,
-                preload: None,
-                ..OperationFixture::baseline()
-            }
-            .build(),
-        ],
-    }
-    .admit_against(&graph)
-    .expect("reversed role order remains structurally admissible");
-    assert_ne!(continued.identity(), reversed_continuation.identity());
-}
-
-#[test]
-#[allow(clippy::too_many_lines)]
-fn mas_002_admission_refuses_invalid_order_selectors_reuse_and_preload() {
-    let graph = admitted_graph(0x41);
-
-    assert_eq!(
-        AssemblyPreloadV1::try_new(f64::NAN, AssemblyPreloadUnitV1::Newton),
-        Err(AssemblyPreloadErrorV1::NonFinite)
-    );
-    assert_eq!(
-        AssemblyPreloadV1::try_new(0.0, AssemblyPreloadUnitV1::Newton),
-        Err(AssemblyPreloadErrorV1::NonPositive)
-    );
-    assert_eq!(
-        AssemblyPreloadV1::try_new(-1.0, AssemblyPreloadUnitV1::Newton),
-        Err(AssemblyPreloadErrorV1::NonPositive)
-    );
-    assert_eq!(
-        AssemblyPreloadV1::try_new(f64::MAX, AssemblyPreloadUnitV1::Kilonewton),
-        Err(AssemblyPreloadErrorV1::SiNonFinite)
-    );
-    assert_eq!(
-        AssemblyPreloadErrorV1::SiNonFinite.code(),
-        "AssemblyPreloadSiNonFinite"
-    );
-
-    assert_eq!(
-        MachineAssemblyDraftV1 {
-            initial_body: body("body/base"),
-            operations: Vec::new(),
-        }
-        .admit_against(&graph),
-        Err(MachineAssemblyAdmissionErrorV1::NoOperations)
-    );
-    assert_eq!(
-        MachineAssemblyDraftV1 {
-            initial_body: body("body/missing"),
-            operations: vec![OperationFixture::baseline().build()],
-        }
-        .admit_against(&graph),
-        Err(MachineAssemblyAdmissionErrorV1::UnknownInitialBody {
-            body: body("body/missing"),
-        })
-    );
-
-    assert_eq!(
-        MachineAssemblyDraftV1 {
-            initial_body: body("body/base"),
-            operations: vec![
-                OperationFixture::baseline().build(),
-                OperationFixture {
-                    ordinal: 1,
-                    base_feature: "contact/base/join-1",
-                    incoming_body: "body/part-1",
-                    incoming_feature: "contact/part-1/join",
-                    ..OperationFixture::baseline()
-                }
-                .build(),
-            ],
-        }
-        .admit_against(&graph),
-        Err(MachineAssemblyAdmissionErrorV1::DuplicateOperation {
-            operation: operation_id("assembly/single"),
-        })
-    );
-    assert_eq!(
-        MachineAssemblyDraftV1 {
-            initial_body: body("body/base"),
-            operations: vec![
-                OperationFixture {
-                    id: "assembly/ordinal-a",
-                    ..OperationFixture::baseline()
-                }
-                .build(),
-                OperationFixture {
-                    id: "assembly/ordinal-b",
-                    base_feature: "contact/base/join-1",
-                    incoming_body: "body/part-1",
-                    incoming_feature: "contact/part-1/join",
-                    ..OperationFixture::baseline()
-                }
-                .build(),
-            ],
-        }
-        .admit_against(&graph),
-        Err(MachineAssemblyAdmissionErrorV1::DuplicateOrdinal {
-            ordinal: 0,
-            first: operation_id("assembly/ordinal-a"),
-            duplicate: operation_id("assembly/ordinal-b"),
-        })
-    );
-    assert_eq!(
-        singleton(
-            OperationFixture {
-                ordinal: 1,
-                ..OperationFixture::baseline()
-            }
-            .build()
-        )
-        .admit_against(&graph),
-        Err(MachineAssemblyAdmissionErrorV1::OrdinalGap {
-            operation: operation_id("assembly/single"),
-            expected: 0,
-            actual: 1,
-        })
-    );
-
-    assert_eq!(
-        singleton(
-            OperationFixture {
-                base_body: "body/missing",
-                ..OperationFixture::baseline()
-            }
-            .build()
-        )
-        .admit_against(&graph),
-        Err(MachineAssemblyAdmissionErrorV1::UnknownBody {
-            operation: operation_id("assembly/single"),
-            role: AssemblyEndpointRoleV1::Base,
-            body: body("body/missing"),
-        })
-    );
-    assert_eq!(
-        singleton(
-            OperationFixture {
-                incoming_feature: "contact/part-0/missing",
-                ..OperationFixture::baseline()
-            }
-            .build()
-        )
-        .admit_against(&graph),
-        Err(MachineAssemblyAdmissionErrorV1::UnknownFeature {
-            operation: operation_id("assembly/single"),
-            role: AssemblyEndpointRoleV1::Incoming,
-            feature: feature("contact/part-0/missing"),
-        })
-    );
-    assert!(matches!(
-        singleton(
-            OperationFixture {
-                base_feature: "contact/other/join",
-                ..OperationFixture::baseline()
-            }
-            .build()
-        )
-        .admit_against(&graph),
-        Err(MachineAssemblyAdmissionErrorV1::FeatureOwnerMismatch {
-            operation,
-            role: AssemblyEndpointRoleV1::Base,
-            body,
-            feature,
-            body_owner,
-            feature_owner,
-        }) if operation == operation_id("assembly/single")
-            && body == crate::body("body/base")
-            && feature == crate::feature("contact/other/join")
-            && body_owner == SubsystemId::new("subsystem/assembly").unwrap()
-            && feature_owner == SubsystemId::new("subsystem/other").unwrap()
-    ));
-    assert_eq!(
-        singleton(
-            OperationFixture {
-                incoming_body: "body/base",
-                incoming_feature: "contact/base/join-0",
-                ..OperationFixture::baseline()
-            }
-            .build()
-        )
-        .admit_against(&graph),
-        Err(MachineAssemblyAdmissionErrorV1::SameFeature {
-            operation: operation_id("assembly/single"),
-            feature: feature("contact/base/join-0"),
-        })
-    );
-    assert_eq!(
-        singleton(
-            OperationFixture {
-                incoming_body: "body/base",
-                incoming_feature: "contact/base/join-1",
-                ..OperationFixture::baseline()
-            }
-            .build()
-        )
-        .admit_against(&graph),
-        Err(MachineAssemblyAdmissionErrorV1::SameBody {
-            operation: operation_id("assembly/single"),
-            body: body("body/base"),
-        })
-    );
-
-    assert_eq!(
-        singleton(
-            OperationFixture {
-                preload: None,
-                ..OperationFixture::baseline()
-            }
-            .build()
-        )
-        .admit_against(&graph),
-        Err(MachineAssemblyAdmissionErrorV1::InvalidPreloadUse {
-            operation: operation_id("assembly/single"),
-            issue: AssemblyPreloadUseIssueV1::PreloadedBoltMissing,
-        })
-    );
-    assert_eq!(
-        singleton(
-            OperationFixture {
-                join_kind: AssemblyJoinKindV1::Weld,
-                ..OperationFixture::baseline()
-            }
-            .build()
-        )
-        .admit_against(&graph),
-        Err(MachineAssemblyAdmissionErrorV1::InvalidPreloadUse {
-            operation: operation_id("assembly/single"),
-            issue: AssemblyPreloadUseIssueV1::NonBoltHasPreload,
-        })
-    );
-
-    assert_eq!(
-        singleton(
-            OperationFixture {
-                base_body: "body/part-1",
-                base_feature: "contact/part-1/join",
-                ..OperationFixture::baseline()
-            }
-            .build()
-        )
-        .admit_against(&graph),
-        Err(MachineAssemblyAdmissionErrorV1::BaseUnavailable {
-            operation: operation_id("assembly/single"),
-            body: body("body/part-1"),
-        })
-    );
-    assert_eq!(
-        singleton(
-            OperationFixture {
-                mode: AssemblyOperationModeV1::ContinueExisting,
-                join_kind: AssemblyJoinKindV1::Weld,
-                preload: None,
-                ..OperationFixture::baseline()
-            }
-            .build()
-        )
-        .admit_against(&graph),
-        Err(
-            MachineAssemblyAdmissionErrorV1::ContinuationIncomingUnavailable {
-                operation: operation_id("assembly/single"),
-                body: body("body/part-0"),
-            }
-        )
-    );
-
-    let first = OperationFixture {
-        id: "assembly/attach-first",
-        join_kind: AssemblyJoinKindV1::Weld,
-        preload: None,
-        ..OperationFixture::baseline()
-    }
-    .build();
-    let second_attaches_same_body = OperationFixture {
-        id: "assembly/attach-again",
-        ordinal: 1,
-        base_feature: "contact/base/join-1",
-        incoming_feature: "contact/part-0/join-alternate",
-        join_kind: AssemblyJoinKindV1::Weld,
-        preload: None,
-        ..OperationFixture::baseline()
-    }
-    .build();
-    assert_eq!(
-        MachineAssemblyDraftV1 {
-            initial_body: body("body/base"),
-            operations: vec![first, second_attaches_same_body],
-        }
-        .admit_against(&graph),
-        Err(MachineAssemblyAdmissionErrorV1::IncomingAlreadyAttached {
-            operation: operation_id("assembly/attach-again"),
-            body: body("body/part-0"),
-        })
-    );
-
-    let first = OperationFixture {
-        id: "assembly/reuse-first",
-        join_kind: AssemblyJoinKindV1::Weld,
-        preload: None,
-        ..OperationFixture::baseline()
-    }
-    .build();
-    let repeated_feature = OperationFixture {
-        id: "assembly/reuse-second",
-        ordinal: 1,
-        incoming_body: "body/part-1",
-        incoming_feature: "contact/part-1/join",
-        join_kind: AssemblyJoinKindV1::Weld,
-        preload: None,
-        ..OperationFixture::baseline()
-    }
-    .build();
-    assert_eq!(
-        MachineAssemblyDraftV1 {
-            initial_body: body("body/base"),
-            operations: vec![first, repeated_feature],
-        }
-        .admit_against(&graph),
-        Err(MachineAssemblyAdmissionErrorV1::FeatureReuse {
-            feature: feature("contact/base/join-0"),
-            first: operation_id("assembly/reuse-first"),
-            duplicate: operation_id("assembly/reuse-second"),
-        })
-    );
-    assert_eq!(
-        MachineAssemblyAdmissionErrorV1::NoOperations.code(),
-        "MachineAssemblyNoOperations"
-    );
-}
-
-fn boundary_graph() -> AdmittedMachineGraph {
-    let base = body("body/boundary-base");
-    let incoming = body("body/boundary-incoming");
-
-    let mut features = (0..MAX_MACHINE_ASSEMBLY_OPERATIONS_V1)
-        .map(|index| feature(&format!("contact/boundary-base/join-{index:04}")))
+    let bodies = pairs
+        .iter()
+        .map(|(body_key, _)| body_v2(body_key))
         .collect::<Vec<_>>();
-    features.extend(
-        (0..MAX_MACHINE_ASSEMBLY_OPERATIONS_V1)
-            .map(|index| feature(&format!("contact/boundary-incoming/join-{index:04}"))),
-    );
-
-    MachineGraphDraft {
+    let materials = bodies
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, body)| {
+            material_v2(
+                body,
+                &format!("materials/maximum-{index}"),
+                u8::try_from(index + 1).expect("maximum fixture material byte fits"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let graph = MachineGraphDraft {
         clocks: Vec::new(),
         subsystems: vec![SubsystemSpec {
-            id: SubsystemId::new("subsystem/boundary").expect("canonical subsystem"),
-            model: ModelRef::new("models/assembly-boundary", nz(1), [0xA2; 32])
+            id: SubsystemId::new("subsystem/maximum-width").expect("canonical subsystem"),
+            model: ModelRef::new("models/maximum-width", nz_v2(1), [0xa0; 32])
                 .expect("canonical model"),
-            bodies: vec![base.clone(), incoming.clone()],
+            bodies,
             surface_patches: Vec::new(),
-            contact_features: features,
+            contact_features: pairs
+                .iter()
+                .map(|(_, feature_key)| feature_v2(feature_key))
+                .collect(),
             state_slots: Vec::new(),
         }],
         terminals: Vec::new(),
         ports: Vec::new(),
         relations: Vec::new(),
-        materials: vec![
-            material(base, "materials/boundary-base", 0xA1),
-            material(incoming, "materials/boundary-incoming", 0xA6),
-        ],
+        materials,
         interfaces: Vec::new(),
     }
     .admit()
-    .expect("exact-cap assembly graph admits")
-}
-
-fn boundary_draft() -> MachineAssemblyDraftV1 {
-    MachineAssemblyDraftV1 {
-        initial_body: body("body/boundary-base"),
-        operations: (0..MAX_MACHINE_ASSEMBLY_OPERATIONS_V1)
-            .map(|index| {
-                operation(
-                    &format!("assembly/boundary-{index:04}"),
-                    u32::try_from(index).expect("operation cap fits u32"),
-                    if index == 0 {
-                        AssemblyOperationModeV1::AttachIncoming
-                    } else {
-                        AssemblyOperationModeV1::ContinueExisting
-                    },
-                    "body/boundary-base",
-                    &format!("contact/boundary-base/join-{index:04}"),
-                    "body/boundary-incoming",
-                    &format!("contact/boundary-incoming/join-{index:04}"),
-                    AssemblyJoinKindV1::Weld,
-                    None,
-                    0xA3,
-                    0xA4,
-                    0xA5,
-                )
-            })
-            .collect(),
-    }
+    .expect("maximum-width graph must admit");
+    (graph, pairs)
 }
 
 #[test]
-fn mas_003_exact_resource_cap_admits_and_one_over_refuses_before_deduplication() {
-    let graph = boundary_graph();
-    let exact = boundary_draft();
-    let admitted = exact
-        .clone()
-        .admit_against(&graph)
-        .expect("exact assembly-operation cap admits");
-    assert_eq!(
-        admitted.operations().len(),
-        MAX_MACHINE_ASSEMBLY_OPERATIONS_V1
-    );
-
-    let mut too_many = exact;
-    let repeated = too_many.operations[0].clone();
-    too_many.operations.push(repeated);
-    assert_eq!(
-        too_many.admit_against(&graph),
-        Err(MachineAssemblyAdmissionErrorV1::OperationLimit {
-            actual: MAX_MACHINE_ASSEMBLY_OPERATIONS_V1 + 1,
-            max: MAX_MACHINE_ASSEMBLY_OPERATIONS_V1,
+fn mas2_014_maximum_grammar_width_rows_and_computed_field_envelope_are_pinned() {
+    let (graph, pairs) = maximum_width_graph_v2();
+    let members = pairs
+        .iter()
+        .enumerate()
+        .map(|(index, (body_key, feature_key))| {
+            feature_use_v2(&maximum_key_v2("featureuse", index), body_key, feature_key)
         })
+        .collect::<Vec<_>>();
+    let occurrence = JointOccurrenceV2::new(
+        occurrence_id_v2(&maximum_key_v2("occurrence", 0)),
+        JointTopologyV2::Weld { members },
+        AssemblyLifecycleV2::Planned {
+            procedure: AssemblyProcedureRefV2::new(artifact_v2(
+                &maximum_key_v2("procedure", 0),
+                0xa1,
+            )),
+            path: AssemblyPathRefV2::new(artifact_v2(&maximum_key_v2("path", 0), 0xa2)),
+        },
     );
-}
-
-#[test]
-fn mas_004_identical_input_replays_the_complete_receipt() {
-    let graph = admitted_graph(0x41);
-    let first = valid_draft()
+    let occurrence_id = occurrence.id().clone();
+    let draft = MachineAssemblyDraftV2 {
+        initial_available_bodies: pairs
+            .iter()
+            .map(|(body_key, _)| body_v2(body_key))
+            .collect(),
+        steps: vec![AssemblyStepV2::new(
+            step_id_v2(&maximum_key_v2("step", 0)),
+            0,
+            Vec::new(),
+            vec![occurrence_id],
+        )],
+        occurrences: vec![occurrence],
+    };
+    let admitted = draft
         .admit_against(&graph)
-        .expect("first replay admits");
-    let second = valid_draft()
-        .admit_against(&graph)
-        .expect("second replay admits");
-    assert_eq!(first.identity(), second.identity());
-    assert_eq!(first.identity_receipt(), second.identity_receipt());
+        .expect("exact 64-participant maximum-width row must admit");
+    let occurrence_row = oracle_occurrence_row_v2(&admitted.occurrences()[0]);
+    let step_row = oracle_step_row_v2(
+        &admitted.steps()[0],
+        admitted.initial_available_bodies(),
+        admitted.initial_available_bodies(),
+    );
     assert_eq!(
-        first.identity_receipt().canonical_preimage(),
-        second.identity_receipt().canonical_preimage()
+        occurrence_row.len(),
+        32_850,
+        "64 maximum-width feature uses must pin the exact occurrence-row byte count"
+    );
+    assert_eq!(
+        step_row.len(),
+        396,
+        "maximum-width IDs plus domain-separated before/after digests must pin the exact step-row byte count"
+    );
+    let computed_max_occurrence_field = 8_u64
+        + u64::try_from(MAX_MACHINE_ASSEMBLY_OCCURRENCES_V2).expect("occurrence cap fits u64")
+            * (8 + u64::try_from(occurrence_row.len()).expect("row length fits u64"));
+    assert_eq!(
+        computed_max_occurrence_field, 134_586_376,
+        "computed 4,096-row maximum-width occurrence field must remain reviewable and pinned"
+    );
+    assert!(
+        computed_max_occurrence_field <= MACHINE_ASSEMBLY_IDENTITY_LIMITS_V2.max_field_bytes(),
+        "computed maximum-width occurrence field must fit the declared canonical envelope"
+    );
+    let computed_max_step_row = 136_u64
+        + 4
+        + 8
+        + u64::try_from(MAX_MACHINE_ASSEMBLY_INTRODUCTIONS_PER_STEP_V2)
+            .expect("introduction cap fits u64")
+            * (8 + 176)
+        + 8
+        + u64::try_from(MAX_MACHINE_ASSEMBLY_OCCURRENCES_PER_STEP_V2)
+            .expect("per-step occurrence cap fits u64")
+            * (8 + 136)
+        + 2 * (8 + 8 + 32);
+    assert_eq!(
+        computed_max_step_row, 21_244,
+        "maximum step row must include 64 maximum-key introductions and references plus both count/digest pairs"
+    );
+    let computed_max_step_field = 8_u64
+        + u64::try_from(MAX_MACHINE_ASSEMBLY_STEPS_V2).expect("step cap fits u64")
+            * (8 + computed_max_step_row);
+    assert_eq!(computed_max_step_field, 87_048_200);
+    assert!(
+        computed_max_step_field <= MACHINE_ASSEMBLY_IDENTITY_LIMITS_V2.max_field_bytes(),
+        "computed maximum-width step field must fit the declared field envelope"
+    );
+    let computed_max_initial_field = 8_u64
+        + u64::try_from(MAX_MACHINE_ASSEMBLY_INITIAL_BODIES_V2).expect("initial-body cap fits u64")
+            * (8 + 176);
+    assert_eq!(computed_max_initial_field, 753_672);
+    let computed_max_collection_payload =
+        computed_max_occurrence_field + computed_max_step_field + computed_max_initial_field;
+    assert_eq!(computed_max_collection_payload, 222_388_248);
+    assert!(
+        computed_max_collection_payload < MACHINE_ASSEMBLY_IDENTITY_LIMITS_V2.max_canonical_bytes(),
+        "all three maximum-width collection fields must leave explicit room for schema framing and fixed fields"
+    );
+    let oracle = oracle_receipt_v2(&admitted, MACHINE_ASSEMBLY_SCHEMA_VERSION_V2, IR_VERSION);
+    assert_eq!(
+        admitted.identity_receipt().canonical_bytes(),
+        oracle.canonical_bytes(),
+        "maximum-width production frame must match independent exact byte accounting"
+    );
+    assert_eq!(
+        admitted.identity_receipt().canonical_preimage(),
+        oracle.canonical_preimage(),
+        "maximum-width production frame must match the independent golden preimage oracle"
     );
 }
