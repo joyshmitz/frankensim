@@ -5515,7 +5515,10 @@ fn i14_v2_terminal_authority_binds_first_boundary_card_and_lifecycle() {
                 }),
                 first_infrastructure_failure_onset: Some(i14_infrastructure_onset(
                     I14InfrastructureFailureSourceV2::SpawnAfterFrontierClosure,
-                    65,
+                    // The spawn at sequence 65 and its receipt-bound failure
+                    // onset are distinct logical events, even when the receipt
+                    // is committed at the same calibrated timestamp.
+                    66,
                     550_000_000,
                     0xa4,
                 )),
