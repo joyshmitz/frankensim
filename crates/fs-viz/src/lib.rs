@@ -248,6 +248,34 @@ pub enum IsoContourError {
         /// Second endpoint as `[i, j]`.
         second: [usize; 2],
     },
+    /// Binary64 interpolation of a strict real edge crossing did not yield a
+    /// point that remains strictly interior on every varying coordinate.
+    UnrepresentableIntersection {
+        /// First endpoint as `[i, j]` in deterministic traversal order.
+        first: [usize; 2],
+        /// Second endpoint as `[i, j]` in deterministic traversal order.
+        second: [usize; 2],
+        /// Exact coordinate bits of the first endpoint.
+        first_point_bits: [u64; 2],
+        /// Exact coordinate bits of the second endpoint.
+        second_point_bits: [u64; 2],
+        /// Exact sampled-value bits at the first endpoint.
+        first_value_bits: u64,
+        /// Exact sampled-value bits at the second endpoint.
+        second_value_bits: u64,
+        /// Exact requested isovalue bits.
+        iso_bits: u64,
+        /// Scaled distance from the first endpoint value to the isovalue.
+        first_distance_bits: u64,
+        /// Scaled distance from the second endpoint value to the isovalue.
+        second_distance_bits: u64,
+        /// Computed interpolation-parameter bits.
+        interpolation_bits: u64,
+        /// Computed point bits that collapsed onto or outside the edge.
+        point_bits: [u64; 2],
+        /// First coordinate that was not representably interior/on-edge.
+        collapsed_axis: usize,
+    },
     /// Storage for the next crossing could not be reserved.
     AllocationFailed {
         /// Number of crossings, including the one that could not be reserved.
@@ -273,6 +301,23 @@ impl core::fmt::Display for IsoContourError {
             Self::CoincidentLevelEdge { first, second } => write!(
                 f,
                 "isocontour edge {first:?}..{second:?} lies wholly on the requested level"
+            ),
+            Self::UnrepresentableIntersection {
+                first,
+                second,
+                first_point_bits,
+                second_point_bits,
+                first_value_bits,
+                second_value_bits,
+                iso_bits,
+                first_distance_bits,
+                second_distance_bits,
+                interpolation_bits,
+                point_bits,
+                collapsed_axis,
+            } => write!(
+                f,
+                "isocontour edge {first:?}..{second:?} produced no admitted representably interior binary64 crossing on axis {collapsed_axis} (endpoint bits {first_point_bits:?}..{second_point_bits:?}, value bits {first_value_bits:016x}..{second_value_bits:016x}, iso {iso_bits:016x}, scaled distances {first_distance_bits:016x}/{second_distance_bits:016x}, t {interpolation_bits:016x}, point bits {point_bits:?})"
             ),
             Self::AllocationFailed { required } => write!(
                 f,
@@ -366,8 +411,9 @@ impl Grid2 {
     ///
     /// # Errors
     /// [`IsoContourError`] for a non-finite level, zero or exceeded output
-    /// budget, a coincident level edge, allocation refusal, or non-finite
-    /// interpolated geometry. Every failure returns no partial crossing vector.
+    /// budget, a coincident level edge, an unrepresentable strict intersection,
+    /// allocation refusal, or non-finite interpolated geometry. Every failure
+    /// returns no partial crossing vector.
     pub fn isocontour_crossings(
         &self,
         iso: f64,
@@ -523,7 +569,7 @@ fn edge_crossing(
     let a_distance = (va / scale - scaled_iso).abs();
     let b_distance = (vb / scale - scaled_iso).abs();
     let t = a_distance / (a_distance + b_distance);
-    if !t.is_finite() || !(0.0 < t && t < 1.0) {
+    if !t.is_finite() {
         return Err(IsoContourError::NonFiniteGeometry);
     }
     let point = [
@@ -533,7 +579,50 @@ fn edge_crossing(
     if point.into_iter().any(|coordinate| !coordinate.is_finite()) {
         return Err(IsoContourError::NonFiniteGeometry);
     }
+    if let Some(collapsed_axis) = first_unrepresentable_intersection_axis(a, b, point) {
+        return Err(IsoContourError::UnrepresentableIntersection {
+            first: a_index,
+            second: b_index,
+            first_point_bits: a.map(f64::to_bits),
+            second_point_bits: b.map(f64::to_bits),
+            first_value_bits: va.to_bits(),
+            second_value_bits: vb.to_bits(),
+            iso_bits: iso.to_bits(),
+            first_distance_bits: a_distance.to_bits(),
+            second_distance_bits: b_distance.to_bits(),
+            interpolation_bits: t.to_bits(),
+            point_bits: point.map(f64::to_bits),
+            collapsed_axis,
+        });
+    }
     Ok(Some(EdgeCrossing2::Interpolated(point)))
+}
+
+fn first_unrepresentable_intersection_axis(a: Vec2, b: Vec2, point: Vec2) -> Option<usize> {
+    for axis in 0..2 {
+        match a[axis].total_cmp(&b[axis]) {
+            core::cmp::Ordering::Equal => {
+                if point[axis].to_bits() != a[axis].to_bits() {
+                    return Some(axis);
+                }
+            }
+            core::cmp::Ordering::Less => {
+                if !(a[axis].total_cmp(&point[axis]).is_lt()
+                    && point[axis].total_cmp(&b[axis]).is_lt())
+                {
+                    return Some(axis);
+                }
+            }
+            core::cmp::Ordering::Greater => {
+                if !(b[axis].total_cmp(&point[axis]).is_lt()
+                    && point[axis].total_cmp(&a[axis]).is_lt())
+                {
+                    return Some(axis);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn push_crossing(

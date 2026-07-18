@@ -14,6 +14,26 @@ fn radius(p: [f64; 2]) -> f64 {
     (p[0] * p[0] + p[1] * p[1]).sqrt()
 }
 
+fn lower_left_collapse_error(
+    lower: f64,
+    upper: f64,
+    lower_left: f64,
+    other: f64,
+    iso: f64,
+    crossing_limit: usize,
+) -> IsoContourError {
+    let grid = Grid2::from_fn(2, 2, [lower; 2], [upper; 2], 4, |point| {
+        if point[0].to_bits() == lower.to_bits() && point[1].to_bits() == lower.to_bits() {
+            lower_left
+        } else {
+            other
+        }
+    })
+    .expect("adjacent finite endpoints form an admitted 2x2 grid");
+    grid.isocontour_crossings(iso, crossing_limit)
+        .expect_err("the strict real crossing must not collapse to a binary64 endpoint")
+}
+
 #[test]
 fn a_rotation_field_streams_along_a_circle() {
     // u = (-y, x): rigid rotation, so the radius is conserved.
@@ -284,6 +304,144 @@ fn isocontour_interpolation_handles_extreme_finite_values() {
             .expect("scaled interpolation remains finite");
         assert_eq!(crossings, vec![[0.5, 0.0], [0.5, 1.0]]);
     }
+}
+
+#[test]
+fn g0_isocontour_refuses_strict_crossings_that_round_to_an_endpoint() {
+    let lower = 1.0_f64;
+    let upper = lower.next_up();
+    let tiny = f64::from_bits(1);
+    let error = lower_left_collapse_error(lower, upper, -tiny, 1.0, 0.0, 1);
+    assert_eq!(
+        lower_left_collapse_error(lower, upper, -tiny, 1.0, 0.0, 2),
+        error,
+        "crossing budget cannot replace the earlier representability refusal"
+    );
+
+    let IsoContourError::UnrepresentableIntersection {
+        first,
+        second,
+        first_point_bits,
+        second_point_bits,
+        first_value_bits,
+        second_value_bits,
+        iso_bits,
+        first_distance_bits,
+        second_distance_bits,
+        interpolation_bits,
+        point_bits,
+        collapsed_axis,
+    } = error
+    else {
+        panic!("strict crossing collapse must return its typed evidence: {error:?}")
+    };
+    assert_eq!(first, [0, 0]);
+    assert_eq!(second, [1, 0]);
+    assert_eq!(first_point_bits, [lower.to_bits(), lower.to_bits()]);
+    assert_eq!(second_point_bits, [upper.to_bits(), lower.to_bits()]);
+    assert_eq!(first_value_bits, (-tiny).to_bits());
+    assert_eq!(second_value_bits, 1.0_f64.to_bits());
+    assert_eq!(iso_bits, 0.0_f64.to_bits());
+    assert_eq!(first_distance_bits, tiny.to_bits());
+    assert_eq!(second_distance_bits, 1.0_f64.to_bits());
+    assert_eq!(interpolation_bits, tiny.to_bits());
+    assert_eq!(point_bits, first_point_bits);
+    assert_eq!(collapsed_axis, 0);
+}
+
+#[test]
+fn g3_unrepresentable_intersection_refusal_tracks_axis_sign_and_scale_neighbors() {
+    let tiny = f64::from_bits(1);
+    let lower = 1.0_f64;
+    let upper = lower.next_up();
+    let horizontal = lower_left_collapse_error(lower, upper, -tiny, 1.0, 0.0, 1);
+
+    let vertical_grid = Grid2::from_fn(2, 2, [lower; 2], [upper; 2], 4, |point| {
+        if point[1].to_bits() == lower.to_bits() {
+            -tiny
+        } else {
+            1.0
+        }
+    })
+    .expect("axis-permuted adjacent grid admits");
+    let vertical = vertical_grid
+        .isocontour_crossings(0.0, 1)
+        .expect_err("axis-permuted crossing must refuse identically");
+    let (
+        IsoContourError::UnrepresentableIntersection {
+            first: horizontal_first,
+            second: horizontal_second,
+            interpolation_bits: horizontal_t,
+            collapsed_axis: horizontal_axis,
+            ..
+        },
+        IsoContourError::UnrepresentableIntersection {
+            first: vertical_first,
+            second: vertical_second,
+            interpolation_bits: vertical_t,
+            collapsed_axis: vertical_axis,
+            ..
+        },
+    ) = (horizontal, vertical)
+    else {
+        panic!("axis permutations must retain typed representability evidence")
+    };
+    assert_eq!((horizontal_first, horizontal_second), ([0, 0], [1, 0]));
+    assert_eq!((vertical_first, vertical_second), ([0, 0], [0, 1]));
+    assert_eq!((horizontal_axis, vertical_axis), (0, 1));
+    assert_eq!(horizontal_t, vertical_t);
+
+    for (case, lower, upper, small, iso) in [
+        ("next-up/min-subnormal", 1.0, 1.0_f64.next_up(), tiny, 0.0),
+        (
+            "next-down/min-normal/signed-zero",
+            1.0_f64.next_down(),
+            1.0,
+            f64::MIN_POSITIVE,
+            -0.0,
+        ),
+        (
+            "power-of-two scale neighbor",
+            2.0,
+            2.0_f64.next_up(),
+            tiny,
+            0.0,
+        ),
+    ] {
+        assert!(
+            matches!(
+                lower_left_collapse_error(lower, upper, -small, 1.0, iso, 1),
+                IsoContourError::UnrepresentableIntersection {
+                    collapsed_axis: 0,
+                    ..
+                }
+            ),
+            "{case} must fail closed as unrepresentable"
+        );
+    }
+
+    assert!(matches!(
+        lower_left_collapse_error(lower, upper, tiny, -1.0, -0.0, 1),
+        IsoContourError::UnrepresentableIntersection {
+            first_value_bits,
+            second_value_bits,
+            iso_bits,
+            collapsed_axis: 0,
+            ..
+        } if first_value_bits == tiny.to_bits()
+            && second_value_bits == (-1.0_f64).to_bits()
+            && iso_bits == (-0.0_f64).to_bits()
+    ));
+    assert!(matches!(
+        lower_left_collapse_error(lower, upper, 1.0, -tiny, 0.0, 1),
+        IsoContourError::UnrepresentableIntersection {
+            interpolation_bits,
+            point_bits,
+            second_point_bits,
+            collapsed_axis: 0,
+            ..
+        } if interpolation_bits == 1.0_f64.to_bits() && point_bits == second_point_bits
+    ));
 }
 
 #[test]

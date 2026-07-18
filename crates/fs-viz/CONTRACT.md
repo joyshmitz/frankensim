@@ -51,10 +51,16 @@ Layer L5 (LUMEN). No dependencies — pure Rust.
   onto the same `f64` is refused before the field callback runs.
 - `isocontour_crossings` of a circle SDF all lie on the circle (to grid
   resolution); a finite level outside the field's range succeeds with no
-  crossings. Strict sign changes use overflow-resistant scaled interpolation.
-  A single exact endpoint is emitted once at its original coordinate bits even
-  when incident edges share it. A wholly exact edge is refused as a coincident
-  segment that a point-only result cannot represent.
+  crossings. Strict sign changes use overflow-resistant scaled interpolation,
+  but the real parameter alone is insufficient evidence: every constant output
+  coordinate must retain the endpoint bits and every varying coordinate must be
+  strictly between the endpoint coordinates in IEEE-754 total order. A result
+  that rounds onto an endpoint or off the closed edge is refused before it can
+  consume output-count budget as `UnrepresentableIntersection`, never relabeled
+  as exact.
+  A single truly exact endpoint is emitted once at its original coordinate bits
+  even when incident edges share it. A wholly exact edge is refused as a
+  coincident segment that a point-only result cannot represent.
 - A planar `Grid3` level set has exact area and increasing-field winding.
   Sphere area error decreases under refinement, and gyroid extraction is
   indexed, centrally symmetric, and exactly replay-deterministic.
@@ -75,10 +81,15 @@ a `Grid2Error`.
 `Grid2::at` and `Grid2::point` require admitted in-range node indices and panic
 on caller indexing errors; they cannot expose extrapolated coordinates.
 `IsoContourError` distinguishes non-finite levels, zero/exceeded crossing
-budgets, exact-level coincident edges, allocation refusal, and non-finite
-interpolation geometry. Extraction is all-or-error: it never returns a partial
-crossing vector, and malformed evidence never becomes the successful empty
-result reserved for a finite absent level.
+budgets, exact-level coincident edges, strict real intersections with no
+representably interior point produced by the binary64 interpolation, allocation
+refusal, and non-finite interpolation geometry. The representability refusal
+retains bounded endpoint
+indices; endpoint-coordinate, sample, and iso bits; scaled interpolation
+distances and parameter; computed point bits; and the first collapsed axis.
+Extraction is all-or-error: it never returns a partial crossing vector, and
+malformed evidence never becomes the successful empty result reserved for a
+finite absent level.
 `Grid3` construction is fallible and refuses degenerate/overflowing dimensions,
 invalid or non-finite bounds/samples, length mismatch, node-budget excess, and
 allocation refusal. Isosurface extraction refuses non-finite levels, a zero or
@@ -120,8 +131,11 @@ Morse type; a circle-SDF isocontour lies on the circle (+ empty out-of-range);
 2-D grid sampling/addressing; fail-before-sampling dimension, budget, bounds,
 overflow, coordinate-collapse, and non-finite-value admission; non-finite-level
 and crossing-budget refusal; exact-node ownership and coincident-edge refusal;
-extreme finite and subnormal interpolation; G3 sign-inversion and
-positive-power-of-two scaling equivalence; determinism; exact oriented plane
+extreme finite and subnormal interpolation; exact next-up/down strict-crossing
+collapse refusal before output budgeting with endpoint/value/iso/t/point-bit
+evidence; G3 axis, endpoint-sign, signed-zero, and power-of-two neighbor refusal
+metamorphisms plus representable sign-inversion and positive-power-of-two scaling
+equivalence; determinism; exact oriented plane
 extraction;
 sphere-area refinement; gyroid symmetry/indexing/replay; and fail-before-work
 Grid3 budget/non-finite admission. The scalar-field artifact battery covers
