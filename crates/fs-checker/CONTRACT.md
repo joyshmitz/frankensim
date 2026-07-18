@@ -284,7 +284,8 @@ None.
 
 ## Conformance tests
 
-`tests/checker.rs`, `tests/epi_e2e.rs`, plus crate unit tests (Proposal 12): clean pass with no findings;
+`tests/checker.rs`, `tests/plugins.rs`, `tests/epi_e2e.rs`, plus crate unit tests
+(Proposal 12): clean pass with no findings;
 incomplete-validated-claim failure; content-address (Merkle) tamper detection;
 including provenance tamper; malformed falsifier refusal with fail-closed pie;
 signature-presence and verifier-capability reporting; deterministic budget-pie
@@ -369,36 +370,60 @@ solver and the checker cannot run a solve by construction.
   discretization error, convergence, or model fidelity. Origin authentication
   remains a separate mandatory authority boundary for source certificates.
 
-## Certificate-plugin registry (bead frankensim-checker-semantic-plugins-9e8n)
+## Public certificate-plugin facade (bead frankensim-checker-semantic-plugins-9e8n)
 
-`plugins` adds the INDEPENDENT SEMANTIC VERIFICATION axis for solver-free
-witness families: a closed versioned registry (`PluginRegistry::v1` owns
-exactly `interval-enclosure-chain@1` and `linear-residual-linf@1`) where
-each plugin owns a closed canonical witness schema (magic + protocol +
-bounded fields), explicit resource bounds (256 KiB transport, 4096 tape
-ops, 1024 inputs, 64x64 dense), a semantic RECHECK that recomputes the
-claim from witness data with outward-rounded native IEEE arithmetic, and
-failure localization (exact op index / matrix row). The chain family
-replays the interval tape and requires the claimed enclosure to CONTAIN
-the recomputed one; the residual family recomputes every row residual as
-an outward interval and requires the whole enclosure inside
-[-bound, bound]. Unknown families and version substitutions are explicit
-`CapabilityRefused` — never a generic Pass. `PluginVerdict` keeps the
-four outcomes typed and distinct; only `SemanticallyVerified` grants the
-semantic axis, and integrity/origin authority remain the existing
-`IntegrityStatus`/`OriginStatus` surfaces.
+`fs_checker::plugins` is a discoverability namespace over the one authoritative
+package-bound registry described above. It re-exports the exact descriptors,
+limits, identity versions/domains, report types, registry fingerprints, and
+`verify_portable_semantics` implementation used by ordinary checking, strict
+JSON checking, and release admission. It owns no second registry, raw
+`(family, version, bytes)` checker, producer encoder, arithmetic path, verdict
+type, or payload-only hash.
 
-### No-claim boundaries (certificate plugins)
+The sole positive independent-semantic authority path is:
 
-- A refutation refutes THE CERTIFICATE ("this witness proves the claim"),
-  not necessarily the underlying mathematical fact — an enclosure the
-  outward replay cannot fit inside the claimed bound is unprovable BY
-  THIS WITNESS, which is exactly what fail-closed certification means.
-- Witness content identity is a transport-level FNV digest, not an
-  authenticated ledger identity; origin authentication stays on the
-  existing checker surfaces.
-- The registry is closed per protocol version: new families arrive as new
-  (family, version) rows with their own schemas, never by widening an
-  existing plugin's acceptance.
-- No solver, no geometry, no new dependencies: recomputation is native
-  IEEE arithmetic only, keeping WASM/standalone builds green.
+1. family-owned canonical bytes are enclosed in `SemanticWitness`;
+2. `Claim::from_portable_certificate` binds the witness's domain-separated
+   BLAKE3 identity into the source-certificate origin and claim declaration;
+3. `EvidencePackage` binds the complete claim into its content root;
+4. the closed registry recomputes every attached witness after structural and
+   expected-root checks, sealing package root, claim/witness/plugin identities,
+   resource charges, and refusals into `SemanticReport`;
+5. origin policies independently authenticate the exact typed source subject;
+6. release approval signs both the scientific admission context and semantic
+   context.
+
+Unknown families, unsupported schema versions, malformed or over-budget
+payloads, arithmetic mismatches, and plugin panics refuse at step 4 before any
+external capability runs. A public caller cannot construct a positive semantic
+receipt or bypass package binding by checking detached payload bytes.
+
+### Facade and identity no-claim boundaries
+
+- Re-exporting a registry API does not create a second authority or relax the
+  closed family/version dispatch. New semantics require a new versioned family
+  and corresponding fingerprint/identity review; an existing parser is never
+  widened silently.
+- `SemanticWitness::content_hash`, plugin fingerprints, the registry
+  fingerprint, and semantic context are domain-separated BLAKE3 integrity
+  identities. They are not signatures, provenance, solver authentication, or
+  scientific truth.
+- The retained-identity admission helpers check only the declared identity
+  version and exact 32-byte transport width. An exact-width foreign digest is
+  still merely an opaque digest and gains no authority until compared with the
+  recomputed compiled/package identity in its consuming protocol.
+- A semantic refusal refutes the attached certificate under the compiled
+  witness semantics; it need not refute the underlying mathematical statement.
+  Conversely, semantic verification proves only the documented bounded
+  recomputation, not model fidelity, conditioning, uniqueness, discretization
+  error, convergence, material realism, or experimental validity.
+- The facade adds no dependency. The checker remains solver-free, geometry-free,
+  license-free, synchronous, safe Rust, and suitable for the same standalone
+  and WASM distribution cone.
+
+`tests/plugins.rs` independently pins hand-authored v1 canonical bytes and their
+v8 witness, v1 plugin, and v1 registry identities; exercises both families
+through `SemanticWitness -> Claim -> EvidencePackage -> strict JSON`; proves
+ordinary and release-gate use of the same sealed semantic report; and covers
+expected-root, family, schema, payload, registry-identity transport, and release
+semantic-context substitution/refusal.
