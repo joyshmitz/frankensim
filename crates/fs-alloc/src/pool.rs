@@ -272,13 +272,19 @@ mod tests {
             let _ = pool.acquire_with(1, || panic!("ctor boom"));
         }));
         assert!(caught.is_err(), "the constructor panic must propagate");
-        assert!(pool.quiescent(), "a panicking make must not leak the live count");
+        assert!(
+            pool.quiescent(),
+            "a panicking make must not leak the live count"
+        );
         let (created, live) = pool
             .stats()
             .shards
             .iter()
             .fold((0u64, 0u64), |(c, l), s| (c + s.created, l + s.live));
-        assert_eq!(created, 0, "a never-constructed object must not count as created");
+        assert_eq!(
+            created, 0,
+            "a never-constructed object must not count as created"
+        );
         assert_eq!(live, 0, "a never-constructed object must not count as live");
         // The shard is not poisoned (make runs outside the lock), so the pool
         // stays usable afterward.

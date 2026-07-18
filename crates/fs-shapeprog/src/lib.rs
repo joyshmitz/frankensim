@@ -309,7 +309,11 @@ fn rewrite_pass(g: &Geom, tol: f64, log: &mut Vec<Rewrite>) -> Geom {
             let mut total = *radius;
             let mut base: &Geom = child;
             let mut composed = false;
-            while let Geom::Offset { child: inner, radius: r } = base {
+            while let Geom::Offset {
+                child: inner,
+                radius: r,
+            } = base
+            {
                 total += *r;
                 base = inner;
                 composed = true;

@@ -209,7 +209,10 @@ mod tests {
         // collapsed node-2 value 2.0.
         let x = Point3::new(2.5, 1.0, 1.0);
         let v = band.velocity(&theta, x, 0.0).unwrap();
-        assert!((v - 2.5).abs() < 1e-12, "last cell must interpolate: got {v}");
+        assert!(
+            (v - 2.5).abs() < 1e-12,
+            "last cell must interpolate: got {v}"
+        );
         // The outer x-layer (i = 3) must have nonzero jacobian sensitivity there:
         // perturb only node (3,1,1) → weight fx·(1-fy)·(1-fz) = 0.5·1·1.
         let mut dtheta = vec![0.0; band.dof()];

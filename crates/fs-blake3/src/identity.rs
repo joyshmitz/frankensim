@@ -3699,12 +3699,12 @@ where
             &mut preimage,
             self.key_policy.bytes().content_id().as_bytes(),
         );
-        push_charter_field(&mut preimage, &self.key_policy.bytes().length().to_le_bytes());
+        push_charter_field(
+            &mut preimage,
+            &self.key_policy.bytes().length().to_le_bytes(),
+        );
         push_charter_field(&mut preimage, self.context.as_bytes());
-        PromotionRootCharter(crate::hash_domain(
-            PROMOTION_ROOT_CHARTER_DOMAIN,
-            &preimage,
-        ))
+        PromotionRootCharter(crate::hash_domain(PROMOTION_ROOT_CHARTER_DOMAIN, &preimage))
     }
 
     /// The opaque domain-owner decision: admit a policy-relative

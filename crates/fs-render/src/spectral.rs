@@ -204,11 +204,7 @@ pub fn lift_rgb(rgb: [f64; 3]) -> LiftedSpectrum {
     // break the symmetry for saturated targets.
     let mean = (target[0] + target[1] + target[2]) / 3.0;
     let p0 = inv_sigmoid(mean.clamp(0.004, 0.996));
-    let starts = [
-        [0.0, 0.0, p0],
-        [8.0, -8.0, p0],
-        [-8.0, 8.0, p0],
-    ];
+    let starts = [[0.0, 0.0, p0], [8.0, -8.0, p0], [-8.0, 8.0, p0]];
     let mut best: Option<([f64; 3], f64)> = None;
     for start in starts {
         let (c, r2) = gauss_newton(start, target);
@@ -284,11 +280,7 @@ fn gauss_newton(mut c: [f64; 3], target: [f64; 3]) -> ([f64; 3], f64) {
     }
     let s = LiftedSpectrum { c };
     let rgb = s.rgb();
-    let r = [
-        rgb[0] - target[0],
-        rgb[1] - target[1],
-        rgb[2] - target[2],
-    ];
+    let r = [rgb[0] - target[0], rgb[1] - target[1], rgb[2] - target[2]];
     (c, r[0] * r[0] + r[1] * r[1] + r[2] * r[2])
 }
 
