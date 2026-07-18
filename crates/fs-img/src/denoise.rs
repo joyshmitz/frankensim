@@ -64,7 +64,8 @@ const B3: [f32; 5] = [1.0 / 16.0, 4.0 / 16.0, 6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0
 /// # Errors
 /// [`ImgError::Shape`] on plane-shape disagreement, or
 /// [`ImgError::Unsupported`] when the declared dimensions exceed the
-/// addressable element count.
+/// addressable element count or the iteration count exceeds signed
+/// coordinate precision.
 pub fn atrous_denoise(
     noisy: &LabeledPlane,
     albedo: Option<&LabeledPlane>,
@@ -92,6 +93,11 @@ pub fn atrous_denoise(
             context: "albedo guide shape",
         });
     }
+    if u32::from(params.iterations) > isize::BITS - 2 {
+        return Err(ImgError::Unsupported {
+            what: "à-trous iteration count exceeds signed coordinate precision".to_owned(),
+        });
+    }
     let (w, h) = (noisy.width.cast_signed(), noisy.height.cast_signed());
     let mut current = noisy.data.clone();
     for it in 0..params.iterations {
@@ -105,8 +111,10 @@ pub fn atrous_denoise(
                 let mut wsum = 0.0f64;
                 for (kj, &wy) in B3.iter().enumerate() {
                     for (ki, &wx) in B3.iter().enumerate() {
-                        let sx = (x + (ki.cast_signed() - 2) * step).clamp(0, w - 1);
-                        let sy = (y + (kj.cast_signed() - 2) * step).clamp(0, h - 1);
+                        let x_offset = (ki.cast_signed() - 2).saturating_mul(step);
+                        let y_offset = (kj.cast_signed() - 2).saturating_mul(step);
+                        let sx = x.saturating_add(x_offset).clamp(0, w - 1);
+                        let sy = y.saturating_add(y_offset).clamp(0, h - 1);
                         let sample = current[(sy * w + sx) as usize];
                         let mut weight = f64::from(wx * wy);
                         let dc = f64::from(sample - center) / f64::from(params.sigma_color);
@@ -213,6 +221,17 @@ mod tests {
         assert_eq!((empty_out.width, empty_out.height), (0, 7));
         assert!(empty_out.data.is_empty());
 
+        let excessive_params = DenoiseParams {
+            iterations: u8::try_from(isize::BITS - 1).expect("pointer width fits u8"),
+            ..DenoiseParams::default()
+        };
+        assert_eq!(
+            atrous_denoise(&empty, None, &excessive_params),
+            Err(ImgError::Unsupported {
+                what: "à-trous iteration count exceeds signed coordinate precision".to_owned(),
+            })
+        );
+
         let unit = LabeledPlane {
             width: 1,
             height: 1,
@@ -223,5 +242,13 @@ mod tests {
         assert_eq!((unit_out.width, unit_out.height), (1, 1));
         assert_eq!(unit_out.data.len(), 1);
         assert!(unit_out.data[0].is_finite());
+
+        let maximum_params = DenoiseParams {
+            iterations: u8::try_from(isize::BITS - 2).expect("pointer width fits u8"),
+            ..DenoiseParams::default()
+        };
+        let maximum_out = atrous_denoise(&unit, None, &maximum_params).unwrap();
+        assert_eq!(maximum_out.data.len(), 1);
+        assert!(maximum_out.data[0].is_finite());
     }
 }
