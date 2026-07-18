@@ -5,7 +5,7 @@
 //! pause/resume, structural mirror ties are really captured, and seeded
 //! tampering of every bound field fails closed in the named error class.
 
-use fs_rand::cbc::{CbcBudget, CbcProblem};
+use fs_rand::cbc::{CbcBudget, CbcExecutionMode, CbcProblem};
 use fs_rand::cbc_cert::{
     ADMISSIBLE_RULE_UNITS, CBC_CERTIFICATE_SCHEMA_VERSION, CbcCertError, CbcPrefixCertificate,
     TIE_RULE_LOWEST_CANDIDATE, audit_minimality, verify_consistency,
@@ -18,9 +18,10 @@ const CASES: [(u32, usize); 4] = [(5, 3), (8, 3), (16, 4), (127, 4)];
 fn certified_run(n: u32, dim: usize, tile: CbcTileShape) -> CbcExecutor {
     let problem = CbcProblem::new(n, dim).expect("battery cases are structurally valid");
     let admission = problem
-        .admit(CbcBudget::UNBOUNDED)
+        .admit_for(CbcExecutionMode::Certified, CbcBudget::UNBOUNDED)
         .expect("battery cases admit under the unbounded budget");
-    let mut executor = CbcExecutor::new(admission);
+    let mut executor =
+        CbcExecutor::new(admission).expect("fresh certified admission matches authority");
     executor
         .enable_certificates()
         .expect("certificates enabled before any work");
@@ -29,6 +30,11 @@ fn certified_run(n: u32, dim: usize, tile: CbcTileShape) -> CbcExecutor {
         .run(&mut keep_going, tile, u128::MAX)
         .expect("certified runs must stay within the admitted schedule");
     assert_eq!(status, CbcRunStatus::Completed);
+    assert_eq!(
+        executor.work_spent(),
+        admission.estimate().work_units(),
+        "certified execution must consume its exact admitted schedule"
+    );
     executor
 }
 
@@ -92,9 +98,10 @@ fn crt_002_certificates_are_invariant_under_tiling_and_pause_resume() {
     // Sliced allowances (pause/resume) must also reproduce them exactly.
     let problem = CbcProblem::new(16, 4).expect("structurally valid");
     let admission = problem
-        .admit(CbcBudget::UNBOUNDED)
+        .admit_for(CbcExecutionMode::Certified, CbcBudget::UNBOUNDED)
         .expect("admits unbounded");
-    let mut executor = CbcExecutor::new(admission);
+    let mut executor =
+        CbcExecutor::new(admission).expect("fresh certified admission matches authority");
     executor
         .enable_certificates()
         .expect("certificates enabled before any work");
@@ -251,7 +258,8 @@ fn crt_005_uncertified_runs_emit_nothing_and_late_enabling_refuses() {
     let admission = problem
         .admit(CbcBudget::UNBOUNDED)
         .expect("admits unbounded");
-    let mut executor = CbcExecutor::new(admission);
+    let mut executor =
+        CbcExecutor::new(admission).expect("fresh construction admission matches authority");
     let mut keep_going = || CbcControl::Continue;
     let tile = CbcTileShape::new(2, 4).expect("static tile");
     let status = executor
@@ -263,7 +271,8 @@ fn crt_005_uncertified_runs_emit_nothing_and_late_enabling_refuses() {
         "uncertified runs must not allocate certificates"
     );
     assert!(
-        executor.enable_certificates().is_err(),
+        executor.enable_certificates()
+            == Err(fs_rand::cbc_exec::CbcExecError::CertificatesNotAdmitted),
         "enabling after work must refuse (certificates cover all or none)"
     );
 }

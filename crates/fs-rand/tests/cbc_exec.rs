@@ -19,7 +19,7 @@ fn admitted_executor(n: u32, dim: usize) -> CbcExecutor {
     let admission = problem
         .admit(CbcBudget::UNBOUNDED)
         .expect("battery cases admit under the unbounded budget");
-    CbcExecutor::new(admission)
+    CbcExecutor::new(admission).expect("fresh admissions match the executor authority")
 }
 
 fn run_to_completion(executor: &mut CbcExecutor, tile: CbcTileShape) {
@@ -230,7 +230,7 @@ fn cbx_005_zero_allowance_invokes_no_work() {
 }
 
 #[test]
-fn cbx_006_debits_stay_within_the_admission_estimate() {
+fn cbx_006_debits_equal_the_admission_schedule_for_prime_and_composite_cases() {
     for (n, dim) in CASES {
         let problem = CbcProblem::new(n, dim).expect("battery cases are structurally valid");
         let estimate = problem.estimate().expect("battery cases estimate");
@@ -239,17 +239,36 @@ fn cbx_006_debits_stay_within_the_admission_estimate() {
             &mut executor,
             CbcTileShape::new(1, 1).expect("static tile shape"),
         );
-        assert!(
-            executor.work_spent() <= estimate.work_units(),
-            "n={n} dim={dim}: executor debits {} exceed the admitted schedule {}",
+        assert_eq!(
             executor.work_spent(),
-            estimate.work_units(),
+            estimate.construction_work_units(),
+            "n={n} dim={dim}: executor and admission schedule diverged",
         );
         assert!(
             executor.work_spent() > 0,
             "n={n} dim={dim}: a completed run must have debited work"
         );
     }
+    let mut composite = admitted_executor(8, 3);
+    run_to_completion(
+        &mut composite,
+        CbcTileShape::new(2, 3).expect("static tile shape"),
+    );
+    assert_eq!(composite.work_spent(), 3_699);
+    let observed = composite.storage_observation();
+    assert!(
+        observed.maximum_product_length_limbs() <= observed.requested_product_limbs(),
+        "logical product length escaped the admitted ceiling"
+    );
+    assert!(
+        observed.minimum_observed_product_capacity_limbs() >= observed.requested_product_limbs(),
+        "the requested reserve was not supplied"
+    );
+    assert!(
+        observed.maximum_observed_product_capacity_limbs()
+            >= observed.minimum_observed_product_capacity_limbs(),
+        "allocator capacity observation is malformed"
+    );
 }
 
 #[test]
@@ -285,5 +304,5 @@ fn cbx_007_structural_refusals_are_typed() {
         "running a completed executor must refuse"
     );
 
-    assert_eq!(CBC_EXECUTOR_SCHEMA_VERSION, 1);
+    assert_eq!(CBC_EXECUTOR_SCHEMA_VERSION, 2);
 }

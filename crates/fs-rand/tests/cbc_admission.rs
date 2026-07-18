@@ -28,8 +28,7 @@ fn g0_count_domain_refuses_before_estimation() {
 ///   + 8 compare = 366,
 /// - scalar work = 1,100 visit + 495 factor + 168 GCD + 128 candidate
 ///   + 32 dimension/initialization = 1,923; total = 2,289,
-/// - candidate owners charge the greater of steady `Vec + Option` and
-///   replacement `Option + Option` layouts.
+/// - requested-payload memory uses the actual executor/ExactNat owner layout.
 #[test]
 fn g0_small_estimate_matches_the_independent_kat() {
     let problem = CbcProblem::new(5, 3).expect("valid finite CBC problem");
@@ -57,16 +56,13 @@ fn g0_small_estimate_matches_the_independent_kat() {
     assert_eq!(estimate.work_units(), 2_289);
     assert_eq!(estimate.target_pointer_width_bits(), usize::BITS);
 
-    let vector_header =
-        u128::try_from(core::mem::size_of::<Vec<u32>>()).expect("Vec header size fits u128");
-    let best_owner = u128::try_from(core::mem::size_of::<Option<(Vec<u32>, u32)>>())
-        .expect("best owner size fits u128");
-    let score_owners = (vector_header + best_owner).max(2 * best_owner);
-    assert_eq!(
-        estimate.candidate_phase_bytes(),
-        112 + 7 * vector_header + score_owners
-    );
-    assert_eq!(estimate.update_phase_bytes(), 100 + 8 * vector_header);
+    let common = estimate.executor_inline_bytes()
+        + estimate.product_owner_array_bytes()
+        + estimate.resident_product_payload_bytes()
+        + 3 * 4 // generator payload
+        + 4 * 4; // fixed factor scratch
+    assert_eq!(estimate.candidate_phase_bytes(), common + 2 * 3 * 4);
+    assert_eq!(estimate.update_phase_bytes(), common + 3 * 4);
     assert_eq!(
         estimate.logical_state_bytes(),
         estimate.candidate_phase_bytes()
@@ -159,10 +155,12 @@ fn g0_multilimb_kernel_factor_kat_binds_both_work_axes() {
     assert_eq!(estimate.kernel_numerator_bits(), 33);
     assert_eq!(estimate.kernel_factor_limbs(), 2);
     assert_eq!(estimate.max_source_product_limbs(), 2);
-    assert_eq!(estimate.lattice_visits(), 625_025_000);
-    assert_eq!(estimate.limb_work_units(), 8_751_174_987);
-    assert_eq!(estimate.scalar_work_units(), 23_128_674_909);
-    assert_eq!(estimate.work_units(), 31_879_849_896);
+    assert_eq!(estimate.admissible_candidates_per_prefix(), 10_000);
+    assert_eq!(estimate.candidate_visits(), 250_000_000);
+    assert_eq!(estimate.lattice_visits(), 250_050_000);
+    assert_eq!(estimate.limb_work_units(), 3_501_524_987);
+    assert_eq!(estimate.scalar_work_units(), 9_254_599_909);
+    assert_eq!(estimate.work_units(), 12_756_124_896);
 }
 
 /// Maximum supported point-count KAT. `7*(2^32-1)^2` is 67 bits, so the
@@ -190,13 +188,20 @@ fn g0_three_limb_kernel_factor_kat_reaches_u32_point_boundary() {
     assert_eq!(estimate.scalar_work_units(), 197_568_495_579);
     assert_eq!(estimate.work_units(), 274_877_906_889);
     assert_eq!(estimate.candidate_phase_bytes(), 0);
-    assert_eq!(estimate.update_phase_bytes(), 188_978_561_076);
-    assert_eq!(estimate.logical_state_bytes(), 188_978_561_076);
+    let expected = estimate.executor_inline_bytes()
+        + estimate.product_owner_array_bytes()
+        + estimate.resident_product_payload_bytes()
+        + 4
+        + 16
+        + estimate.product_overlap_bytes();
+    assert_eq!(estimate.update_phase_bytes(), expected);
+    assert_eq!(estimate.logical_state_bytes(), expected);
 }
 
-/// Bounded property grid over all small structural regimes, including limb-
-/// width plateaus. Increasing either axis may leave a stepped bound unchanged
-/// briefly, but must never lower visits, work, or live-state authority.
+/// Bounded property grid over small structural regimes. Dimension growth is
+/// monotone. Point-count work intentionally follows `n*phi(n)` and therefore
+/// is not monotone across composite/prime transitions; its exact count is
+/// checked directly while requested live state remains monotone.
 #[test]
 fn g0_resource_bounds_are_monotone_over_bounded_grid() {
     for point_count in 3..=31 {
@@ -209,9 +214,10 @@ fn g0_resource_bounds_are_monotone_over_bounded_grid() {
                 .expect("grid dimension is valid")
                 .estimate()
                 .expect("small grid estimate is finite");
-            assert!(
-                current.lattice_visits() >= previous.lattice_visits(),
-                "visits decreased at n={point_count}, d={dimension}"
+            assert_eq!(
+                current.candidate_visits(),
+                u128::from(point_count) * current.admissible_candidate_count(),
+                "exact coprime visit schedule moved at n={point_count}, d={dimension}"
             );
             assert!(
                 current.limb_work_units() >= previous.limb_work_units(),
@@ -239,17 +245,10 @@ fn g0_resource_bounds_are_monotone_over_bounded_grid() {
                 .expect("grid point count is valid")
                 .estimate()
                 .expect("small grid estimate is finite");
-            assert!(
-                current.lattice_visits() >= previous.lattice_visits(),
-                "visits decreased at n={point_count}, d={dimension}"
-            );
-            assert!(
-                current.limb_work_units() >= previous.limb_work_units(),
-                "limb work decreased at n={point_count}, d={dimension}"
-            );
-            assert!(
-                current.scalar_work_units() >= previous.scalar_work_units(),
-                "scalar work decreased at n={point_count}, d={dimension}"
+            assert_eq!(
+                current.candidate_visits(),
+                u128::from(point_count) * current.admissible_candidate_count(),
+                "exact coprime visit schedule moved at n={point_count}, d={dimension}"
             );
             assert!(
                 current.logical_state_bytes() >= previous.logical_state_bytes(),
@@ -322,15 +321,11 @@ fn g0_multilimb_carry_work_overflow_is_fail_closed() {
         .expect("large 64-bit counts remain structurally valid");
     assert!(matches!(
         problem.estimate(),
-        Err(CbcAdmissionError::EstimateOverflow {
-            quantity: "carry limb work"
-        })
+        Err(CbcAdmissionError::EstimateOverflow { .. })
     ));
     assert!(matches!(
         problem.admit(CbcBudget::new(0, 0)),
-        Err(CbcAdmissionError::EstimateOverflow {
-            quantity: "carry limb work"
-        })
+        Err(CbcAdmissionError::EstimateOverflow { .. })
     ));
 }
 
@@ -358,18 +353,20 @@ fn g0_aggregate_state_above_isize_is_not_mistaken_for_one_allocation() {
 #[test]
 fn g0_aggregate_state_above_address_space_is_refused() {
     let problem = CbcProblem::new(5, 500_000_000).expect("large 32-bit counts remain structural");
-    let expected = CbcAdmissionError::TargetCapacityExceeded {
-        quantity: "logical-state address-space bytes",
-        required: 5_500_000_188,
-        limit: 1_u128 << 32,
-    };
-    assert_eq!(problem.estimate(), Err(expected));
-    assert_eq!(problem.admit(CbcBudget::UNBOUNDED), Err(expected));
-    assert_eq!(
-        problem.admit(CbcBudget::new(0, 0)),
-        Err(expected),
-        "target impossibility must precede both budget refusals"
-    );
+    for result in [
+        problem.estimate().map(|_| ()),
+        problem.admit(CbcBudget::UNBOUNDED).map(|_| ()),
+        problem.admit(CbcBudget::new(0, 0)).map(|_| ()),
+    ] {
+        assert!(matches!(
+            result,
+            Err(CbcAdmissionError::TargetCapacityExceeded {
+                quantity: "logical-state address-space bytes",
+                required,
+                limit,
+            }) if required > limit && limit == 1_u128 << 32
+        ));
+    }
 }
 
 // Exercise the aggregate theorem on the reference 64-bit lane as well. Every
@@ -380,18 +377,20 @@ fn g0_aggregate_state_above_address_space_is_refused() {
 fn g0_aggregate_state_above_64_bit_address_space_is_refused() {
     let problem = CbcProblem::new(5, 1_800_000_000_000_000_000)
         .expect("large 64-bit counts remain structural");
-    let expected = CbcAdmissionError::TargetCapacityExceeded {
-        quantity: "logical-state address-space bytes",
-        required: 19_800_000_000_000_000_304,
-        limit: 1_u128 << 64,
-    };
-    assert_eq!(problem.estimate(), Err(expected));
-    assert_eq!(problem.admit(CbcBudget::UNBOUNDED), Err(expected));
-    assert_eq!(
-        problem.admit(CbcBudget::new(0, 0)),
-        Err(expected),
-        "target impossibility must precede both budget refusals"
-    );
+    for result in [
+        problem.estimate().map(|_| ()),
+        problem.admit(CbcBudget::UNBOUNDED).map(|_| ()),
+        problem.admit(CbcBudget::new(0, 0)).map(|_| ()),
+    ] {
+        assert!(matches!(
+            result,
+            Err(CbcAdmissionError::TargetCapacityExceeded {
+                quantity: "logical-state address-space bytes",
+                required,
+                limit,
+            }) if required > limit && limit == 1_u128 << 64
+        ));
+    }
 }
 
 #[test]
@@ -400,16 +399,17 @@ fn g0_dimension_one_memory_charges_moved_old_and_new_product_overlap() {
         .expect("valid one-dimensional problem")
         .estimate()
         .expect("finite estimate");
-    let vector_header =
-        u128::try_from(core::mem::size_of::<Vec<u32>>()).expect("Vec header size fits u128");
     assert_eq!(estimate.candidate_count(), 0);
     assert_eq!(estimate.candidate_phase_bytes(), 0);
     assert_eq!(estimate.previous_product_capacity_limbs(), 1);
     assert_eq!(estimate.product_capacity_limbs(), 3);
-    // 5*3 product limbs + one moved old limb + one generator word + four
-    // factor-scratch words = 21 words; owners are five products, outer,
-    // generator, and the moved old product.
-    assert_eq!(estimate.update_phase_bytes(), 84 + 8 * vector_header);
+    let expected = estimate.executor_inline_bytes()
+        + estimate.product_owner_array_bytes()
+        + estimate.resident_product_payload_bytes()
+        + 4 // generator word
+        + 16 // fixed factor scratch
+        + estimate.product_overlap_bytes();
+    assert_eq!(estimate.update_phase_bytes(), expected);
     assert_eq!(
         estimate.logical_state_bytes(),
         estimate.update_phase_bytes()
@@ -422,7 +422,7 @@ fn g0_work_and_memory_budgets_have_exact_boundaries() {
     let estimate = problem.estimate().expect("finite estimate");
     let exact = CbcBudget::new(estimate.work_units(), estimate.logical_state_bytes());
     let admission = problem.admit(exact).expect("exact budgets admit");
-    assert_eq!(CBC_ADMISSION_SCHEMA_VERSION, 3);
+    assert_eq!(CBC_ADMISSION_SCHEMA_VERSION, 4);
     assert_eq!(admission.schema_version(), CBC_ADMISSION_SCHEMA_VERSION);
     assert_eq!(admission.problem(), problem);
     assert_eq!(admission.budget(), exact);
@@ -431,7 +431,7 @@ fn g0_work_and_memory_budgets_have_exact_boundaries() {
     assert_eq!(exact.max_memory_bytes(), estimate.logical_state_bytes());
 
     // Schema v1 admitted this budget because it omitted scalar, zero-fill,
-    // normalization, and per-source carry charges. Schemas v2/v3 must not
+    // normalization, and per-source carry charges. Schemas v2-v4 must not
     // silently preserve that undercount.
     assert_eq!(
         problem.admit(CbcBudget::new(244, estimate.logical_state_bytes())),

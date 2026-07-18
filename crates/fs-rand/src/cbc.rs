@@ -1,32 +1,25 @@
 //! Budget-first admission for exact component-by-component lattice construction.
 //!
-//! The live exact constructor remains [`crate::qmc::Lattice::cbc`]. This module
-//! is the allocation-free prerequisite for moving that implementation behind a
-//! typed execution boundary: it validates the count domain, computes checked
-//! conservative exact-integer limb/scalar-work/logical-state bounds, and
-//! admits only budgets that cover those bounds on the current target. It
-//! performs no CBC candidate evaluation and does not allocate.
+//! This module validates the count domain, computes checked exact-integer
+//! limb/scalar-work and requested-capacity memory envelopes, and admits only
+//! budgets that cover those envelopes on the current target. The resulting
+//! schedule is stored in the sealed receipt and consumed by
+//! [`crate::cbc_exec::CbcExecutor`]; execution does not mirror its constants.
 //!
-//! This tranche does not yet claim that `Lattice::cbc` consumes the receipt,
-//! supports cancellation or pause/resume, produces a minimality certificate,
-//! or has a compact independent checker. The estimator deliberately
-//! overcharges all visits at the largest relevant limb widths. Its memory
-//! quantity is the maximum of the candidate and product-update phases under
-//! the documented exact-capacity state model, including the old/new product
-//! overlap created by `ExactNat::mul_assign_factor`. Allocator metadata,
-//! allocator growth/rounding, complete call stacks, and process RSS are
-//! explicitly outside this tranche's claim. The execution tranche must use
-//! flat/exact-capacity storage or charge observed allocator capacity. Work is
-//! likewise a deterministic logical debit schedule, not a bound on allocator
-//! internals, instructions, energy, or elapsed time.
+//! Work is a deterministic logical debit schedule, not a bound on allocator
+//! internals, instructions, energy, or elapsed time. Memory means requested
+//! `Vec` payload capacity plus actual Rust owner/layout bytes and documented
+//! phase overlap. `Vec` may expose more capacity than requested, so allocator
+//! rounding, metadata, allocation failure, complete call stacks, and process
+//! RSS remain explicit no-claims.
 
 /// Version of the CBC admission and resource-estimate semantics.
-pub const CBC_ADMISSION_SCHEMA_VERSION: u32 = 3;
+pub const CBC_ADMISSION_SCHEMA_VERSION: u32 = 4;
 
 const LIMB_BYTES: u128 = 4;
 const FACTOR_SCRATCH_BYTES: u128 = 4 * LIMB_BYTES;
 // Scalar work units are source-level logical charges, not CPU instructions or
-// elapsed-time predictions. These constants are retained by schema v3. A visit
+// elapsed-time predictions. These constants are retained by schema v4. A visit
 // debits six residue primitives, ten kernel-numerator primitives, and four
 // loop/index primitives. A factor debits one fixed termination primitive plus
 // eight decomposition primitives per limb; a Euclidean step debits
@@ -39,6 +32,248 @@ const SCALAR_UNITS_PER_FACTOR_LIMB: u128 = 8;
 const SCALAR_UNITS_PER_GCD_STEP: u128 = 3;
 const SCALAR_UNITS_PER_CANDIDATE: u128 = 16;
 const SCALAR_UNITS_PER_DIMENSION: u128 = 8;
+const CERTIFICATE_UNITS_PER_CANDIDATE: u128 = 1;
+const CERTIFICATE_FIXED_UNITS_PER_PREFIX: u128 = 6;
+
+/// Execution capability sealed into a CBC admission receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CbcExecutionMode {
+    /// Construct the exact canonical generator without retaining certificates.
+    Construction,
+    /// Construct the same generator and retain one certificate per scanned
+    /// component under the certificate-capable work/memory envelope.
+    Certified,
+}
+
+/// Executor-facing debit schedule derived by the admission authority.
+///
+/// This stays crate-private: callers budget against [`CbcEstimate`], while
+/// the executor consumes these already-checked per-unit charges instead of
+/// mirroring schema constants or reconstructing limb-width formulas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CbcExecutionSchedule {
+    candidate_visit_units: u128,
+    candidate_control_units: u128,
+    product_update_visit_units: u128,
+    initialization_visit_units: u128,
+    prefix_control_units: u128,
+    candidate_visit_limb_units: u128,
+    candidate_visit_scalar_units: u128,
+    candidate_control_limb_units: u128,
+    candidate_control_scalar_units: u128,
+    product_update_visit_limb_units: u128,
+    product_update_visit_scalar_units: u128,
+    certificate_candidate_units: u128,
+    certificate_score_copy_limb_units: u128,
+    certificate_fixed_prefix_units: u128,
+}
+
+impl CbcExecutionSchedule {
+    fn checked(
+        point_count: u32,
+        kernel_factor_limbs: u128,
+        max_source_product_limbs: u128,
+        score_capacity_limbs: u128,
+        product_capacity_limbs: u128,
+        max_score_limbs: u128,
+    ) -> Result<Self, CbcAdmissionError> {
+        let visit_limb_units = max_source_product_limbs
+            .checked_mul(kernel_factor_limbs)
+            .and_then(|multiply_add| {
+                max_source_product_limbs
+                    .checked_mul(score_capacity_limbs)
+                    .and_then(|carry| multiply_add.checked_add(carry))
+            })
+            .ok_or_else(|| overflow("execution visit limb work"))?;
+        let visit_scalar_units = kernel_factor_limbs
+            .checked_mul(SCALAR_UNITS_PER_FACTOR_LIMB)
+            .and_then(|factor_limbs| {
+                SCALAR_UNITS_PER_LATTICE_VISIT
+                    .checked_add(SCALAR_UNITS_PER_FACTOR)
+                    .and_then(|fixed| fixed.checked_add(factor_limbs))
+            })
+            .ok_or_else(|| overflow("execution visit scalar work"))?;
+        let candidate_visit_units = visit_limb_units
+            .checked_add(visit_scalar_units)
+            .ok_or_else(|| overflow("execution candidate visit work"))?;
+        let gcd_step_upper_bound = u128::from(ceil_log2(point_count))
+            .checked_mul(2)
+            .and_then(|steps| steps.checked_add(1))
+            .ok_or_else(|| overflow("execution GCD step bound"))?;
+        let candidate_control_scalar_units = gcd_step_upper_bound
+            .checked_mul(SCALAR_UNITS_PER_GCD_STEP)
+            .and_then(|gcd_units| gcd_units.checked_add(SCALAR_UNITS_PER_CANDIDATE))
+            .ok_or_else(|| overflow("execution candidate scalar control work"))?;
+        let candidate_control_limb_units = score_capacity_limbs
+            .checked_mul(2)
+            .and_then(|score_units| score_units.checked_add(max_score_limbs))
+            .ok_or_else(|| overflow("execution candidate limb control work"))?;
+        let candidate_control_units = candidate_control_scalar_units
+            .checked_add(candidate_control_limb_units)
+            .ok_or_else(|| overflow("execution candidate control work"))?;
+        let product_update_limb_units = product_capacity_limbs
+            .checked_mul(2)
+            .and_then(|product_units| visit_limb_units.checked_add(product_units))
+            .ok_or_else(|| overflow("execution product-update limb work"))?;
+        let product_update_visit_units = product_update_limb_units
+            .checked_add(visit_scalar_units)
+            .ok_or_else(|| overflow("execution product-update work"))?;
+        let initialization_visit_units = product_update_visit_units
+            .checked_add(1)
+            .ok_or_else(|| overflow("execution initialization work"))?;
+        let prefix_control_units = SCALAR_UNITS_PER_DIMENSION
+            .checked_add(1)
+            .ok_or_else(|| overflow("execution prefix control work"))?;
+        Ok(Self {
+            candidate_visit_units,
+            candidate_control_units,
+            product_update_visit_units,
+            initialization_visit_units,
+            prefix_control_units,
+            candidate_visit_limb_units: visit_limb_units,
+            candidate_visit_scalar_units: visit_scalar_units,
+            candidate_control_limb_units,
+            candidate_control_scalar_units,
+            product_update_visit_limb_units: product_update_limb_units,
+            product_update_visit_scalar_units: visit_scalar_units,
+            certificate_candidate_units: CERTIFICATE_UNITS_PER_CANDIDATE,
+            certificate_score_copy_limb_units: score_capacity_limbs
+                .checked_mul(2)
+                .ok_or_else(|| overflow("certificate score-copy work"))?,
+            certificate_fixed_prefix_units: CERTIFICATE_FIXED_UNITS_PER_PREFIX,
+        })
+    }
+
+    fn checked_upper_bound(
+        self,
+        candidate_visits: u128,
+        candidate_count: u128,
+        product_update_visits: u128,
+        initialization_points: u128,
+        prefixes: u128,
+    ) -> Result<u128, CbcAdmissionError> {
+        candidate_visits
+            .checked_mul(self.candidate_visit_units)
+            .and_then(|units| {
+                candidate_count
+                    .checked_mul(self.candidate_control_units)
+                    .and_then(|control| units.checked_add(control))
+            })
+            .and_then(|units| {
+                product_update_visits
+                    .checked_mul(self.product_update_visit_units)
+                    .and_then(|updates| units.checked_add(updates))
+            })
+            .and_then(|units| units.checked_add(initialization_points))
+            .and_then(|units| {
+                prefixes
+                    .checked_mul(self.prefix_control_units)
+                    .and_then(|control| units.checked_add(control))
+            })
+            .ok_or_else(|| overflow("execution schedule upper bound"))
+    }
+
+    fn checked_certificate_upper_bound(
+        self,
+        candidate_count: u128,
+        scanned_prefixes: u128,
+        prefix_payload_words: u128,
+    ) -> Result<u128, CbcAdmissionError> {
+        candidate_count
+            .checked_mul(self.certificate_candidate_units)
+            .and_then(|units| {
+                scanned_prefixes
+                    .checked_mul(
+                        self.certificate_score_copy_limb_units
+                            .checked_add(self.certificate_fixed_prefix_units)?,
+                    )
+                    .and_then(|prefix_units| units.checked_add(prefix_units))
+            })
+            .and_then(|units| units.checked_add(prefix_payload_words))
+            .ok_or_else(|| overflow("certificate execution schedule"))
+    }
+
+    fn checked_limb_upper_bound(
+        self,
+        candidate_visits: u128,
+        candidate_count: u128,
+        product_update_visits: u128,
+    ) -> Result<u128, CbcAdmissionError> {
+        candidate_visits
+            .checked_mul(self.candidate_visit_limb_units)
+            .and_then(|units| {
+                candidate_count
+                    .checked_mul(self.candidate_control_limb_units)
+                    .and_then(|control| units.checked_add(control))
+            })
+            .and_then(|units| {
+                product_update_visits
+                    .checked_mul(self.product_update_visit_limb_units)
+                    .and_then(|updates| units.checked_add(updates))
+            })
+            .ok_or_else(|| overflow("execution limb schedule upper bound"))
+    }
+
+    fn checked_scalar_upper_bound(
+        self,
+        candidate_visits: u128,
+        candidate_count: u128,
+        product_update_visits: u128,
+        initialization_points: u128,
+        prefixes: u128,
+    ) -> Result<u128, CbcAdmissionError> {
+        candidate_visits
+            .checked_mul(self.candidate_visit_scalar_units)
+            .and_then(|units| {
+                candidate_count
+                    .checked_mul(self.candidate_control_scalar_units)
+                    .and_then(|control| units.checked_add(control))
+            })
+            .and_then(|units| {
+                product_update_visits
+                    .checked_mul(self.product_update_visit_scalar_units)
+                    .and_then(|updates| units.checked_add(updates))
+            })
+            .and_then(|units| units.checked_add(initialization_points))
+            .and_then(|units| {
+                prefixes
+                    .checked_mul(self.prefix_control_units)
+                    .and_then(|control| units.checked_add(control))
+            })
+            .ok_or_else(|| overflow("execution scalar schedule upper bound"))
+    }
+
+    pub(crate) const fn candidate_visit_units(self) -> u128 {
+        self.candidate_visit_units
+    }
+
+    pub(crate) const fn candidate_control_units(self) -> u128 {
+        self.candidate_control_units
+    }
+
+    pub(crate) const fn product_update_visit_units(self) -> u128 {
+        self.product_update_visit_units
+    }
+
+    pub(crate) const fn initialization_visit_units(self) -> u128 {
+        self.initialization_visit_units
+    }
+
+    pub(crate) const fn prefix_control_units(self) -> u128 {
+        self.prefix_control_units
+    }
+
+    pub(crate) const fn certificate_candidate_units(self) -> u128 {
+        self.certificate_candidate_units
+    }
+
+    pub(crate) fn certificate_prefix_units(self, prefix_len: usize) -> Option<u128> {
+        u128::try_from(prefix_len)
+            .ok()?
+            .checked_add(self.certificate_score_copy_limb_units)?
+            .checked_add(self.certificate_fixed_prefix_units)
+    }
+}
 
 /// Exact CBC problem counts. Both values are dimensionless integer counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,10 +317,10 @@ impl CbcProblem {
     /// Compute conservative resource bounds with checked arithmetic and no
     /// allocation or CBC work.
     ///
-    /// `lattice_visits` bounds the first-component product update plus every
-    /// later candidate/point and chosen-product visit:
+    /// `lattice_visits` counts the first-component product update plus every
+    /// coprime candidate/point and chosen-product visit:
     ///
-    /// `n + (dimension - 1) * n * (n - 1) + (dimension - 1) * n`.
+    /// `n + (dimension - 1) * n * phi(n) + (dimension - 1) * n`.
     ///
     /// `limb_work_units` charges multiplication, worst-case carry propagation,
     /// zero-fill, normalization, and score comparison. `scalar_work_units`
@@ -103,8 +338,20 @@ impl CbcProblem {
     /// simultaneously live logical state exceeds the target address-space
     /// cardinality.
     #[must_use]
-    #[allow(clippy::too_many_lines)] // One checked derivation keeps the envelope auditable.
     pub fn estimate(self) -> Result<CbcEstimate, CbcAdmissionError> {
+        self.estimate_for(CbcExecutionMode::Construction)
+    }
+
+    /// Compute the checked resource envelope for one explicit execution mode.
+    /// Certified mode includes certificate bookkeeping, retained records, and
+    /// record-emission overlap; construction mode cannot later enable them.
+    ///
+    /// # Errors
+    /// The same structural, arithmetic, and target-capacity refusals as
+    /// [`Self::estimate`].
+    #[must_use]
+    #[allow(clippy::too_many_lines)] // One checked derivation keeps the envelope auditable.
+    pub fn estimate_for(self, mode: CbcExecutionMode) -> Result<CbcEstimate, CbcAdmissionError> {
         let points = u128::from(self.point_count);
         let dimension =
             u128::try_from(self.dimension).map_err(|_| overflow("dimension conversion"))?;
@@ -113,6 +360,7 @@ impl CbcProblem {
             .ok_or_else(|| overflow("later dimensions"))?;
         let candidate_upper_bound = self.point_count - 1;
         let candidates = u128::from(candidate_upper_bound);
+        let admissible_candidates_per_prefix = u128::from(euler_totient(self.point_count));
 
         // `1 + B2(r/n)` has numerator
         // `7*n^2 + 6*r^2 - 6*r*n <= 7*n^2` over `6*n^2`.
@@ -150,6 +398,14 @@ impl CbcProblem {
             .and_then(|limbs| limbs.checked_add(1))
             .ok_or_else(|| overflow("product limb capacity"))?;
         let score_capacity_limbs = product_capacity_limbs.max(max_score_limbs);
+        let execution_schedule = CbcExecutionSchedule::checked(
+            self.point_count,
+            kernel_factor_limbs,
+            max_source_product_limbs,
+            score_capacity_limbs,
+            product_capacity_limbs,
+            max_score_limbs,
+        )?;
 
         // Immediately before the final update, retained products were created
         // by the preceding update. Dimension one instead starts from `one`.
@@ -172,9 +428,12 @@ impl CbcProblem {
         let candidate_count = later_dimensions
             .checked_mul(candidates)
             .ok_or_else(|| overflow("candidate count"))?;
+        let admissible_candidate_count = later_dimensions
+            .checked_mul(admissible_candidates_per_prefix)
+            .ok_or_else(|| overflow("admissible candidate count"))?;
         let candidate_visits = later_dimensions
             .checked_mul(points)
-            .and_then(|visits| visits.checked_mul(candidates))
+            .and_then(|visits| visits.checked_mul(admissible_candidates_per_prefix))
             .ok_or_else(|| overflow("candidate lattice visits"))?;
         let product_update_visits = dimension
             .checked_mul(points)
@@ -184,72 +443,105 @@ impl CbcProblem {
             .ok_or_else(|| overflow("total lattice visits"))?;
         let comparison_count = candidate_count;
 
-        // Model the two actual high-water phases rather than adding mutually
-        // exclusive buffers. Candidate evaluation retains preceding-prefix
-        // products plus current and best scores. Product update has no score,
-        // but mul_assign_factor simultaneously owns the moved old allocation
-        // and the replacement allocation. Vec growth/allocator rounding is a
-        // no-claim and must be removed by exact-capacity execution or metered.
-        let vector_header_bytes = u128::try_from(core::mem::size_of::<Vec<u32>>())
-            .map_err(|_| overflow("vector header conversion"))?;
-        let best_owner_bytes = u128::try_from(core::mem::size_of::<Option<(Vec<u32>, u32)>>())
-            .map_err(|_| overflow("best owner conversion"))?;
-        let product_header_bytes = points
-            .checked_mul(vector_header_bytes)
+        let prefix_payload_words = match mode {
+            CbcExecutionMode::Construction => 0,
+            CbcExecutionMode::Certified if later_dimensions == 0 => 0,
+            CbcExecutionMode::Certified => checked_triangular(dimension)?
+                .checked_sub(1)
+                .ok_or_else(|| overflow("certificate prefix payload"))?,
+        };
+
+        // Model mutually exclusive high-water phases. Candidate evaluation
+        // retains current/incumbent scores (plus runner-up in certified mode).
+        // Product update has no score, but multiplication simultaneously owns
+        // the moved old allocation and its replacement. Allocator rounding is
+        // explicitly outside this requested-capacity envelope.
+        let exact_nat_owner_bytes = u128::try_from(core::mem::size_of::<crate::qmc::ExactNat>())
+            .map_err(|_| overflow("exact-integer owner conversion"))?;
+        let executor_inline_bytes =
+            u128::try_from(core::mem::size_of::<crate::cbc_exec::CbcExecutor>())
+                .map_err(|_| overflow("executor inline-state conversion"))?;
+        let product_owner_array_bytes = points
+            .checked_mul(exact_nat_owner_bytes)
             .ok_or_else(|| overflow("product owner array"))?;
         let generator_payload_bytes = dimension
             .checked_mul(LIMB_BYTES)
             .ok_or_else(|| overflow("generator payload"))?;
-        let previous_product_payload_bytes = points
-            .checked_mul(previous_product_capacity_limbs)
-            .and_then(|limbs| limbs.checked_mul(LIMB_BYTES))
-            .ok_or_else(|| overflow("previous product payload"))?;
-        let final_product_payload_bytes = points
+        // The executor reserves every resident product at the final admitted
+        // capacity from construction entry onward. Model that actual layout,
+        // rather than the smaller mathematical capacity of a prior prefix.
+        let resident_product_payload_bytes = points
             .checked_mul(product_capacity_limbs)
             .and_then(|limbs| limbs.checked_mul(LIMB_BYTES))
-            .ok_or_else(|| overflow("final product payload"))?;
-        let old_product_overlap_bytes = previous_product_capacity_limbs
+            .ok_or_else(|| overflow("resident product payload"))?;
+        // `ExactNat::mul_assign_factor_with_capacity` temporarily owns the
+        // moved old allocation while populating a new allocation requested at
+        // the same admitted capacity.
+        let product_overlap_bytes = product_capacity_limbs
             .checked_mul(LIMB_BYTES)
-            .ok_or_else(|| overflow("old product overlap"))?;
+            .ok_or_else(|| overflow("product-update overlap"))?;
         let score_payload_bytes = score_capacity_limbs
             .checked_mul(LIMB_BYTES)
             .ok_or_else(|| overflow("score payload"))?;
-        let common_owner_bytes = product_header_bytes
-            .checked_add(
-                2_u128
-                    .checked_mul(vector_header_bytes)
-                    .ok_or_else(|| overflow("outer and generator owners"))?,
+        let certificate_count = match mode {
+            CbcExecutionMode::Construction => 0,
+            CbcExecutionMode::Certified => later_dimensions,
+        };
+        let certificate_owner_bytes = certificate_count
+            .checked_mul(
+                u128::try_from(core::mem::size_of::<crate::cbc_cert::CbcPrefixCertificate>())
+                    .map_err(|_| overflow("certificate owner conversion"))?,
             )
-            .ok_or_else(|| overflow("common owners"))?;
-        let common_state_bytes = common_owner_bytes
-            .checked_add(generator_payload_bytes)
+            .ok_or_else(|| overflow("certificate owner array"))?;
+        let certificate_prefix_payload_bytes = match mode {
+            CbcExecutionMode::Construction => 0,
+            CbcExecutionMode::Certified => prefix_payload_words
+                .checked_mul(LIMB_BYTES)
+                .ok_or_else(|| overflow("certificate prefix payload bytes"))?,
+        };
+        let certificate_score_payload_bytes = certificate_count
+            .checked_mul(2)
+            .and_then(|scores| scores.checked_mul(score_payload_bytes))
+            .ok_or_else(|| overflow("certificate score payload bytes"))?;
+        let certificate_tie_payload_bytes = certificate_count
+            .checked_mul(admissible_candidates_per_prefix)
+            .and_then(|words| words.checked_mul(LIMB_BYTES))
+            .ok_or_else(|| overflow("certificate tie payload bytes"))?;
+        let certificate_retained_bytes = certificate_owner_bytes
+            .checked_add(certificate_prefix_payload_bytes)
+            .and_then(|bytes| bytes.checked_add(certificate_score_payload_bytes))
+            .and_then(|bytes| bytes.checked_add(certificate_tie_payload_bytes))
+            .ok_or_else(|| overflow("certificate retained state"))?;
+        // `size_of::<CbcExecutor>()` binds every inline cursor, schedule,
+        // owner, counter, and phase discriminant. Heap-owned ExactNat records,
+        // requested payloads, and the fixed factor-decomposition scratch are
+        // charged separately.
+        let common_state_bytes = executor_inline_bytes
+            .checked_add(product_owner_array_bytes)
+            .and_then(|bytes| bytes.checked_add(resident_product_payload_bytes))
+            .and_then(|bytes| bytes.checked_add(generator_payload_bytes))
             .and_then(|bytes| bytes.checked_add(FACTOR_SCRATCH_BYTES))
+            .and_then(|bytes| bytes.checked_add(certificate_retained_bytes))
             .ok_or_else(|| overflow("common logical state"))?;
-        // Assignment can transiently retain both the old `best` owner and a
-        // new Option owner containing the moved current score. Charge the
-        // larger of steady evaluation (Vec + Option) and replacement
-        // (Option + Option), including tuple padding on this target.
-        let candidate_score_owner_bytes = vector_header_bytes
-            .checked_add(best_owner_bytes)
-            .ok_or_else(|| overflow("candidate score owners"))?
-            .max(
-                2_u128
-                    .checked_mul(best_owner_bytes)
-                    .ok_or_else(|| overflow("replacement score owners"))?,
-            );
+        // The maximum-sized Phase is already in the executor's inline bytes;
+        // candidate evaluation adds current/incumbent payloads and, for a
+        // certified receipt, the simultaneously retained runner-up payload.
         let candidate_phase_bytes = if candidate_count == 0 {
             0
         } else {
+            let live_score_count = match mode {
+                CbcExecutionMode::Construction => 2,
+                CbcExecutionMode::Certified => 3,
+            };
+            let live_score_payload_bytes = live_score_count
+                .checked_mul(score_payload_bytes)
+                .ok_or_else(|| overflow("candidate score payloads"))?;
             common_state_bytes
-                .checked_add(previous_product_payload_bytes)
-                .and_then(|bytes| bytes.checked_add(candidate_score_owner_bytes))
-                .and_then(|bytes| bytes.checked_add(2_u128.checked_mul(score_payload_bytes)?))
+                .checked_add(live_score_payload_bytes)
                 .ok_or_else(|| overflow("candidate-phase logical state"))?
         };
         let update_phase_bytes = common_state_bytes
-            .checked_add(final_product_payload_bytes)
-            .and_then(|bytes| bytes.checked_add(old_product_overlap_bytes))
-            .and_then(|bytes| bytes.checked_add(vector_header_bytes))
+            .checked_add(product_overlap_bytes)
             .ok_or_else(|| overflow("update-phase logical state"))?;
         let logical_state_bytes = candidate_phase_bytes.max(update_phase_bytes);
 
@@ -273,7 +565,7 @@ impl CbcProblem {
         target_bound("point-count element count", points, usize_limit)?;
         target_bound(
             "product owner-array bytes",
-            product_header_bytes,
+            product_owner_array_bytes,
             vec_byte_limit,
         )?;
         target_bound("generator element count", dimension, usize_limit)?;
@@ -301,7 +593,7 @@ impl CbcProblem {
         )?;
         target_bound(
             "previous-product allocation bytes",
-            old_product_overlap_bytes,
+            product_overlap_bytes,
             vec_byte_limit,
         )?;
         target_bound("score element capacity", score_capacity_limbs, usize_limit)?;
@@ -310,6 +602,30 @@ impl CbcProblem {
             score_payload_bytes,
             vec_byte_limit,
         )?;
+        if matches!(mode, CbcExecutionMode::Certified) {
+            target_bound(
+                "certificate denominator exponent",
+                dimension,
+                u128::from(u32::MAX),
+            )?;
+            target_bound(
+                "certificate owner-array bytes",
+                certificate_owner_bytes,
+                vec_byte_limit,
+            )?;
+            target_bound(
+                "certificate tie element capacity",
+                admissible_candidates_per_prefix,
+                usize_limit,
+            )?;
+            target_bound(
+                "certificate tie allocation bytes",
+                admissible_candidates_per_prefix
+                    .checked_mul(LIMB_BYTES)
+                    .ok_or_else(|| overflow("certificate tie allocation"))?,
+                vec_byte_limit,
+            )?;
+        }
         if let Some(address_space_cardinality_bytes) = address_space_cardinality_bytes {
             target_bound(
                 "logical-state address-space bytes",
@@ -318,85 +634,69 @@ impl CbcProblem {
             )?;
         }
 
-        let multiply_add_units = lattice_visits
-            .checked_mul(max_source_product_limbs)
-            .and_then(|units| units.checked_mul(kernel_factor_limbs))
-            .ok_or_else(|| overflow("multiply-add limb work"))?;
-        // add_mul_factor may propagate carry after every source limb. Charge
-        // the full accumulator capacity for each such propagation rather than
-        // assuming one carry pass per lattice visit.
-        let carry_units = lattice_visits
-            .checked_mul(max_source_product_limbs)
-            .and_then(|units| units.checked_mul(score_capacity_limbs))
-            .ok_or_else(|| overflow("carry limb work"))?;
-        let comparison_limb_units = comparison_count
-            .checked_mul(max_score_limbs)
-            .ok_or_else(|| overflow("comparison limb work"))?;
-        let zero_fill_limb_units = candidate_count
-            .checked_mul(score_capacity_limbs)
-            .and_then(|units| {
-                product_update_visits
-                    .checked_mul(product_capacity_limbs)
-                    .and_then(|product_units| units.checked_add(product_units))
-            })
-            .ok_or_else(|| overflow("zero-fill limb work"))?;
-        let normalization_limb_units = candidate_count
-            .checked_mul(score_capacity_limbs)
-            .and_then(|units| {
-                product_update_visits
-                    .checked_mul(product_capacity_limbs)
-                    .and_then(|product_units| units.checked_add(product_units))
-            })
-            .ok_or_else(|| overflow("normalization limb work"))?;
-        let limb_work_units = multiply_add_units
-            .checked_add(carry_units)
-            .and_then(|units| units.checked_add(zero_fill_limb_units))
-            .and_then(|units| units.checked_add(normalization_limb_units))
-            .and_then(|units| units.checked_add(comparison_limb_units))
+        // Derive both the public work decomposition and the executor's
+        // per-boundary charges from one typed schedule. This removes copied
+        // scalar constants and limb formulas from the execution module.
+        let construction_limb_work_units = execution_schedule.checked_limb_upper_bound(
+            candidate_visits,
+            candidate_count,
+            product_update_visits,
+        )?;
+        let construction_scalar_work_units = execution_schedule.checked_scalar_upper_bound(
+            candidate_visits,
+            candidate_count,
+            product_update_visits,
+            points,
+            dimension,
+        )?;
+        let construction_work_units = construction_limb_work_units
+            .checked_add(construction_scalar_work_units)
+            .ok_or_else(|| overflow("construction work"))?;
+        let scheduled_construction_work_units = execution_schedule.checked_upper_bound(
+            candidate_visits,
+            candidate_count,
+            product_update_visits,
+            points,
+            dimension,
+        )?;
+        debug_assert_eq!(construction_work_units, scheduled_construction_work_units);
+        let certificate_work_units = match mode {
+            CbcExecutionMode::Construction => 0,
+            CbcExecutionMode::Certified => execution_schedule.checked_certificate_upper_bound(
+                candidate_count,
+                later_dimensions,
+                prefix_payload_words,
+            )?,
+        };
+        let certificate_limb_work_units = certificate_count
+            .checked_mul(execution_schedule.certificate_score_copy_limb_units)
+            .ok_or_else(|| overflow("certificate limb work"))?;
+        let certificate_scalar_work_units = certificate_work_units
+            .checked_sub(certificate_limb_work_units)
+            .ok_or_else(|| overflow("certificate scalar work"))?;
+        let limb_work_units = construction_limb_work_units
+            .checked_add(certificate_limb_work_units)
             .ok_or_else(|| overflow("total limb work"))?;
-
-        let gcd_step_upper_bound = u128::from(ceil_log2(self.point_count))
-            .checked_mul(2)
-            .and_then(|steps| steps.checked_add(1))
-            .ok_or_else(|| overflow("GCD step bound"))?;
-        let visit_scalar_units = lattice_visits
-            .checked_mul(SCALAR_UNITS_PER_LATTICE_VISIT)
-            .ok_or_else(|| overflow("residue/kernel scalar work"))?;
-        let factor_scalar_units = lattice_visits
-            .checked_mul(kernel_factor_limbs)
-            .and_then(|units| units.checked_mul(SCALAR_UNITS_PER_FACTOR_LIMB))
-            .and_then(|units| {
-                lattice_visits
-                    .checked_mul(SCALAR_UNITS_PER_FACTOR)
-                    .and_then(|fixed_units| units.checked_add(fixed_units))
-            })
-            .ok_or_else(|| overflow("factor-decomposition scalar work"))?;
-        let gcd_scalar_units = candidate_count
-            .checked_mul(gcd_step_upper_bound)
-            .and_then(|units| units.checked_mul(SCALAR_UNITS_PER_GCD_STEP))
-            .ok_or_else(|| overflow("GCD scalar work"))?;
-        let candidate_scalar_units = candidate_count
-            .checked_mul(SCALAR_UNITS_PER_CANDIDATE)
-            .ok_or_else(|| overflow("candidate scalar work"))?;
-        let dimension_scalar_units = dimension
-            .checked_mul(SCALAR_UNITS_PER_DIMENSION)
-            .and_then(|units| units.checked_add(points))
-            .and_then(|units| units.checked_add(dimension))
-            .ok_or_else(|| overflow("dimension/initialization scalar work"))?;
-        let scalar_work_units = visit_scalar_units
-            .checked_add(factor_scalar_units)
-            .and_then(|units| units.checked_add(gcd_scalar_units))
-            .and_then(|units| units.checked_add(candidate_scalar_units))
-            .and_then(|units| units.checked_add(dimension_scalar_units))
+        let scalar_work_units = construction_scalar_work_units
+            .checked_add(certificate_scalar_work_units)
             .ok_or_else(|| overflow("total scalar work"))?;
-        let work_units = limb_work_units
-            .checked_add(scalar_work_units)
+        let work_units = construction_work_units
+            .checked_add(certificate_work_units)
             .ok_or_else(|| overflow("total work"))?;
 
         Ok(CbcEstimate {
+            mode,
+            executor_schema_version: crate::cbc_exec::CBC_EXECUTOR_SCHEMA_VERSION,
+            certificate_schema_version: match mode {
+                CbcExecutionMode::Construction => 0,
+                CbcExecutionMode::Certified => crate::cbc_cert::CBC_CERTIFICATE_SCHEMA_VERSION,
+            },
             target_pointer_width_bits: usize::BITS,
             candidate_upper_bound,
             candidate_count,
+            admissible_candidates_per_prefix,
+            admissible_candidate_count,
+            candidate_visits,
             kernel_numerator_upper,
             kernel_numerator_bits,
             kernel_factor_limbs,
@@ -411,12 +711,26 @@ impl CbcProblem {
             lattice_visits,
             product_update_visits,
             comparison_count,
+            construction_limb_work_units,
+            construction_scalar_work_units,
+            construction_work_units,
+            certificate_work_units,
             limb_work_units,
             scalar_work_units,
             work_units,
+            executor_inline_bytes,
+            product_owner_array_bytes,
+            resident_product_payload_bytes,
+            product_overlap_bytes,
+            certificate_owner_bytes,
+            certificate_prefix_payload_bytes,
+            certificate_score_payload_bytes,
+            certificate_tie_payload_bytes,
+            certificate_retained_bytes,
             candidate_phase_bytes,
             update_phase_bytes,
             logical_state_bytes,
+            execution_schedule,
         })
     }
 
@@ -431,7 +745,22 @@ impl CbcProblem {
     /// [`CbcAdmissionError::MemoryBudgetExceeded`].
     #[must_use]
     pub fn admit(self, budget: CbcBudget) -> Result<CbcAdmission, CbcAdmissionError> {
-        let estimate = self.estimate()?;
+        self.admit_for(CbcExecutionMode::Construction, budget)
+    }
+
+    /// Admit one explicit execution capability. A construction-only receipt
+    /// cannot later enable certificates; a certified receipt covers their
+    /// additional schedule and requested-capacity envelope from the start.
+    ///
+    /// # Errors
+    /// The same estimate and budget refusals as [`Self::admit`].
+    #[must_use]
+    pub fn admit_for(
+        self,
+        mode: CbcExecutionMode,
+        budget: CbcBudget,
+    ) -> Result<CbcAdmission, CbcAdmissionError> {
+        let estimate = self.estimate_for(mode)?;
         if estimate.work_units > budget.max_work_units {
             return Err(CbcAdmissionError::WorkBudgetExceeded {
                 required: estimate.work_units,
@@ -446,6 +775,7 @@ impl CbcProblem {
         }
         Ok(CbcAdmission {
             schema_version: CBC_ADMISSION_SCHEMA_VERSION,
+            mode,
             problem: self,
             budget,
             estimate,
@@ -454,7 +784,7 @@ impl CbcProblem {
 }
 
 /// Explicit CBC admission budgets. Work units are the sum of the declared limb
-/// and scalar primitive charges; memory units are logical exact-capacity state
+/// and scalar primitive charges; memory units are requested-capacity state
 /// bytes under this module's documented phase model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CbcBudget {
@@ -478,7 +808,7 @@ impl CbcBudget {
         }
     }
 
-    /// Maximum conservative schema-v3 work units.
+    /// Maximum conservative schema-v4 work units.
     #[must_use]
     pub const fn max_work_units(self) -> u128 {
         self.max_work_units
@@ -494,9 +824,15 @@ impl CbcBudget {
 /// Checked conservative resource bounds for one CBC problem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CbcEstimate {
+    mode: CbcExecutionMode,
+    executor_schema_version: u32,
+    certificate_schema_version: u32,
     target_pointer_width_bits: u32,
     candidate_upper_bound: u32,
     candidate_count: u128,
+    admissible_candidates_per_prefix: u128,
+    admissible_candidate_count: u128,
+    candidate_visits: u128,
     kernel_numerator_upper: u128,
     kernel_numerator_bits: u32,
     kernel_factor_limbs: u128,
@@ -511,15 +847,47 @@ pub struct CbcEstimate {
     lattice_visits: u128,
     product_update_visits: u128,
     comparison_count: u128,
+    construction_limb_work_units: u128,
+    construction_scalar_work_units: u128,
+    construction_work_units: u128,
+    certificate_work_units: u128,
     limb_work_units: u128,
     scalar_work_units: u128,
     work_units: u128,
+    executor_inline_bytes: u128,
+    product_owner_array_bytes: u128,
+    resident_product_payload_bytes: u128,
+    product_overlap_bytes: u128,
+    certificate_owner_bytes: u128,
+    certificate_prefix_payload_bytes: u128,
+    certificate_score_payload_bytes: u128,
+    certificate_tie_payload_bytes: u128,
+    certificate_retained_bytes: u128,
     candidate_phase_bytes: u128,
     update_phase_bytes: u128,
     logical_state_bytes: u128,
+    execution_schedule: CbcExecutionSchedule,
 }
 
 impl CbcEstimate {
+    /// Execution capability covered by this estimate.
+    #[must_use]
+    pub const fn mode(self) -> CbcExecutionMode {
+        self.mode
+    }
+
+    /// Executor schema sealed into this estimate.
+    #[must_use]
+    pub const fn executor_schema_version(self) -> u32 {
+        self.executor_schema_version
+    }
+
+    /// Certificate schema sealed into this estimate (`0` in construction mode).
+    #[must_use]
+    pub const fn certificate_schema_version(self) -> u32 {
+        self.certificate_schema_version
+    }
+
     /// Target pointer width bound into this estimate and receipt.
     #[must_use]
     pub const fn target_pointer_width_bits(self) -> u32 {
@@ -536,6 +904,24 @@ impl CbcEstimate {
     #[must_use]
     pub const fn candidate_count(self) -> u128 {
         self.candidate_count
+    }
+
+    /// Unit-group cardinality `phi(n)` scored at each scanned prefix.
+    #[must_use]
+    pub const fn admissible_candidates_per_prefix(self) -> u128 {
+        self.admissible_candidates_per_prefix
+    }
+
+    /// Coprime candidates that are scored across all scanned prefixes.
+    #[must_use]
+    pub const fn admissible_candidate_count(self) -> u128 {
+        self.admissible_candidate_count
+    }
+
+    /// Exact scheduled candidate/point visits after unit-group filtering.
+    #[must_use]
+    pub const fn candidate_visits(self) -> u128 {
+        self.candidate_visits
     }
 
     /// Maximum exact kernel numerator, bounded by `7*n^2`.
@@ -605,7 +991,7 @@ impl CbcEstimate {
         self.previous_product_capacity_limbs
     }
 
-    /// Upper bound on point/candidate visits.
+    /// Exact scheduled product and coprime candidate/point visits.
     #[must_use]
     pub const fn lattice_visits(self) -> u128 {
         self.lattice_visits
@@ -621,6 +1007,30 @@ impl CbcEstimate {
     #[must_use]
     pub const fn comparison_count(self) -> u128 {
         self.comparison_count
+    }
+
+    /// Limb work for exact construction before optional certificate emission.
+    #[must_use]
+    pub const fn construction_limb_work_units(self) -> u128 {
+        self.construction_limb_work_units
+    }
+
+    /// Scalar work for exact construction before optional certificates.
+    #[must_use]
+    pub const fn construction_scalar_work_units(self) -> u128 {
+        self.construction_scalar_work_units
+    }
+
+    /// Exact logical schedule consumed by a construction-only executor.
+    #[must_use]
+    pub const fn construction_work_units(self) -> u128 {
+        self.construction_work_units
+    }
+
+    /// Additional schedule consumed only by certified execution.
+    #[must_use]
+    pub const fn certificate_work_units(self) -> u128 {
+        self.certificate_work_units
     }
 
     /// Conservative limb-operation admission units.
@@ -639,6 +1049,61 @@ impl CbcEstimate {
     #[must_use]
     pub const fn work_units(self) -> u128 {
         self.work_units
+    }
+
+    /// Inline bytes of the actual executor value, including owners, cursors,
+    /// counters, schedule, and the maximum-sized phase representation.
+    #[must_use]
+    pub const fn executor_inline_bytes(self) -> u128 {
+        self.executor_inline_bytes
+    }
+
+    /// Bytes in the heap owner array for all exact product values.
+    #[must_use]
+    pub const fn product_owner_array_bytes(self) -> u128 {
+        self.product_owner_array_bytes
+    }
+
+    /// Requested heap payload retained by all products from executor entry.
+    #[must_use]
+    pub const fn resident_product_payload_bytes(self) -> u128 {
+        self.resident_product_payload_bytes
+    }
+
+    /// Requested new-product payload overlapping one moved old allocation.
+    #[must_use]
+    pub const fn product_overlap_bytes(self) -> u128 {
+        self.product_overlap_bytes
+    }
+
+    /// Requested owner-array bytes for retained certificate records.
+    #[must_use]
+    pub const fn certificate_owner_bytes(self) -> u128 {
+        self.certificate_owner_bytes
+    }
+
+    /// Requested payload bytes for all retained certificate prefixes.
+    #[must_use]
+    pub const fn certificate_prefix_payload_bytes(self) -> u128 {
+        self.certificate_prefix_payload_bytes
+    }
+
+    /// Requested payload bytes for retained winning and runner-up scores.
+    #[must_use]
+    pub const fn certificate_score_payload_bytes(self) -> u128 {
+        self.certificate_score_payload_bytes
+    }
+
+    /// Requested payload bytes for retained tie classes.
+    #[must_use]
+    pub const fn certificate_tie_payload_bytes(self) -> u128 {
+        self.certificate_tie_payload_bytes
+    }
+
+    /// Total requested certificate owner/payload capacity in the envelope.
+    #[must_use]
+    pub const fn certificate_retained_bytes(self) -> u128 {
+        self.certificate_retained_bytes
     }
 
     /// Candidate-evaluation phase logical-state envelope.
@@ -669,6 +1134,7 @@ impl CbcEstimate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CbcAdmission {
     schema_version: u32,
+    mode: CbcExecutionMode,
     problem: CbcProblem,
     budget: CbcBudget,
     estimate: CbcEstimate,
@@ -679,6 +1145,12 @@ impl CbcAdmission {
     #[must_use]
     pub const fn schema_version(self) -> u32 {
         self.schema_version
+    }
+
+    /// Execution capability covered by this receipt.
+    #[must_use]
+    pub const fn mode(self) -> CbcExecutionMode {
+        self.mode
     }
 
     /// Admitted problem counts.
@@ -697,6 +1169,22 @@ impl CbcAdmission {
     #[must_use]
     pub const fn estimate(self) -> CbcEstimate {
         self.estimate
+    }
+
+    /// Per-boundary execution charges derived by this admission authority.
+    pub(crate) fn execution_schedule(self) -> CbcExecutionSchedule {
+        self.estimate.execution_schedule
+    }
+
+    pub(crate) fn has_current_authority(self) -> bool {
+        self.schema_version == CBC_ADMISSION_SCHEMA_VERSION
+            && self.mode == self.estimate.mode
+            && self
+                .problem
+                .estimate_for(self.mode)
+                .is_ok_and(|current| current == self.estimate)
+            && self.budget.max_work_units >= self.estimate.work_units
+            && self.budget.max_memory_bytes >= self.estimate.logical_state_bytes
     }
 }
 
@@ -732,7 +1220,7 @@ pub enum CbcAdmissionError {
     },
     /// The explicit work budget is insufficient.
     WorkBudgetExceeded {
-        /// Required total schema-v3 work units.
+        /// Required total schema-v4 work units.
         required: u128,
         /// Available units.
         available: u128,
@@ -771,7 +1259,7 @@ impl core::fmt::Display for CbcAdmissionError {
                 available,
             } => write!(
                 formatter,
-                "CBC work needs {required} schema-v3 units but budget provides {available}"
+                "CBC work needs {required} schema-v4 units but budget provides {available}"
             ),
             Self::MemoryBudgetExceeded {
                 required,
@@ -804,6 +1292,38 @@ fn limbs_for_bits(bits: u128) -> Result<u128, CbcAdmissionError> {
         .ok_or_else(|| overflow("limb rounding"))
 }
 
+fn checked_triangular(value: u128) -> Result<u128, CbcAdmissionError> {
+    let successor = value
+        .checked_add(1)
+        .ok_or_else(|| overflow("triangular successor"))?;
+    let (left, right) = if value.is_multiple_of(2) {
+        (value / 2, successor)
+    } else {
+        (value, successor / 2)
+    };
+    left.checked_mul(right)
+        .ok_or_else(|| overflow("triangular product"))
+}
+
+fn euler_totient(mut value: u32) -> u32 {
+    debug_assert!(value >= 1);
+    let mut result = value;
+    let mut factor = 2_u32;
+    while factor <= value / factor {
+        if value.is_multiple_of(factor) {
+            while value.is_multiple_of(factor) {
+                value /= factor;
+            }
+            result -= result / factor;
+        }
+        factor = if factor == 2 { 3 } else { factor + 2 };
+    }
+    if value > 1 {
+        result -= result / value;
+    }
+    result
+}
+
 fn target_bound(
     quantity: &'static str,
     required: u128,
@@ -817,4 +1337,53 @@ fn target_bound(
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod authority_tests {
+    use super::{CBC_ADMISSION_SCHEMA_VERSION, CbcBudget, CbcProblem};
+    use crate::cbc_exec::{CbcExecError, CbcExecutor};
+
+    fn receipt() -> super::CbcAdmission {
+        CbcProblem::new(5, 3)
+            .expect("fixture is structural")
+            .admit(CbcBudget::UNBOUNDED)
+            .expect("fixture admits")
+    }
+
+    #[test]
+    fn g0_stale_or_mutated_authority_refuses_before_allocation() {
+        CbcExecutor::new(receipt()).expect("fresh receipt matches current authority");
+
+        let mut stale_schema = receipt();
+        stale_schema.schema_version = CBC_ADMISSION_SCHEMA_VERSION - 1;
+        assert!(matches!(
+            CbcExecutor::new(stale_schema),
+            Err(CbcExecError::AdmissionAuthorityMismatch)
+        ));
+
+        let mut changed_schedule = receipt();
+        changed_schedule
+            .estimate
+            .execution_schedule
+            .candidate_visit_units += 1;
+        assert!(matches!(
+            CbcExecutor::new(changed_schedule),
+            Err(CbcExecError::AdmissionAuthorityMismatch)
+        ));
+
+        let mut changed_layout = receipt();
+        changed_layout.estimate.executor_inline_bytes += 1;
+        assert!(matches!(
+            CbcExecutor::new(changed_layout),
+            Err(CbcExecError::AdmissionAuthorityMismatch)
+        ));
+
+        let mut uncovered = receipt();
+        uncovered.budget.max_work_units = uncovered.estimate.work_units - 1;
+        assert!(matches!(
+            CbcExecutor::new(uncovered),
+            Err(CbcExecError::AdmissionAuthorityMismatch)
+        ));
+    }
 }

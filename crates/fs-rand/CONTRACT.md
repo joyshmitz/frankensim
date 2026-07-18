@@ -28,17 +28,15 @@ distributions (plan §6.7; P2's seed pillar). Layer: L1.
   generation (bead 1za9): `fill_f64` / `fill_u64` fill via 8-lane batched
   `philox4x32_10_batch` (structure-of-arrays, auto-vectorizable) and are
   BITWISE-IDENTICAL to the sequential draws (index advances by `len`).
-- `cbc::{CbcProblem, CbcBudget, CbcEstimate, CbcAdmission}` — allocation-free
-  schema-v3 preflight for exact component-by-component lattice construction.
-  It derives checked candidate/visit counts, exact-integer limb widths, a
-  source-level logical work debit, mutually exclusive candidate/update phase
-  memory maxima, every individual `Vec` capacity, and an aggregate
-  address-space impossibility bound before budget admission. The estimate may
-  legitimately exceed one allocation's `isize::MAX` total while refusing live
-  modeled state beyond `2^usize::BITS` bytes. This is the prerequisite receipt
-  for a future checked executor; legacy `Lattice::cbc` does not consume it yet.
+- `cbc::{CbcProblem, CbcBudget, CbcExecutionMode, CbcEstimate, CbcAdmission}` —
+  allocation-free schema-v4 admission for exact component-by-component lattice
+  construction. It stores one checked schedule in the sealed receipt, counts
+  scored visits exactly through `phi(n)` while retaining every GCD/control
+  attempt, binds the current executor/certificate schemas and actual Rust owner
+  layouts, and models requested product/score/certificate payload plus phase
+  overlap. Construction and certified receipts are distinct capabilities.
 - `cbc_exec::{CbcExecutor, CbcTileShape, CbcPoll, CbcControl, CbcBoundary,
-  CbcRunStatus, CbcExecError}` — schema-v1 tiled execution of the SAME exact
+  CbcRunStatus, CbcExecError}` — schema-v2 tiled execution of the SAME exact
   construction over an admission receipt: byte-identical arithmetic in the
   same logical order as `Lattice::cbc` (proven per-case in the battery, incl.
   the pinned n=257 KAT), so tile shape and pause/resume splits never change
@@ -49,8 +47,9 @@ distributions (plan §6.7; P2's seed pillar). Layer: L1.
   (`Entry`/`PointBlock`/`CandidateBlock`/`Prefix`); cancellation is
   request→drain→finalize via the L1-local `CbcPoll` boundary (drivers adapt
   their `Cx`), and the committed prefix never contains a half-chosen
-  component. Product/score limbs are reserved at exact admitted capacity
-  (in-envelope arithmetic never reallocates). NO-CLAIM: no serialized
+  component. `CbcExecutor::new` revalidates the sealed schema, schedule, layout,
+  and budget before allocation; exact arithmetic refuses before mutation when
+  its logical limb length would exceed the requested ceiling. NO-CLAIM: no serialized
   cross-process pause/migrate/fork state, no parallel candidate scoring
   yet (later 6ys.20 tranches); `Lattice::cbc` itself remains the
   synchronous convenience authority.
@@ -68,12 +67,12 @@ distributions (plan §6.7; P2's seed pillar). Layer: L1.
   `O(n·|claims|)`: the declared candidates score as claimed) and
   `audit_minimality` (full `O(n²)` rescan: minimality by exhaustion);
   tampering with any bound field refuses in a named error class.
-  NO-CLAIM: certificate storage and bookkeeping sit OUTSIDE the v3
-  admission receipt (the estimate models the uncertified construction,
-  whose debits stay receipt-exact; the certified-mode estimator is the
-  admission-schema-v4 follow-on); no compact sub-quadratic minimality
-  proof (the [M] ratchet); the theorem-fixed first component carries no
-  certificate (the [F] unit-residue ratchet); certificates mint no
+  Certificate production requires a schema-v4 `Certified` admission; its
+  retained owner/prefix/score/tie payloads, third live score, and deterministic
+  emission debits are included from admission. NO-CLAIM: no compact
+  sub-quadratic minimality proof (the [M] ratchet); the theorem-fixed first
+  component carries no certificate (the [F] unit-residue ratchet); the checker
+  itself remains an unbudgeted validation API; certificates mint no
   fs-blake3 identity — durable-store identity governance belongs to
   consumers.
 
@@ -122,11 +121,11 @@ distributions (plan §6.7; P2's seed pillar). Layer: L1.
 - Integer core is trivially cross-ISA; float distributions inherit fs-math's
   proven cross-ISA determinism.
 - A CBC admission receipt binds the current target pointer width, problem,
-  explicit budgets, and the complete schema-v3 estimate. Its arithmetic and
-  target-capacity refusals precede work/memory budget refusals and allocate
-  nothing. Schema v3's work schedule preserves v2's scalar/limb charges while
-  adding the aggregate address-space theorem; changing either requires a
-  schema bump.
+  execution mode, explicit budgets, executor/certificate schema identities,
+  actual owner layouts, and the complete schema-v4 estimate. Its arithmetic
+  and target-capacity refusals precede work/memory budget refusals and allocate
+  nothing. Executor construction independently rederives that authority;
+  changing any bound field requires a schema bump.
 
 ## Error model
 Invalid distribution parameters panic as programmer errors (`next_below(0)`,
@@ -262,16 +261,15 @@ pending an actual 32-bit test lane.
   representative dev-only subset (χ²/serial/monobit/inter-stream); the complete
   suite + CI wiring remain a follow-up. Finite sampled correlation bands are
   defect detectors, not proofs of statistical independence.
-- CBC schema v3 is conservative structural admission, not execution evidence:
-  `Lattice::cbc` is not yet receipt-gated or metered. The owner layout terms are
-  explicit `Vec<u32>` / `Option<(Vec<u32>, u32)>` surrogates for the current
-  private `qmc::ExactNat` shape, not compile-time authority over that private
-  owner. The execution tranche must centralize/share the owner type and limb/
-  kernel constants (or add an equivalently strong schema coupling), meter the
-  identical logical schedule, and independently observe limb, carry,
-  allocation-capacity, and phase-live-byte maxima. Exact-capacity allocation,
-  allocator metadata, stacks, process RSS, cancellation, pause/resume, compact
-  minimality certificates, elapsed time, and energy remain explicit no-claims.
+- CBC schema v4 memory is a conservative requested-logical-capacity envelope,
+  not an upper bound on allocator-reported `Vec::capacity`, allocator usable
+  size, metadata, stacks, or process RSS. Runtime observations prove logical
+  product lengths stay below the requested ceiling and report allocator
+  capacity separately. `Lattice::cbc` is not yet receipt-gated or metered, and
+  the independent certificate checker does not yet accept a work/memory
+  admission. Strict per-call allowance atomicity, limb-granular cancellation,
+  serialized cross-process resume, compact certificates, elapsed time, and
+  energy remain explicit no-claims.
   Both 64-bit and 32-bit fixtures are retained, but neither is execution
   evidence until its cfg-specific lane is actually green; passing either
   necessary impossibility filter is not a claim that an OS can map the admitted

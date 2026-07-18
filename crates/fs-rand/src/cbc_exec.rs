@@ -24,18 +24,17 @@
 //! only ever grows by whole chosen components).
 //!
 //! NO-CLAIM: this tranche does not yet serialize state for cross-process
-//! pause/migrate/fork (the state lives in the executor value), does not
-//! produce the per-prefix minimality certificate, and does not parallelize
-//! candidate scoring. Those remain later 6ys.20 tranches. `korobov_error_sq`
-//! stays a diagnostic f64 owned by [`crate::qmc::Lattice`].
+//! pause/migrate/fork (the state lives in the executor value) or parallelize
+//! candidate scoring. `korobov_error_sq` stays a diagnostic f64 owned by
+//! [`crate::qmc::Lattice`].
 
-use crate::cbc::{CbcAdmission, CbcExecutionSchedule, CbcProblem};
+use crate::cbc::{CbcAdmission, CbcExecutionMode, CbcExecutionSchedule, CbcProblem};
 use crate::cbc_cert::{ADMISSIBLE_RULE_UNITS, CbcPrefixCertificate, TIE_RULE_LOWEST_CANDIDATE};
 use crate::qmc::{ExactNat, Lattice, exact_kernel_numerator, gcd, lattice_residue};
 
 /// Version of the executor semantics (tile classes, boundary names, debit
 /// schedule binding, and cancellation protocol).
-pub const CBC_EXECUTOR_SCHEMA_VERSION: u32 = 1;
+pub const CBC_EXECUTOR_SCHEMA_VERSION: u32 = 2;
 
 /// Cancellation verdict returned by a poll.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +127,9 @@ pub enum CbcRunStatus {
 /// unchanged (construction) or replayable (runtime).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CbcExecError {
+    /// The sealed receipt's schema, target layout, schedule, or covered budget
+    /// no longer matches the current admission authority.
+    AdmissionAuthorityMismatch,
     /// A tile block was zero.
     InvalidTileShape {
         /// Requested candidates per tile.
@@ -157,6 +159,45 @@ pub enum CbcExecError {
     /// `enable_certificates` was called after work had already been debited
     /// (certificates must cover every scanned component or none).
     CertificatesAfterStart,
+    /// Certificate production was requested from a construction-only receipt.
+    CertificatesNotAdmitted,
+}
+
+/// Runtime observation separating the admission's requested product payload
+/// from allocator-reported capacity. The latter is evidence only, never an
+/// admitted upper bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CbcStorageObservation {
+    requested_product_limbs: usize,
+    maximum_product_length_limbs: usize,
+    minimum_observed_product_capacity_limbs: usize,
+    maximum_observed_product_capacity_limbs: usize,
+}
+
+impl CbcStorageObservation {
+    /// Per-product logical capacity sealed by admission.
+    #[must_use]
+    pub const fn requested_product_limbs(self) -> usize {
+        self.requested_product_limbs
+    }
+
+    /// Largest logical product length currently retained.
+    #[must_use]
+    pub const fn maximum_product_length_limbs(self) -> usize {
+        self.maximum_product_length_limbs
+    }
+
+    /// Smallest allocator-reported capacity across resident products.
+    #[must_use]
+    pub const fn minimum_observed_product_capacity_limbs(self) -> usize {
+        self.minimum_observed_product_capacity_limbs
+    }
+
+    /// Largest allocator-reported capacity across resident products.
+    #[must_use]
+    pub const fn maximum_observed_product_capacity_limbs(self) -> usize {
+        self.maximum_observed_product_capacity_limbs
+    }
 }
 
 /// One in-flight candidate accumulation (points ascending).
@@ -194,21 +235,28 @@ pub struct CbcExecutor {
     schedule: CbcExecutionSchedule,
     score_capacity_limbs: usize,
     product_capacity_limbs: usize,
+    admissible_candidates_per_prefix: usize,
     products: Vec<ExactNat>,
     z: Vec<u32>,
     phase: Phase,
     work_spent: u128,
     certifying: bool,
+    certificates_admitted: bool,
     certificates: Vec<CbcPrefixCertificate>,
 }
 
 impl CbcExecutor {
-    /// Build an executor from an admission receipt. Allocates the product
-    /// table at the admitted exact limb capacity so in-envelope arithmetic
-    /// never reallocates (the admission contract's exact-capacity storage
-    /// requirement).
-    #[must_use]
-    pub fn new(admission: CbcAdmission) -> Self {
+    /// Build an executor from a current admission receipt. Arithmetic lengths
+    /// stay inside its requested-capacity schedule; allocator rounding remains
+    /// outside the receipt's memory claim.
+    ///
+    /// # Errors
+    /// [`CbcExecError::AdmissionAuthorityMismatch`] if any sealed schema,
+    /// schedule, layout, or budget field is stale.
+    pub fn new(admission: CbcAdmission) -> Result<Self, CbcExecError> {
+        if !admission.has_current_authority() {
+            return Err(CbcExecError::AdmissionAuthorityMismatch);
+        }
         let problem = admission.problem();
         let estimate = admission.estimate();
         let schedule = admission.execution_schedule();
@@ -218,37 +266,50 @@ impl CbcExecutor {
             .expect("admission target bounds proved the product capacity fits usize");
         let score_capacity = usize::try_from(estimate.score_capacity_limbs())
             .expect("admission target bounds proved the score capacity fits usize");
+        let admissible_candidates_per_prefix =
+            usize::try_from(estimate.admissible_candidates_per_prefix())
+                .expect("admission target bounds proved the unit-group size fits usize");
+        let certificate_capacity = problem.dimension().saturating_sub(1);
+        let certificates_admitted = matches!(admission.mode(), CbcExecutionMode::Certified);
         let mut products = vec![ExactNat::one(); point_count];
         for product in &mut products {
             product.reserve_exact_limbs(product_capacity);
         }
-        Self {
+        Ok(Self {
             problem,
             admitted_work_units: estimate.work_units(),
             schedule,
             score_capacity_limbs: score_capacity,
             product_capacity_limbs: product_capacity,
+            admissible_candidates_per_prefix,
             products,
             z: Vec::with_capacity(problem.dimension()),
             phase: Phase::Init { next_point: 0 },
             work_spent: 0,
             certifying: false,
-            certificates: Vec::new(),
-        }
+            certificates_admitted,
+            certificates: if certificates_admitted {
+                Vec::with_capacity(certificate_capacity)
+            } else {
+                Vec::new()
+            },
+        })
     }
 
     /// Enable per-prefix certificate production for every SCANNED component
     /// (the theorem-fixed first component is the [F] ratchet's business).
-    /// NO-CLAIM: certificate storage AND certificate bookkeeping (runner-up
-    /// retention, tie-class growth) sit OUTSIDE the admission receipt this
-    /// schema — the v3 estimate models the uncertified construction only,
-    /// whose debits remain receipt-exact and fail-closed. Extending the
-    /// estimator with certified-mode charges is the follow-on tranche
-    /// (admission schema v4, the bead's item-5 certificate-size clause).
+    /// The receipt must have been produced for
+    /// [`CbcExecutionMode::Certified`], whose schema-v4 envelope covers the
+    /// retained records, score/tie storage, and emission debits.
     ///
     /// # Errors
-    /// [`CbcExecError::CertificatesAfterStart`] once any work was debited.
+    /// [`CbcExecError::CertificatesNotAdmitted`] for a construction-only
+    /// receipt, or [`CbcExecError::CertificatesAfterStart`] once any work was
+    /// debited.
     pub fn enable_certificates(&mut self) -> Result<(), CbcExecError> {
+        if !self.certificates_admitted {
+            return Err(CbcExecError::CertificatesNotAdmitted);
+        }
         if self.work_spent != 0 {
             return Err(CbcExecError::CertificatesAfterStart);
         }
@@ -279,6 +340,27 @@ impl CbcExecutor {
     #[must_use]
     pub const fn work_spent(&self) -> u128 {
         self.work_spent
+    }
+
+    /// Observe logical product lengths and allocator-reported capacities.
+    /// Only the logical length is constrained by the admission ceiling.
+    #[must_use]
+    pub fn storage_observation(&self) -> CbcStorageObservation {
+        let mut maximum_length = 0;
+        let mut minimum_capacity = usize::MAX;
+        let mut maximum_capacity = 0;
+        for product in &self.products {
+            maximum_length = maximum_length.max(product.limbs().len());
+            let capacity = product.capacity_limbs();
+            minimum_capacity = minimum_capacity.min(capacity);
+            maximum_capacity = maximum_capacity.max(capacity);
+        }
+        CbcStorageObservation {
+            requested_product_limbs: self.product_capacity_limbs,
+            maximum_product_length_limbs: maximum_length,
+            minimum_observed_product_capacity_limbs: minimum_capacity,
+            maximum_observed_product_capacity_limbs: maximum_capacity,
+        }
     }
 
     /// Whether construction is complete.
@@ -349,10 +431,22 @@ impl CbcExecutor {
         // Every charge comes from the sealed admission authority; this module
         // owns no mirrored limb-width or scalar-debit constants.
         let visit_units = self.schedule.candidate_visit_units();
-        let candidate_control_units = self.schedule.candidate_control_units();
+        let candidate_control_units = self
+            .schedule
+            .candidate_control_units()
+            .checked_add(if self.certifying {
+                self.schedule.certificate_candidate_units()
+            } else {
+                0
+            })
+            .expect("admission proved candidate charges fit u128");
         let update_visit_units = self.schedule.product_update_visit_units();
         let initialization_visit_units = self.schedule.initialization_visit_units();
         let prefix_control_units = self.schedule.prefix_control_units();
+        let score_capacity_limbs = self.score_capacity_limbs;
+        let product_capacity_limbs = self.product_capacity_limbs;
+        let certifying = self.certifying;
+        let tie_capacity = self.admissible_candidates_per_prefix;
 
         match &mut self.phase {
             Phase::Init { next_point } => {
@@ -365,7 +459,14 @@ impl CbcExecutor {
                         usize::try_from(point).expect("admission proved point indices fit usize");
                     let residue = lattice_residue(point_index, 1, n);
                     self.products[point_index]
-                        .mul_assign_factor(exact_kernel_numerator(n, residue));
+                        .mul_assign_factor_with_capacity(
+                            exact_kernel_numerator(n, residue),
+                            product_capacity_limbs,
+                        )
+                        .map_err(|required_limbs| CbcExecError::StorageScheduleOverrun {
+                            required_limbs,
+                            admitted_limbs: product_capacity_limbs,
+                        })?;
                     debit(
                         &mut self.work_spent,
                         self.admitted_work_units,
@@ -390,7 +491,11 @@ impl CbcExecutor {
                             accum: None,
                             best: None,
                             runner_up: None,
-                            tie_class: Vec::new(),
+                            tie_class: if certifying {
+                                Vec::with_capacity(tie_capacity)
+                            } else {
+                                Vec::new()
+                            },
                         }
                     };
                     Ok(CbcBoundary::Prefix)
@@ -411,8 +516,22 @@ impl CbcExecutor {
                         let (winning_score, chosen) = best
                             .take()
                             .expect("candidate 1 is coprime to every admitted n");
-                        if self.certifying {
-                            let mut prefix = self.z.clone();
+                        if certifying {
+                            let prefix_len = self.z.len().checked_add(1).expect(
+                                "admission proved the certificate prefix length fits usize",
+                            );
+                            let certificate_units = self
+                                .schedule
+                                .certificate_prefix_units(prefix_len)
+                                .expect("admission proved certificate charges fit u128");
+                            debit(
+                                &mut self.work_spent,
+                                self.admitted_work_units,
+                                remaining,
+                                certificate_units,
+                            )?;
+                            let mut prefix = Vec::with_capacity(prefix_len);
+                            prefix.extend_from_slice(&self.z);
                             prefix.push(chosen);
                             let denominator_exponent = u32::try_from(prefix.len())
                                 .expect("admitted dimensions fit u32 exponents");
@@ -451,10 +570,7 @@ impl CbcExecutor {
                             continue;
                         }
                         let mut score = ExactNat::zero();
-                        score.reserve_exact_limbs(
-                            usize::try_from(self.score_capacity_limbs)
-                                .expect("admission target bounds proved score capacity fits usize"),
-                        );
+                        score.reserve_exact_limbs(score_capacity_limbs);
                         *accum = Some(ScanAccum {
                             score,
                             next_point: 0,
@@ -466,10 +582,17 @@ impl CbcExecutor {
                         let point_index = usize::try_from(point)
                             .expect("admission proved point indices fit usize");
                         let residue = lattice_residue(point_index, *candidate, n);
-                        running.score.add_mul_factor(
-                            &self.products[point_index],
-                            exact_kernel_numerator(n, residue),
-                        );
+                        running
+                            .score
+                            .add_mul_factor_with_capacity(
+                                &self.products[point_index],
+                                exact_kernel_numerator(n, residue),
+                                score_capacity_limbs,
+                            )
+                            .map_err(|required_limbs| CbcExecError::StorageScheduleOverrun {
+                                required_limbs,
+                                admitted_limbs: score_capacity_limbs,
+                            })?;
                         debit(
                             &mut self.work_spent,
                             self.admitted_work_units,
@@ -502,20 +625,21 @@ impl CbcExecutor {
                             // Candidates ascend, so a displaced best is the
                             // smallest score strictly above the new winner.
                             let displaced = best.replace((score, *candidate));
-                            if self.certifying {
+                            if certifying {
                                 *runner_up = displaced;
-                                *tie_class = vec![*candidate];
+                                tie_class.clear();
+                                tie_class.push(*candidate);
                             }
                         }
                         Verdict::Tie => {
                             // Ascending order keeps the committed winner the
                             // class minimum without re-comparison.
-                            if self.certifying {
+                            if certifying {
                                 tie_class.push(*candidate);
                             }
                         }
                         Verdict::Above => {
-                            if self.certifying {
+                            if certifying {
                                 let replace_runner = match &*runner_up {
                                     None => true,
                                     Some((runner_score, _)) => {
@@ -543,7 +667,14 @@ impl CbcExecutor {
                         usize::try_from(point).expect("admission proved point indices fit usize");
                     let residue = lattice_residue(point_index, chosen, n);
                     self.products[point_index]
-                        .mul_assign_factor(exact_kernel_numerator(n, residue));
+                        .mul_assign_factor_with_capacity(
+                            exact_kernel_numerator(n, residue),
+                            product_capacity_limbs,
+                        )
+                        .map_err(|required_limbs| CbcExecError::StorageScheduleOverrun {
+                            required_limbs,
+                            admitted_limbs: product_capacity_limbs,
+                        })?;
                     debit(
                         &mut self.work_spent,
                         self.admitted_work_units,
@@ -568,7 +699,11 @@ impl CbcExecutor {
                             accum: None,
                             best: None,
                             runner_up: None,
-                            tie_class: Vec::new(),
+                            tie_class: if certifying {
+                                Vec::with_capacity(tie_capacity)
+                            } else {
+                                Vec::new()
+                            },
                         }
                     };
                     Ok(CbcBoundary::Prefix)
@@ -604,9 +739,4 @@ fn debit(
     }
     *remaining = remaining.saturating_sub(units);
     Ok(())
-}
-
-fn ceil_log2(value: u32) -> u32 {
-    debug_assert!(value >= 1);
-    32 - value.saturating_sub(1).leading_zeros()
 }

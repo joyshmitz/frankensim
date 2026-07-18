@@ -303,6 +303,7 @@ impl ExactNat {
             .len()
             .checked_add(factor_limb_count(factor))
             .and_then(|length| length.checked_add(1))
+            .map(|product_length| product_length.max(self.limbs.len()))
             .expect("exact CBC required limb count overflow");
         if required > capacity_limbs {
             return Err(required);
@@ -350,9 +351,11 @@ impl ExactNat {
         Ok(())
     }
 
-    /// Reserve exact limb capacity so subsequent in-envelope arithmetic never
-    /// reallocates (the admission contract's exact-capacity storage
-    /// requirement for the execution tranche).
+    /// Request at least the admitted limb capacity before execution.
+    ///
+    /// Rust allocators may round the observable `Vec::capacity()` upward; the
+    /// admission contract bounds requested logical payload and operation
+    /// length, not allocator-usable bytes.
     pub(crate) fn reserve_exact_limbs(&mut self, capacity_limbs: usize) {
         let additional = capacity_limbs.saturating_sub(self.limbs.len());
         self.limbs.reserve_exact(additional);
@@ -362,6 +365,10 @@ impl ExactNat {
     /// independent checking; callers must normalize first).
     pub(crate) fn limbs(&self) -> &[u32] {
         &self.limbs
+    }
+
+    pub(crate) fn capacity_limbs(&self) -> usize {
+        self.limbs.capacity()
     }
 
     #[cfg(test)]
