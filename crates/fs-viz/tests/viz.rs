@@ -293,6 +293,64 @@ fn exact_level_nodes_are_unique_and_coincident_edges_are_refused() {
 }
 
 #[test]
+fn g0_checkerboard_exact_node_ownership_is_static_and_budget_exact() {
+    for (nx, ny, exact_even) in [(65, 63, true), (63, 65, false)] {
+        let sample_index = Cell::new(0usize);
+        let grid = Grid2::from_fn(
+            nx,
+            ny,
+            [0.0; 2],
+            [(nx - 1) as f64, (ny - 1) as f64],
+            nx * ny,
+            |_| {
+                let index = sample_index.get();
+                sample_index.set(index + 1);
+                let even = index % 2 == 0;
+                if even == exact_even { 0.0 } else { 1.0 }
+            },
+        )
+        .expect("checkerboard dimensions and samples are admitted");
+
+        let is_exact = |i: usize, j: usize| ((j * nx + i) % 2 == 0) == exact_even;
+        let mut expected = Vec::new();
+        for j in 0..ny {
+            for i in 0..nx {
+                if i + 1 < nx && j == 0 {
+                    if i == 0 && is_exact(0, 0) {
+                        expected.push(grid.point(0, 0));
+                    } else if is_exact(i + 1, 0) {
+                        expected.push(grid.point(i + 1, 0));
+                    }
+                }
+                if j + 1 < ny && is_exact(i, j + 1) {
+                    expected.push(grid.point(i, j + 1));
+                }
+            }
+        }
+
+        let parity_tail = if exact_even { 1 } else { 0 };
+        assert_eq!(expected.len(), (nx * ny + parity_tail) / 2);
+        assert_eq!(
+            grid.isocontour_crossings(0.0, expected.len())
+                .expect("the exact output budget admits every canonical owner"),
+            expected,
+            "static ownership must retain first-incident-edge traversal order"
+        );
+        assert_eq!(
+            grid.isocontour_crossings(0.0, expected.len())
+                .expect("replay uses the same static owners"),
+            expected
+        );
+
+        let one_short = expected.len() - 1;
+        assert_eq!(
+            grid.isocontour_crossings(0.0, one_short),
+            Err(IsoContourError::CrossingBudgetExceeded { limit: one_short })
+        );
+    }
+}
+
+#[test]
 fn isocontour_interpolation_handles_extreme_finite_values() {
     for magnitude in [f64::MAX, f64::from_bits(1)] {
         let grid = Grid2::from_fn(2, 2, [0.0; 2], [1.0; 2], 4, |p| {

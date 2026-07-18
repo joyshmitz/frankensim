@@ -426,39 +426,33 @@ impl Grid2 {
             return Err(IsoContourError::ZeroCrossingLimit);
         }
         let mut out = Vec::new();
-        let mut exact_nodes = Vec::new();
         for j in 0..self.ny {
             for i in 0..self.nx {
                 let (p, v) = (self.point(i, j), self.at(i, j));
-                let node = j * self.nx + i;
                 if i + 1 < self.nx {
                     if let Some(crossing) = edge_crossing(
                         [i, j],
-                        node,
                         p,
                         v,
                         [i + 1, j],
-                        node + 1,
                         self.point(i + 1, j),
                         self.at(i + 1, j),
                         iso,
                     )? {
-                        push_crossing(&mut out, &mut exact_nodes, crossing, crossing_limit)?;
+                        push_crossing(&mut out, crossing, crossing_limit)?;
                     }
                 }
                 if j + 1 < self.ny {
                     if let Some(crossing) = edge_crossing(
                         [i, j],
-                        node,
                         p,
                         v,
                         [i, j + 1],
-                        node + self.nx,
                         self.point(i, j + 1),
                         self.at(i, j + 1),
                         iso,
                     )? {
-                        push_crossing(&mut out, &mut exact_nodes, crossing, crossing_limit)?;
+                        push_crossing(&mut out, crossing, crossing_limit)?;
                     }
                 }
             }
@@ -526,17 +520,15 @@ fn validate_grid2_coordinates(nx: usize, ny: usize, lo: Vec2, hi: Vec2) -> Resul
 
 #[derive(Debug, Clone, Copy)]
 enum EdgeCrossing2 {
-    Exact { node: usize, point: Vec2 },
+    Exact(Vec2),
     Interpolated(Vec2),
 }
 
 fn edge_crossing(
     a_index: [usize; 2],
-    a_node: usize,
     a: Vec2,
     va: f64,
     b_index: [usize; 2],
-    b_node: usize,
     b: Vec2,
     vb: f64,
     iso: f64,
@@ -550,16 +542,14 @@ fn edge_crossing(
         });
     }
     if a_exact {
-        return Ok(Some(EdgeCrossing2::Exact {
-            node: a_node,
-            point: a,
-        }));
+        return Ok(
+            edge_owns_exact_node(a_index, b_index, a_index).then_some(EdgeCrossing2::Exact(a))
+        );
     }
     if b_exact {
-        return Ok(Some(EdgeCrossing2::Exact {
-            node: b_node,
-            point: b,
-        }));
+        return Ok(
+            edge_owns_exact_node(a_index, b_index, b_index).then_some(EdgeCrossing2::Exact(b))
+        );
     }
     if (va < iso) == (vb < iso) {
         return Ok(None);
@@ -598,6 +588,26 @@ fn edge_crossing(
     Ok(Some(EdgeCrossing2::Interpolated(point)))
 }
 
+/// Return whether this positive-axis edge is the deterministic owner of an
+/// exact-level endpoint.
+///
+/// Edge traversal is row-major by its first endpoint, with positive x before
+/// positive y. Consequently the first incident edge of `(i, j)` is its edge
+/// from the row below when `j > 0`, otherwise its edge from the left when
+/// `i > 0`, and otherwise the origin's positive-x edge. Selecting that edge
+/// directly makes ownership constant-time and needs no global deduplication
+/// search or marker allocation.
+fn edge_owns_exact_node(first: [usize; 2], second: [usize; 2], exact: [usize; 2]) -> bool {
+    let owner = if exact[1] > 0 {
+        ([exact[0], exact[1] - 1], exact)
+    } else if exact[0] > 0 {
+        ([exact[0] - 1, 0], exact)
+    } else {
+        (exact, [1, 0])
+    };
+    (first, second) == owner
+}
+
 fn first_unrepresentable_intersection_axis(a: Vec2, b: Vec2, point: Vec2) -> Option<usize> {
     for axis in 0..2 {
         match a[axis].total_cmp(&b[axis]) {
@@ -627,18 +637,11 @@ fn first_unrepresentable_intersection_axis(a: Vec2, b: Vec2, point: Vec2) -> Opt
 
 fn push_crossing(
     crossings: &mut Vec<Vec2>,
-    exact_nodes: &mut Vec<usize>,
     crossing: EdgeCrossing2,
     crossing_limit: usize,
 ) -> Result<(), IsoContourError> {
-    let (point, exact_node) = match crossing {
-        EdgeCrossing2::Exact { node, point } => {
-            if exact_nodes.contains(&node) {
-                return Ok(());
-            }
-            (point, Some(node))
-        }
-        EdgeCrossing2::Interpolated(point) => (point, None),
+    let point = match crossing {
+        EdgeCrossing2::Exact(point) | EdgeCrossing2::Interpolated(point) => point,
     };
     if crossings.len() == crossing_limit {
         return Err(IsoContourError::CrossingBudgetExceeded {
@@ -654,12 +657,6 @@ fn push_crossing(
     crossings
         .try_reserve(1)
         .map_err(|_| IsoContourError::AllocationFailed { required })?;
-    if let Some(node) = exact_node {
-        exact_nodes
-            .try_reserve(1)
-            .map_err(|_| IsoContourError::AllocationFailed { required })?;
-        exact_nodes.push(node);
-    }
     crossings.push(point);
     Ok(())
 }

@@ -59,8 +59,12 @@ Layer L5 (LUMEN). No dependencies — pure Rust.
   consume output-count budget as `UnrepresentableIntersection`, never relabeled
   as exact.
   A single truly exact endpoint is emitted once at its original coordinate bits
-  even when incident edges share it. A wholly exact edge is refused as a
-  coincident segment that a point-only result cannot represent.
+  even when incident edges share it. Ownership is the statically selected first
+  incident edge in declared traversal order: from the row below, otherwise from
+  the left on the first row, otherwise the origin's positive-x edge. This is an
+  O(1) decision per edge endpoint, needs no search or marker scratch, and makes
+  total extraction work O(nodes + crossings). A wholly exact edge is refused as
+  a coincident segment that a point-only result cannot represent.
 - A planar `Grid3` level set has exact area and increasing-field winding.
   Sphere area error decreases under refinement, and gyroid extraction is
   indexed, centrally symmetric, and exactly replay-deterministic.
@@ -103,8 +107,9 @@ values, allocation refusal, and node/cell layout mismatch.
 
 Fully deterministic: RK4, classification, and contouring are pure functions.
 Grid2 sampling is row-major/x-fastest; crossing traversal is row-major with the
-positive-x edge before positive-y, and shared exact nodes retain first-encounter
-order.
+positive-x edge before positive-y, and shared exact nodes use the statically
+derived first-incident edge, retaining first-encounter order without mutable
+deduplication state.
 Grid3 sampling is z/y/x with x-fastest storage; isosurface traversal is
 z/y/x/cube-tetrahedron order and uses an ordered edge cache.
 Scalar-field artifacts use fixed little-endian IEEE-754 f64 bits and fixed
@@ -112,8 +117,10 @@ length-prefixed UTF-8 semantics; their bytes are cross-ISA stable.
 
 ## Cancellation behavior
 
-None here; the production viz shares LUMEN tiling + progressive streaming with
-`Cx` cancellation.
+The current synchronous compatibility entry point has no caller-owned `Cx`.
+Its work is bounded by the already admitted grid dimensions and crossing count,
+but a complete per-operation budget and cancellable tiled entry point remain
+staged.
 
 ## Unsafe boundary
 
@@ -131,6 +138,8 @@ Morse type; a circle-SDF isocontour lies on the circle (+ empty out-of-range);
 2-D grid sampling/addressing; fail-before-sampling dimension, budget, bounds,
 overflow, coordinate-collapse, and non-finite-value admission; non-finite-level
 and crossing-budget refusal; exact-node ownership and coincident-edge refusal;
+the adversarial exact/non-exact checkerboard under exact and one-short output
+budgets, both axis shapes, and byte-identical replay;
 extreme finite and subnormal interpolation; exact next-up/down strict-crossing
 collapse refusal before output budgeting with endpoint/value/iso/t/point-bit
 evidence; G3 axis, endpoint-sign, signed-zero, and power-of-two neighbor refusal
