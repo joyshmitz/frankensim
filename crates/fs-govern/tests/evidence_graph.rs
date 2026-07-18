@@ -13,8 +13,8 @@ use fs_govern::{
         CapabilityBinding, ClaimInstance, ClaimLaneBinding, ClaimStatement,
         CounterexampleCandidate, DomainVariable, EvidenceKind, EvidenceRef, ExactInstanceAdmission,
         FiveExplicits, InferenceRule, InvalidationState, KernelState, NoClaimBoundary,
-        NonvacuityState, QuantifiedDomain, Quantifier, ReproductionState, SatisfiabilityState,
-        ScaleState, SupportEdge, TruthState, UnitSystem, VersionBinding,
+        NonvacuityState, QuantifiedDomain, Quantifier, QuantifierBlock, ReproductionState,
+        SatisfiabilityState, ScaleState, SupportEdge, TruthState, UnitSystem, VersionBinding,
     },
     evidence_graph::{
         AllocationCandidate, AllocationFloors, AllocationPolicy, AnytimeAccountingCandidate,
@@ -50,8 +50,13 @@ fn claim(statement_text: &str, independence_class: &str) -> ClaimInstance {
     let statement = ClaimStatement::new(&[statement_text]).expect("claim statement");
     let domain = QuantifiedDomain::new(
         vec![
-            DomainVariable::new("design", Quantifier::ForAll, "registered envelope")
-                .expect("domain variable"),
+            QuantifierBlock::commutative(
+                Quantifier::ForAll,
+                vec![
+                    DomainVariable::new("design", "registered envelope").expect("domain variable"),
+                ],
+            )
+            .expect("quantifier block"),
         ],
         &["finite candidate set"],
     )

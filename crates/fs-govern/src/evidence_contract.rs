@@ -32,10 +32,42 @@
 //! ```
 //!
 //! ```compile_fail
-//! use fs_govern::evidence_contract::{NonvacuityEvidence, SatisfiabilityEvidence};
+//! use fs_govern::evidence_contract::{NonvacuousEvidence, SatisfiableEvidence};
 //!
-//! fn cannot_substitute(satisfiable: SatisfiabilityEvidence) -> NonvacuityEvidence {
+//! fn cannot_substitute(satisfiable: SatisfiableEvidence) -> NonvacuousEvidence {
 //!     satisfiable.into()
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use fs_govern::evidence_contract::{SatisfiabilityState, UnsatisfiableEvidence};
+//!
+//! fn opposite_polarity_is_not_substitutable(evidence: UnsatisfiableEvidence) -> SatisfiabilityState {
+//!     SatisfiabilityState::Satisfiable(evidence)
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use fs_govern::evidence_contract::{NonvacuityState, VacuousEvidence};
+//!
+//! fn vacuous_is_not_nonvacuous(evidence: VacuousEvidence) -> NonvacuityState {
+//!     NonvacuityState::Nonvacuous(evidence)
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use fs_govern::evidence_contract::{ReproductionFailedEvidence, ReproductionState};
+//!
+//! fn failure_is_not_reproduction(evidence: ReproductionFailedEvidence) -> ReproductionState {
+//!     ReproductionState::Reproduced(evidence)
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use fs_govern::evidence_contract::{InvalidationBinding, InvalidationState};
+//!
+//! fn raw_fields_cannot_mint_invalidation(binding: InvalidationBinding) -> InvalidationState {
+//!     InvalidationState { binding: Some(binding) }
 //! }
 //! ```
 
@@ -56,14 +88,18 @@ use std::{collections::BTreeMap, marker::PhantomData};
 
 /// Current semantic algebra.  Wire/schema work in Phase 0B-B must bind this
 /// value instead of inferring meaning from enum ordinals.
-pub const AUTHORITY_ALGEBRA_VERSION: u32 = 1;
+pub const AUTHORITY_ALGEBRA_VERSION: u32 = 2;
 
 /// Current default policy vocabulary.  A policy identity also binds all of
 /// its explicit requirements, so changing a guard changes the identity.
-pub const AUTHORITY_POLICY_VERSION: u32 = 1;
+pub const AUTHORITY_POLICY_VERSION: u32 = 2;
 
 /// Historical baseline accepted by [`migrate_legacy_v0`].
 pub const LEGACY_AUTHORITY_SCHEMA_VERSION: u32 = 0;
+
+/// Persisted v1 identities are semantically ambiguous under the v2 quantifier
+/// and polarity rules and therefore have no compatibility reinterpretation.
+pub const RETIRED_AUTHORITY_SCHEMA_VERSION: u32 = 1;
 
 /// Maximum bytes in one canonical scalar text field before allocation-heavy
 /// canonicalization.
@@ -78,28 +114,42 @@ pub const MAX_AUTHORITY_LOG_BYTES: usize = 16 * 1024;
 
 /// Canonical identity domains.  These are public so schema/catalog tooling can
 /// drift-check the exact namespaces without duplicating strings.
-pub const CLAIM_STATEMENT_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.claim-statement.v1";
-pub const QUANTIFIED_DOMAIN_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.quantified-domain.v1";
-pub const ASSUMPTION_SET_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.assumption-set.v1";
-pub const SEMANTIC_CLAIM_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.semantic-claim.v1";
-pub const CLAIM_LANE_BINDING_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.claim-lane-binding.v1";
-pub const CLAIM_INSTANCE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.claim-instance.v1";
-pub const EVIDENCE_REF_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.evidence-ref.v1";
-pub const EVIDENCE_STATE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.evidence-state.v1";
-pub const NONVACUITY_EVIDENCE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.nonvacuity-evidence.v1";
-pub const AUTHORITY_STATE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.authority-state.v1";
-pub const SUPPORT_EDGE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.support-edge.v1";
-pub const ATTACK_EDGE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.attack-edge.v1";
-pub const COUNTEREXAMPLE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.counterexample.v1";
+pub const CLAIM_STATEMENT_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.claim-statement.v2";
+pub const QUANTIFIED_DOMAIN_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.quantified-domain.v2";
+pub const ASSUMPTION_SET_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.assumption-set.v2";
+pub const SEMANTIC_CLAIM_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.semantic-claim.v2";
+pub const CLAIM_LANE_BINDING_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.claim-lane-binding.v2";
+pub const CLAIM_INSTANCE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.claim-instance.v2";
+pub const EVIDENCE_REF_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.evidence-ref.v2";
+pub const EVIDENCE_STATE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.evidence-state.v2";
+pub const SATISFIABLE_EVIDENCE_IDENTITY_DOMAIN: &str =
+    "frankensim.fs-govern.satisfiable-evidence.v2";
+pub const UNSATISFIABLE_EVIDENCE_IDENTITY_DOMAIN: &str =
+    "frankensim.fs-govern.unsatisfiable-evidence.v2";
+pub const NONVACUOUS_EVIDENCE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.nonvacuous-evidence.v2";
+pub const VACUOUS_EVIDENCE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.vacuous-evidence.v2";
+pub const REPRODUCTION_FAILED_EVIDENCE_IDENTITY_DOMAIN: &str =
+    "frankensim.fs-govern.reproduction-failed-evidence.v2";
+pub const REPRODUCED_EVIDENCE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.reproduced-evidence.v2";
+pub const EXACT_INSTANCE_DECISION_IDENTITY_DOMAIN: &str =
+    "frankensim.fs-govern.exact-instance-decision.v2";
+pub const INVALIDATION_BINDING_IDENTITY_DOMAIN: &str =
+    "frankensim.fs-govern.invalidation-binding.v2";
+pub const AUTHORITY_STATE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.authority-state.v2";
+pub const SUPPORT_EDGE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.support-edge.v2";
+pub const ATTACK_EDGE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.attack-edge.v2";
+pub const COUNTEREXAMPLE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.counterexample.v2";
 pub const ADJUDICATION_IDENTITY_DOMAIN: &str =
-    "frankensim.fs-govern.counterexample-adjudication.v1";
-pub const REVOCATION_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.revocation-tombstone.v1";
-pub const CAPABILITY_POLICY_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.capability-policy.v1";
-pub const CHECKER_DECISION_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.checker-decision.v1";
-pub const AUTHORITY_HEAD_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.authority-head.v1";
-pub const RUNTIME_ADMISSION_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.runtime-admission.v1";
-pub const INFERENCE_RULE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.inference-rule.v1";
-pub const AUTHORITY_MIGRATION_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.authority-migration.v1";
+    "frankensim.fs-govern.counterexample-adjudication.v2";
+pub const REVOCATION_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.revocation-tombstone.v2";
+pub const VERIFIED_REVOCATION_IDENTITY_DOMAIN: &str =
+    "frankensim.fs-govern.verified-revocation-tombstone.v2";
+pub const CAPABILITY_POLICY_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.capability-policy.v2";
+pub const CHECKER_DECISION_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.checker-decision.v2";
+pub const AUTHORITY_HEAD_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.authority-head.v2";
+pub const RUNTIME_ADMISSION_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.runtime-admission.v2";
+pub const INFERENCE_RULE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.inference-rule.v2";
+pub const AUTHORITY_MIGRATION_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.authority-migration.v2";
 
 /// Structured refusal for every contract constructor and transition.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +175,10 @@ pub enum AuthorityError {
     SchemaVersionRefused {
         observed: u32,
         supported: u32,
+    },
+    MigrationUnavailable {
+        observed: u32,
+        target: u32,
     },
     IdentityMismatch {
         what: &'static str,
@@ -176,6 +230,7 @@ impl AuthorityError {
             Self::InvalidValue { .. } => "repair-invalid-value",
             Self::MissingIdentity { .. } => "supply-content-identity",
             Self::SchemaVersionRefused { .. } => "use-supported-schema-or-explicit-migration",
+            Self::MigrationUnavailable { .. } => "regenerate-under-current-authority-algebra",
             Self::IdentityMismatch { .. } => "bind-exact-source-identity",
             Self::IncompatibleAxes { .. } | Self::CompositionConflict { .. } => {
                 "adjudicate-conflicting-authority"
@@ -213,6 +268,10 @@ impl core::fmt::Display for AuthorityError {
             } => write!(
                 f,
                 "authority schema v{observed} refused; this algebra supports v{supported}"
+            ),
+            Self::MigrationUnavailable { observed, target } => write!(
+                f,
+                "authority schema v{observed} has no semantics-preserving migration to v{target}; regenerate from source evidence"
             ),
             Self::IdentityMismatch { what } => write!(f, "identity mismatch: {what}"),
             Self::IncompatibleAxes { what } => write!(f, "incompatible authority axes: {what}"),
@@ -376,13 +435,21 @@ typed_id!(ClaimLaneBindingId);
 typed_id!(ClaimInstanceId);
 typed_id!(EvidenceId);
 typed_id!(EvidenceStateId);
-typed_id!(NonvacuityEvidenceId);
+typed_id!(SatisfiableEvidenceId);
+typed_id!(UnsatisfiableEvidenceId);
+typed_id!(NonvacuousEvidenceId);
+typed_id!(VacuousEvidenceId);
+typed_id!(ReproductionFailedEvidenceId);
+typed_id!(ReproducedEvidenceId);
+typed_id!(ExactInstanceDecisionId);
+typed_id!(InvalidationBindingId);
 typed_id!(AuthorityStateId);
 typed_id!(SupportEdgeId);
 typed_id!(AttackEdgeId);
 typed_id!(CounterexampleId);
 typed_id!(AdjudicationId);
 typed_id!(RevocationId);
+typed_id!(VerifiedRevocationId);
 typed_id!(CapabilityPolicyId);
 typed_id!(CheckerDecisionId);
 typed_id!(AuthorityHeadId);
@@ -450,21 +517,17 @@ impl Quantifier {
     }
 }
 
-/// One named binding in a quantified domain.  Bindings are modeled as an
-/// order-independent product; nested, order-sensitive quantification must be
-/// represented inside a statement clause instead of being silently reordered.
+/// One named binding inside an explicit quantifier block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DomainVariable {
     name: String,
-    quantifier: Quantifier,
     domain: String,
 }
 
 impl DomainVariable {
-    pub fn new(name: &str, quantifier: Quantifier, domain: &str) -> Result<Self, AuthorityError> {
+    pub fn new(name: &str, domain: &str) -> Result<Self, AuthorityError> {
         Ok(Self {
             name: canonical_text("domain variable", name)?,
-            quantifier,
             domain: canonical_text("variable domain", domain)?,
         })
     }
@@ -475,77 +538,174 @@ impl DomainVariable {
     }
 
     #[must_use]
-    pub fn quantifier(&self) -> Quantifier {
-        self.quantifier
-    }
-
-    #[must_use]
     pub fn domain(&self) -> &str {
         &self.domain
     }
 }
 
-/// Canonical product-domain bindings plus commutative predicate clauses.
+/// One order-sensitive quantifier block. The caller must explicitly declare
+/// whether its variables form a commutative product. Adjacent blocks are never
+/// merged, even when their quantifiers agree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuantifierBlock {
+    quantifier: Quantifier,
+    commutative: bool,
+    variables: Vec<DomainVariable>,
+}
+
+impl QuantifierBlock {
+    pub fn ordered(
+        quantifier: Quantifier,
+        variables: Vec<DomainVariable>,
+    ) -> Result<Self, AuthorityError> {
+        Self::new(quantifier, variables, false)
+    }
+
+    pub fn commutative(
+        quantifier: Quantifier,
+        variables: Vec<DomainVariable>,
+    ) -> Result<Self, AuthorityError> {
+        Self::new(quantifier, variables, true)
+    }
+
+    fn new(
+        quantifier: Quantifier,
+        mut variables: Vec<DomainVariable>,
+        commutative: bool,
+    ) -> Result<Self, AuthorityError> {
+        if variables.is_empty() {
+            return Err(AuthorityError::EmptyField {
+                what: "quantifier-block variables",
+            });
+        }
+        if variables.len() > MAX_AUTHORITY_SET_MEMBERS {
+            return Err(AuthorityError::TooLarge {
+                what: "quantifier-block variables",
+                observed: variables.len(),
+                cap: MAX_AUTHORITY_SET_MEMBERS,
+            });
+        }
+        if commutative {
+            variables.sort_by(|left, right| left.name.cmp(&right.name));
+        }
+        let mut names = variables
+            .iter()
+            .map(|variable| variable.name.as_str())
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        for pair in names.windows(2) {
+            if pair[0] == pair[1] {
+                return Err(AuthorityError::DuplicateMember {
+                    what: "domain variable",
+                    key: pair[0].to_string(),
+                });
+            }
+        }
+        Ok(Self {
+            quantifier,
+            commutative,
+            variables,
+        })
+    }
+
+    #[must_use]
+    pub fn quantifier(&self) -> Quantifier {
+        self.quantifier
+    }
+
+    #[must_use]
+    pub fn is_commutative(&self) -> bool {
+        self.commutative
+    }
+
+    #[must_use]
+    pub fn variables(&self) -> &[DomainVariable] {
+        &self.variables
+    }
+}
+
+/// Canonical ordered quantifier blocks plus commutative predicate clauses.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuantifiedDomain {
-    variables: Vec<DomainVariable>,
+    blocks: Vec<QuantifierBlock>,
     predicates: Vec<String>,
     identity: QuantifiedDomainId,
 }
 
 impl QuantifiedDomain {
-    pub fn new(
-        mut variables: Vec<DomainVariable>,
-        predicates: &[&str],
-    ) -> Result<Self, AuthorityError> {
-        if variables.is_empty() {
+    pub fn new(blocks: Vec<QuantifierBlock>, predicates: &[&str]) -> Result<Self, AuthorityError> {
+        if blocks.is_empty() {
             return Err(AuthorityError::EmptyField {
-                what: "quantified variables",
+                what: "quantifier blocks",
             });
         }
-        if variables.len() > MAX_AUTHORITY_SET_MEMBERS {
+        if blocks.len() > MAX_AUTHORITY_SET_MEMBERS {
             return Err(AuthorityError::TooLarge {
-                what: "quantified variables",
-                observed: variables.len(),
+                what: "quantifier blocks",
+                observed: blocks.len(),
                 cap: MAX_AUTHORITY_SET_MEMBERS,
             });
         }
-        variables.sort_by(|left, right| left.name.cmp(&right.name));
-        for pair in variables.windows(2) {
-            if pair[0].name == pair[1].name {
+        let variable_count = blocks.iter().try_fold(0_usize, |count, block| {
+            count.checked_add(block.variables.len())
+        });
+        let variable_count = variable_count.ok_or(AuthorityError::TooLarge {
+            what: "quantified variables",
+            observed: usize::MAX,
+            cap: MAX_AUTHORITY_SET_MEMBERS,
+        })?;
+        if variable_count > MAX_AUTHORITY_SET_MEMBERS {
+            return Err(AuthorityError::TooLarge {
+                what: "quantified variables",
+                observed: variable_count,
+                cap: MAX_AUTHORITY_SET_MEMBERS,
+            });
+        }
+        let mut names = blocks
+            .iter()
+            .flat_map(|block| block.variables.iter())
+            .map(|variable| variable.name.as_str())
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        for pair in names.windows(2) {
+            if pair[0] == pair[1] {
                 return Err(AuthorityError::DuplicateMember {
                     what: "domain variable",
-                    key: pair[0].name.clone(),
+                    key: pair[0].to_string(),
                 });
             }
         }
         let predicates = canonical_set("domain predicate", predicates, true)?;
         let mut bytes = CanonicalBytes::default();
         bytes.u32(1, AUTHORITY_ALGEBRA_VERSION);
-        bytes.u64(2, variables.len() as u64);
-        for variable in &variables {
-            bytes.field(3, variable.name.as_bytes());
-            bytes.u8(4, variable.quantifier.tag());
-            bytes.field(5, variable.domain.as_bytes());
+        bytes.u64(2, blocks.len() as u64);
+        for block in &blocks {
+            bytes.u8(3, block.quantifier.tag());
+            bytes.u8(4, u8::from(block.commutative));
+            bytes.u64(5, block.variables.len() as u64);
+            for variable in &block.variables {
+                bytes.field(6, variable.name.as_bytes());
+                bytes.field(7, variable.domain.as_bytes());
+            }
         }
-        bytes.u64(6, predicates.len() as u64);
+        bytes.u64(8, predicates.len() as u64);
         for predicate in &predicates {
-            bytes.field(7, predicate.as_bytes());
+            bytes.field(9, predicate.as_bytes());
         }
         let identity = QuantifiedDomainId(fs_blake3::hash_domain(
             QUANTIFIED_DOMAIN_IDENTITY_DOMAIN,
             &bytes.0,
         ));
         Ok(Self {
-            variables,
+            blocks,
             predicates,
             identity,
         })
     }
 
     #[must_use]
-    pub fn variables(&self) -> &[DomainVariable] {
-        &self.variables
+    pub fn blocks(&self) -> &[QuantifierBlock] {
+        &self.blocks
     }
 
     #[must_use]
@@ -1119,11 +1279,14 @@ impl ClaimInstance {
 /// satisfiability artifact from being substituted for a nonvacuity artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EvidenceKind {
-    Satisfiability,
-    Nonvacuity,
+    Satisfiable,
+    Unsatisfiable,
+    Nonvacuous,
+    Vacuous,
+    ReproductionFailed,
+    Reproduced,
     KernelProof,
     ScaleQualification,
-    Reproduction,
     Support,
     Attack,
     Counterexample,
@@ -1135,11 +1298,14 @@ impl EvidenceKind {
     #[must_use]
     pub fn code(self) -> &'static str {
         match self {
-            Self::Satisfiability => "satisfiability",
-            Self::Nonvacuity => "nonvacuity",
+            Self::Satisfiable => "satisfiable",
+            Self::Unsatisfiable => "unsatisfiable",
+            Self::Nonvacuous => "nonvacuous",
+            Self::Vacuous => "vacuous",
+            Self::ReproductionFailed => "reproduction-failed",
+            Self::Reproduced => "reproduced",
             Self::KernelProof => "kernel-proof",
             Self::ScaleQualification => "scale-qualification",
-            Self::Reproduction => "reproduction",
             Self::Support => "support",
             Self::Attack => "attack",
             Self::Counterexample => "counterexample",
@@ -1150,16 +1316,19 @@ impl EvidenceKind {
 
     fn tag(self) -> u8 {
         match self {
-            Self::Satisfiability => 1,
-            Self::Nonvacuity => 2,
-            Self::KernelProof => 3,
-            Self::ScaleQualification => 4,
-            Self::Reproduction => 5,
-            Self::Support => 6,
-            Self::Attack => 7,
-            Self::Counterexample => 8,
-            Self::Adjudication => 9,
-            Self::Revocation => 10,
+            Self::Satisfiable => 1,
+            Self::Unsatisfiable => 2,
+            Self::Nonvacuous => 3,
+            Self::Vacuous => 4,
+            Self::ReproductionFailed => 5,
+            Self::Reproduced => 6,
+            Self::KernelProof => 7,
+            Self::ScaleQualification => 8,
+            Self::Support => 9,
+            Self::Attack => 10,
+            Self::Counterexample => 11,
+            Self::Adjudication => 12,
+            Self::Revocation => 13,
         }
     }
 }
@@ -1243,31 +1412,73 @@ impl EvidenceRef {
     }
 }
 
-/// Type-distinct satisfiability evidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SatisfiabilityEvidence(EvidenceRef);
+macro_rules! conclusion_evidence_wrapper {
+    ($name:ident, $id:ident, $kind:ident, $domain:ident) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub struct $name {
+            evidence: EvidenceRef,
+            identity: $id,
+        }
 
-impl SatisfiabilityEvidence {
-    pub fn new(
-        claim: ClaimInstanceId,
-        artifact: ContentHash,
-        checker: ContentHash,
-    ) -> Result<Self, AuthorityError> {
-        EvidenceRef::new(
-            EvidenceKind::Satisfiability,
-            claim,
-            artifact,
-            checker,
-            AUTHORITY_ALGEBRA_VERSION,
-        )
-        .map(Self)
-    }
+        impl $name {
+            pub fn new(
+                claim: ClaimInstanceId,
+                artifact: ContentHash,
+                checker: ContentHash,
+            ) -> Result<Self, AuthorityError> {
+                let evidence = EvidenceRef::new(
+                    EvidenceKind::$kind,
+                    claim,
+                    artifact,
+                    checker,
+                    AUTHORITY_ALGEBRA_VERSION,
+                )?;
+                let mut bytes = CanonicalBytes::default();
+                bytes.u32(1, AUTHORITY_ALGEBRA_VERSION);
+                bytes.hash(2, *evidence.identity.as_hash());
+                Ok(Self {
+                    evidence,
+                    identity: $id(fs_blake3::hash_domain($domain, &bytes.0)),
+                })
+            }
 
-    #[must_use]
-    pub fn evidence(&self) -> EvidenceRef {
-        self.0
-    }
+            #[must_use]
+            pub fn evidence(&self) -> EvidenceRef {
+                self.evidence
+            }
+
+            #[must_use]
+            pub fn identity(&self) -> $id {
+                self.identity
+            }
+        }
+    };
 }
+
+conclusion_evidence_wrapper!(
+    SatisfiableEvidence,
+    SatisfiableEvidenceId,
+    Satisfiable,
+    SATISFIABLE_EVIDENCE_IDENTITY_DOMAIN
+);
+conclusion_evidence_wrapper!(
+    UnsatisfiableEvidence,
+    UnsatisfiableEvidenceId,
+    Unsatisfiable,
+    UNSATISFIABLE_EVIDENCE_IDENTITY_DOMAIN
+);
+conclusion_evidence_wrapper!(
+    ReproductionFailedEvidence,
+    ReproductionFailedEvidenceId,
+    ReproductionFailed,
+    REPRODUCTION_FAILED_EVIDENCE_IDENTITY_DOMAIN
+);
+conclusion_evidence_wrapper!(
+    ReproducedEvidence,
+    ReproducedEvidenceId,
+    Reproduced,
+    REPRODUCED_EVIDENCE_IDENTITY_DOMAIN
+);
 
 /// Strength class for a nonvacuity witness.  Classes are deliberately
 /// incomparable without an explicit versioned inference rule.
@@ -1378,58 +1589,70 @@ impl NonvacuityStrength {
     }
 }
 
-/// Type-distinct, strength-bound nonvacuity evidence.  There is intentionally
-/// no `From` conversion between this and [`SatisfiabilityEvidence`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NonvacuityEvidence {
-    evidence: EvidenceRef,
-    strength: NonvacuityStrength,
-    identity: NonvacuityEvidenceId,
+macro_rules! strength_bound_conclusion_wrapper {
+    ($name:ident, $id:ident, $kind:ident, $domain:ident) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub struct $name {
+            evidence: EvidenceRef,
+            strength: NonvacuityStrength,
+            identity: $id,
+        }
+
+        impl $name {
+            pub fn new(
+                claim: ClaimInstanceId,
+                artifact: ContentHash,
+                checker: ContentHash,
+                strength: NonvacuityStrength,
+            ) -> Result<Self, AuthorityError> {
+                let evidence = EvidenceRef::new(
+                    EvidenceKind::$kind,
+                    claim,
+                    artifact,
+                    checker,
+                    AUTHORITY_ALGEBRA_VERSION,
+                )?;
+                let mut bytes = CanonicalBytes::default();
+                bytes.u32(1, AUTHORITY_ALGEBRA_VERSION);
+                bytes.hash(2, *evidence.identity.as_hash());
+                strength.encode(&mut bytes, 3);
+                Ok(Self {
+                    evidence,
+                    strength,
+                    identity: $id(fs_blake3::hash_domain($domain, &bytes.0)),
+                })
+            }
+
+            #[must_use]
+            pub fn evidence(&self) -> EvidenceRef {
+                self.evidence
+            }
+
+            #[must_use]
+            pub fn strength(&self) -> NonvacuityStrength {
+                self.strength
+            }
+
+            #[must_use]
+            pub fn identity(&self) -> $id {
+                self.identity
+            }
+        }
+    };
 }
 
-impl NonvacuityEvidence {
-    pub fn new(
-        claim: ClaimInstanceId,
-        artifact: ContentHash,
-        checker: ContentHash,
-        strength: NonvacuityStrength,
-    ) -> Result<Self, AuthorityError> {
-        let evidence = EvidenceRef::new(
-            EvidenceKind::Nonvacuity,
-            claim,
-            artifact,
-            checker,
-            AUTHORITY_ALGEBRA_VERSION,
-        )?;
-        let mut bytes = CanonicalBytes::default();
-        bytes.u32(1, AUTHORITY_ALGEBRA_VERSION);
-        bytes.hash(2, *evidence.identity.as_hash());
-        strength.encode(&mut bytes, 3);
-        Ok(Self {
-            evidence,
-            strength,
-            identity: NonvacuityEvidenceId(fs_blake3::hash_domain(
-                NONVACUITY_EVIDENCE_IDENTITY_DOMAIN,
-                &bytes.0,
-            )),
-        })
-    }
-
-    #[must_use]
-    pub fn evidence(&self) -> EvidenceRef {
-        self.evidence
-    }
-
-    #[must_use]
-    pub fn strength(&self) -> NonvacuityStrength {
-        self.strength
-    }
-
-    #[must_use]
-    pub fn identity(&self) -> NonvacuityEvidenceId {
-        self.identity
-    }
-}
+strength_bound_conclusion_wrapper!(
+    NonvacuousEvidence,
+    NonvacuousEvidenceId,
+    Nonvacuous,
+    NONVACUOUS_EVIDENCE_IDENTITY_DOMAIN
+);
+strength_bound_conclusion_wrapper!(
+    VacuousEvidence,
+    VacuousEvidenceId,
+    Vacuous,
+    VACUOUS_EVIDENCE_IDENTITY_DOMAIN
+);
 
 /// Request/drain/finalize proof for cancellation.  Every component is
 /// content-identified and cancellation is a terminal evidence state.
@@ -1665,8 +1888,8 @@ impl TruthState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SatisfiabilityState {
     Unknown,
-    Satisfiable(SatisfiabilityEvidence),
-    Unsatisfiable(SatisfiabilityEvidence),
+    Satisfiable(SatisfiableEvidence),
+    Unsatisfiable(UnsatisfiableEvidence),
 }
 
 impl SatisfiabilityState {
@@ -1684,11 +1907,11 @@ impl SatisfiabilityState {
             Self::Unknown => bytes.u8(tag, 0),
             Self::Satisfiable(evidence) => {
                 bytes.u8(tag, 1);
-                bytes.hash(tag + 1, *evidence.evidence().identity().as_hash());
+                bytes.hash(tag + 1, *evidence.identity().as_hash());
             }
             Self::Unsatisfiable(evidence) => {
                 bytes.u8(tag, 2);
-                bytes.hash(tag + 1, *evidence.evidence().identity().as_hash());
+                bytes.hash(tag + 1, *evidence.identity().as_hash());
             }
         }
     }
@@ -1711,8 +1934,8 @@ impl SatisfiabilityState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NonvacuityState {
     Unknown,
-    Nonvacuous(NonvacuityEvidence),
-    Vacuous(NonvacuityEvidence),
+    Nonvacuous(NonvacuousEvidence),
+    Vacuous(VacuousEvidence),
 }
 
 impl NonvacuityState {
@@ -1751,13 +1974,127 @@ impl NonvacuityState {
     }
 }
 
-/// Exact-instance admission axis.  Admission and refusal carry the immutable
-/// decision/receipt identity that made the classification.
+/// Exact-instance decision polarity.  The verdict is bound into the decision
+/// identity and revalidated against the state variant that carries it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExactInstanceVerdict {
+    Refused,
+    Admitted,
+}
+
+impl ExactInstanceVerdict {
+    #[must_use]
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Refused => "refused",
+            Self::Admitted => "admitted",
+        }
+    }
+
+    fn tag(self) -> u8 {
+        match self {
+            Self::Refused => 1,
+            Self::Admitted => 2,
+        }
+    }
+}
+
+/// Descriptive exact-instance decision candidate. It binds the exact claim,
+/// policy, checker, verdict, artifact, and schema; it authenticates none of
+/// them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExactInstanceDecisionCandidate {
+    claim: ClaimInstanceId,
+    policy: CapabilityPolicyId,
+    checker: ContentHash,
+    verdict: ExactInstanceVerdict,
+    artifact: ContentHash,
+    schema_version: u32,
+    identity: ExactInstanceDecisionId,
+}
+
+impl ExactInstanceDecisionCandidate {
+    pub fn new(
+        claim: ClaimInstanceId,
+        policy: CapabilityPolicyId,
+        checker: ContentHash,
+        verdict: ExactInstanceVerdict,
+        artifact: ContentHash,
+        schema_version: u32,
+    ) -> Result<Self, AuthorityError> {
+        if schema_version != AUTHORITY_ALGEBRA_VERSION {
+            return Err(AuthorityError::SchemaVersionRefused {
+                observed: schema_version,
+                supported: AUTHORITY_ALGEBRA_VERSION,
+            });
+        }
+        let checker = require_hash("exact-instance checker", checker)?;
+        let artifact = require_hash("exact-instance decision artifact", artifact)?;
+        let mut bytes = CanonicalBytes::default();
+        bytes.u32(1, schema_version);
+        bytes.hash(2, *claim.as_hash());
+        bytes.hash(3, *policy.as_hash());
+        bytes.hash(4, checker);
+        bytes.u8(5, verdict.tag());
+        bytes.hash(6, artifact);
+        let identity = ExactInstanceDecisionId(fs_blake3::hash_domain(
+            EXACT_INSTANCE_DECISION_IDENTITY_DOMAIN,
+            &bytes.0,
+        ));
+        Ok(Self {
+            claim,
+            policy,
+            checker,
+            verdict,
+            artifact,
+            schema_version,
+            identity,
+        })
+    }
+
+    #[must_use]
+    pub fn claim(&self) -> ClaimInstanceId {
+        self.claim
+    }
+
+    #[must_use]
+    pub fn policy(&self) -> CapabilityPolicyId {
+        self.policy
+    }
+
+    #[must_use]
+    pub fn checker(&self) -> ContentHash {
+        self.checker
+    }
+
+    #[must_use]
+    pub fn verdict(&self) -> ExactInstanceVerdict {
+        self.verdict
+    }
+
+    #[must_use]
+    pub fn artifact(&self) -> ContentHash {
+        self.artifact
+    }
+
+    #[must_use]
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    #[must_use]
+    pub fn identity(&self) -> ExactInstanceDecisionId {
+        self.identity
+    }
+}
+
+/// Exact-instance admission axis. Admission and refusal carry a fully bound
+/// immutable decision candidate rather than an untyped receipt hash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExactInstanceAdmission {
     NotEvaluated,
-    Refused(ContentHash),
-    Admitted(ContentHash),
+    Refused(ExactInstanceDecisionCandidate),
+    Admitted(ExactInstanceDecisionCandidate),
 }
 
 impl ExactInstanceAdmission {
@@ -1773,13 +2110,13 @@ impl ExactInstanceAdmission {
     fn encode(self, bytes: &mut CanonicalBytes, tag: u8) {
         match self {
             Self::NotEvaluated => bytes.u8(tag, 0),
-            Self::Refused(identity) => {
+            Self::Refused(decision) => {
                 bytes.u8(tag, 1);
-                bytes.hash(tag + 1, identity);
+                bytes.hash(tag + 1, *decision.identity.as_hash());
             }
-            Self::Admitted(identity) => {
+            Self::Admitted(decision) => {
                 bytes.u8(tag, 2);
-                bytes.hash(tag + 1, identity);
+                bytes.hash(tag + 1, *decision.identity.as_hash());
             }
         }
     }
@@ -1789,10 +2126,6 @@ impl ExactInstanceAdmission {
             return Ok(self);
         }
         Ok(Self::NotEvaluated)
-    }
-
-    fn supports_admission(self) -> bool {
-        matches!(self, Self::Admitted(_))
     }
 }
 
@@ -1850,8 +2183,8 @@ impl ScaleState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReproductionState {
     NotAttempted,
-    Failed(EvidenceRef),
-    Reproduced(EvidenceRef),
+    Failed(ReproductionFailedEvidence),
+    Reproduced(ReproducedEvidence),
 }
 
 impl ReproductionState {
@@ -1872,37 +2205,123 @@ impl ReproductionState {
     }
 }
 
-/// Transitive invalidation axis.  A valid state and an invalidated state are
-/// never interchangeable even when all other evidence is byte-identical.
+/// Exact live-head binding for an authenticated invalidation transition. The
+/// fields and constructor are private so a public hash cannot forge an
+/// invalidated authority state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InvalidationState {
-    Clear,
-    Invalidated(RevocationId),
+pub struct InvalidationBinding {
+    target_claim: ClaimInstanceId,
+    target_state: AuthorityStateId,
+    target_head: AuthorityHeadId,
+    target_generation: u64,
+    tombstone: VerifiedRevocationId,
+    identity: InvalidationBindingId,
 }
 
-impl InvalidationState {
-    #[must_use]
-    pub fn code(self) -> &'static str {
-        match self {
-            Self::Clear => "clear",
-            Self::Invalidated(_) => "invalidated",
+impl InvalidationBinding {
+    fn new(
+        target_claim: ClaimInstanceId,
+        target_state: AuthorityStateId,
+        target_head: AuthorityHeadId,
+        target_generation: u64,
+        tombstone: VerifiedRevocationId,
+    ) -> Self {
+        let mut bytes = CanonicalBytes::default();
+        bytes.u32(1, AUTHORITY_ALGEBRA_VERSION);
+        bytes.hash(2, *target_claim.as_hash());
+        bytes.hash(3, *target_state.as_hash());
+        bytes.hash(4, *target_head.as_hash());
+        bytes.u64(5, target_generation);
+        bytes.hash(6, *tombstone.as_hash());
+        Self {
+            target_claim,
+            target_state,
+            target_head,
+            target_generation,
+            tombstone,
+            identity: InvalidationBindingId(fs_blake3::hash_domain(
+                INVALIDATION_BINDING_IDENTITY_DOMAIN,
+                &bytes.0,
+            )),
         }
     }
 
+    #[must_use]
+    pub fn target_claim(&self) -> ClaimInstanceId {
+        self.target_claim
+    }
+
+    #[must_use]
+    pub fn target_state(&self) -> AuthorityStateId {
+        self.target_state
+    }
+
+    #[must_use]
+    pub fn target_head(&self) -> AuthorityHeadId {
+        self.target_head
+    }
+
+    #[must_use]
+    pub fn target_generation(&self) -> u64 {
+        self.target_generation
+    }
+
+    #[must_use]
+    pub fn tombstone(&self) -> VerifiedRevocationId {
+        self.tombstone
+    }
+
+    #[must_use]
+    pub fn identity(&self) -> InvalidationBindingId {
+        self.identity
+    }
+}
+
+/// Transitive invalidation axis. Its representation is private: callers can
+/// inspect a binding obtained from an authority state but cannot construct an
+/// invalidated value from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidationState {
+    binding: Option<InvalidationBinding>,
+}
+
+impl InvalidationState {
+    #[allow(non_upper_case_globals)]
+    pub const Clear: Self = Self { binding: None };
+
+    fn invalidated(binding: InvalidationBinding) -> Self {
+        Self {
+            binding: Some(binding),
+        }
+    }
+
+    #[must_use]
+    pub fn code(self) -> &'static str {
+        if self.binding.is_some() {
+            "invalidated"
+        } else {
+            "clear"
+        }
+    }
+
+    #[must_use]
+    pub fn is_clear(self) -> bool {
+        self.binding.is_none()
+    }
+
+    #[must_use]
+    pub fn binding(self) -> Option<InvalidationBinding> {
+        self.binding
+    }
+
     fn meet(self, other: Self) -> Result<Self, AuthorityError> {
-        match (self, other) {
-            (Self::Clear, Self::Clear) => Ok(Self::Clear),
-            (Self::Invalidated(left), Self::Clear) | (Self::Clear, Self::Invalidated(left)) => {
-                Ok(Self::Invalidated(left))
-            }
-            (Self::Invalidated(left), Self::Invalidated(right)) if left == right => {
-                Ok(Self::Invalidated(left))
-            }
-            (Self::Invalidated(_), Self::Invalidated(_)) => {
-                Err(AuthorityError::CompositionConflict {
-                    axis: "invalidation",
-                })
-            }
+        match (self.binding, other.binding) {
+            (None, None) => Ok(Self::Clear),
+            (Some(binding), None) | (None, Some(binding)) => Ok(Self::invalidated(binding)),
+            (Some(left), Some(right)) if left == right => Ok(Self::invalidated(left)),
+            (Some(_), Some(_)) => Err(AuthorityError::CompositionConflict {
+                axis: "invalidation",
+            }),
         }
     }
 }
@@ -1926,9 +2345,43 @@ pub struct AuthorityState {
 }
 
 impl AuthorityState {
-    #[allow(clippy::too_many_lines)]
+    /// Construct a clear descriptive state. Passing a previously obtained
+    /// invalidation binding is refused: only the authenticated live-head
+    /// revocation transition may create an invalidated successor.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        claim: ClaimInstance,
+        truth: TruthState,
+        satisfiability: SatisfiabilityState,
+        nonvacuity: NonvacuityState,
+        exact_admission: ExactInstanceAdmission,
+        kernel: KernelState,
+        scale: ScaleState,
+        reproduction: ReproductionState,
+        invalidation: InvalidationState,
+    ) -> Result<Self, AuthorityError> {
+        if !invalidation.is_clear() {
+            return Err(AuthorityError::IllegalTransition {
+                from: "public-authority-construction",
+                to: "invalidated",
+            });
+        }
+        Self::from_axes(
+            claim,
+            truth,
+            satisfiability,
+            nonvacuity,
+            exact_admission,
+            kernel,
+            scale,
+            reproduction,
+            InvalidationState::Clear,
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
+    fn from_axes(
         claim: ClaimInstance,
         truth: TruthState,
         satisfiability: SatisfiabilityState,
@@ -1979,13 +2432,20 @@ impl AuthorityState {
             });
         }
         if matches!(exact_admission, ExactInstanceAdmission::Admitted(_))
-            && matches!(invalidation, InvalidationState::Invalidated(_))
+            && !invalidation.is_clear()
         {
             return Err(AuthorityError::IncompatibleAxes {
                 what: "an invalidated exact instance cannot remain admitted",
             });
         }
-        validate_admission_hash(exact_admission)?;
+        if let Some(binding) = invalidation.binding() {
+            if binding.target_claim != claim_id {
+                return Err(AuthorityError::IdentityMismatch {
+                    what: "invalidation binding targets another claim",
+                });
+            }
+        }
+        validate_exact_instance_admission(claim_id, exact_admission)?;
         validate_satisfiability_binding(claim_id, satisfiability)?;
         validate_nonvacuity_binding(claim_id, nonvacuity)?;
         validate_evidence_axis(claim_id, kernel_evidence(kernel), EvidenceKind::KernelProof)?;
@@ -1994,11 +2454,7 @@ impl AuthorityState {
             scale_evidence(scale),
             EvidenceKind::ScaleQualification,
         )?;
-        validate_evidence_axis(
-            claim_id,
-            reproduction_evidence(reproduction),
-            EvidenceKind::Reproduction,
-        )?;
+        validate_reproduction_binding(claim_id, reproduction)?;
 
         let mut bytes = CanonicalBytes::default();
         bytes.u32(1, AUTHORITY_ALGEBRA_VERSION);
@@ -2010,11 +2466,11 @@ impl AuthorityState {
         encode_optional_evidence(&mut bytes, 10, kernel_evidence(kernel));
         encode_optional_evidence(&mut bytes, 12, scale_evidence(scale));
         encode_reproduction(&mut bytes, 14, reproduction);
-        match invalidation {
-            InvalidationState::Clear => bytes.u8(17, 0),
-            InvalidationState::Invalidated(revocation) => {
+        match invalidation.binding() {
+            None => bytes.u8(17, 0),
+            Some(binding) => {
                 bytes.u8(17, 1);
-                bytes.hash(18, *revocation.as_hash());
+                bytes.hash(18, *binding.identity.as_hash());
             }
         }
         let identity = AuthorityStateId(fs_blake3::hash_domain(
@@ -2099,15 +2555,16 @@ impl AuthorityState {
         self.identity
     }
 
-    /// Component-wise authority comparison.  Evidence-bearing axes require
-    /// exact receipt identity; no state can dominate through invalidation.
+    /// Compare only the clear descriptive scientific-evidence product. Exact
+    /// admission decisions are intentionally excluded from this relation.
     #[must_use]
-    pub fn dominates(&self, required: &Self) -> bool {
-        self.claim.identity == required.claim.identity
+    pub fn scientific_evidence_refines(&self, required: &Self) -> bool {
+        self.invalidation.is_clear()
+            && required.invalidation.is_clear()
+            && self.claim.identity == required.claim.identity
             && required.truth.leq(self.truth)
             && self.satisfiability.supports(required.satisfiability)
             && self.nonvacuity.supports(required.nonvacuity)
-            && admission_dominates(self.exact_admission, required.exact_admission)
             && optional_evidence_dominates(
                 kernel_evidence(self.kernel),
                 kernel_evidence(required.kernel),
@@ -2117,20 +2574,36 @@ impl AuthorityState {
                 scale_evidence(required.scale),
             )
             && reproduction_dominates(self.reproduction, required.reproduction)
-            && invalidation_dominates(self.invalidation, required.invalidation)
     }
 
-    /// Conservative product greatest lower bound. It never strengthens either
-    /// input; incomparable classifications demote to their represented bottom.
-    /// Only distinct invalidation roots conflict because v1 has no anonymous
-    /// invalidated bottom.
-    pub fn conservative_meet(&self, other: &Self) -> Result<Self, AuthorityError> {
+    /// Compare only the exact-instance decision axis on clear states.
+    #[must_use]
+    pub fn exact_decision_refines(&self, required: &Self) -> bool {
+        self.invalidation.is_clear()
+            && required.invalidation.is_clear()
+            && self.claim.identity == required.claim.identity
+            && admission_dominates(self.exact_admission, required.exact_admission)
+    }
+
+    /// Runtime substitutability requires both states to be clear and requires
+    /// refinement on both the scientific and exact-decision relations.
+    #[must_use]
+    pub fn is_safe_runtime_substitute_for(&self, required: &Self) -> bool {
+        self.scientific_evidence_refines(required) && self.exact_decision_refines(required)
+    }
+
+    /// Deny-biased evidence intersection. Any invalidation survives the meet,
+    /// and distinct invalidation histories conflict rather than being guessed
+    /// equivalent. This operation is deliberately **not** a substitutability
+    /// greatest lower bound; lattice laws apply only to the clear descriptive
+    /// scientific-evidence product.
+    pub fn deny_biased_meet(&self, other: &Self) -> Result<Self, AuthorityError> {
         if self.claim.identity != other.claim.identity {
             return Err(AuthorityError::IdentityMismatch {
                 what: "authority states refer to different exact claim instances",
             });
         }
-        Self::new(
+        Self::from_axes(
             self.claim.clone(),
             self.truth.meet(other.truth)?,
             self.satisfiability.meet(other.satisfiability)?,
@@ -2185,7 +2658,7 @@ mod authority_boundary_tests {
 
     fn hash(label: &str) -> ContentHash {
         fs_blake3::hash_domain(
-            "frankensim.fs-govern.evidence-contract-unit-test.v1",
+            "frankensim.fs-govern.evidence-contract-unit-test.v2",
             label.as_bytes(),
         )
     }
@@ -2198,8 +2671,11 @@ mod authority_boundary_tests {
         let statement = ClaimStatement::new(&["residual is bounded"]).expect("statement");
         let domain = QuantifiedDomain::new(
             vec![
-                DomainVariable::new("mesh", Quantifier::ForAll, "admitted meshes")
-                    .expect("domain variable"),
+                QuantifierBlock::commutative(
+                    Quantifier::ForAll,
+                    vec![DomainVariable::new("mesh", "admitted meshes").expect("domain variable")],
+                )
+                .expect("quantifier block"),
             ],
             &[],
         )
@@ -2259,43 +2735,8 @@ mod authority_boundary_tests {
         .expect("evidence")
     }
 
-    fn proved_state(claim: ClaimInstance) -> AuthorityState {
-        let satisfiability = SatisfiabilityEvidence::new(
-            claim.identity(),
-            hash("sat-artifact"),
-            hash("sat-checker"),
-        )
-        .expect("satisfiability");
-        let nonvacuity = NonvacuityEvidence::new(
-            claim.identity(),
-            hash("nonvacuity-artifact"),
-            hash("nonvacuity-checker"),
-            NonvacuityStrength::scale_family(hash("scales"), hash("fibre")).expect("strength"),
-        )
-        .expect("nonvacuity");
-        AuthorityState::new(
-            claim.clone(),
-            TruthState::Proved,
-            SatisfiabilityState::Satisfiable(satisfiability),
-            NonvacuityState::Nonvacuous(nonvacuity),
-            ExactInstanceAdmission::Admitted(hash("admission-receipt")),
-            KernelState::KernelChecked(evidence(&claim, EvidenceKind::KernelProof, "kernel")),
-            ScaleState::ScaleQualified(evidence(&claim, EvidenceKind::ScaleQualification, "scale")),
-            ReproductionState::Reproduced(evidence(
-                &claim,
-                EvidenceKind::Reproduction,
-                "reproduction",
-            )),
-            InvalidationState::Clear,
-        )
-        .expect("proved state")
-    }
-
-    #[test]
-    #[allow(clippy::too_many_lines)]
-    fn opaque_admission_requires_internal_authentication_and_current_head() {
-        let state = proved_state(claim());
-        let policy = CapabilityPolicy::new(
+    fn policy() -> CapabilityPolicy {
+        CapabilityPolicy::new(
             TruthRequirement::ProvedOnly,
             true,
             Some(
@@ -2308,7 +2749,54 @@ mod authority_boundary_tests {
             &[],
             &[],
         )
-        .expect("policy");
+        .expect("policy")
+    }
+
+    fn proved_state(claim: ClaimInstance, policy: &CapabilityPolicy) -> AuthorityState {
+        let satisfiability =
+            SatisfiableEvidence::new(claim.identity(), hash("sat-artifact"), hash("sat-checker"))
+                .expect("satisfiability");
+        let nonvacuity = NonvacuousEvidence::new(
+            claim.identity(),
+            hash("nonvacuity-artifact"),
+            hash("nonvacuity-checker"),
+            NonvacuityStrength::scale_family(hash("scales"), hash("fibre")).expect("strength"),
+        )
+        .expect("nonvacuity");
+        let exact_decision = ExactInstanceDecisionCandidate::new(
+            claim.identity(),
+            policy.identity(),
+            hash("authenticated-checker"),
+            ExactInstanceVerdict::Admitted,
+            hash("decision-receipt"),
+            AUTHORITY_ALGEBRA_VERSION,
+        )
+        .expect("exact decision");
+        let reproduction = ReproducedEvidence::new(
+            claim.identity(),
+            hash("reproduction-artifact"),
+            hash("reproduction-checker"),
+        )
+        .expect("reproduction");
+        AuthorityState::new(
+            claim.clone(),
+            TruthState::Proved,
+            SatisfiabilityState::Satisfiable(satisfiability),
+            NonvacuityState::Nonvacuous(nonvacuity),
+            ExactInstanceAdmission::Admitted(exact_decision),
+            KernelState::KernelChecked(evidence(&claim, EvidenceKind::KernelProof, "kernel")),
+            ScaleState::ScaleQualified(evidence(&claim, EvidenceKind::ScaleQualification, "scale")),
+            ReproductionState::Reproduced(reproduction),
+            InvalidationState::Clear,
+        )
+        .expect("proved state")
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn opaque_admission_requires_internal_authentication_and_current_head() {
+        let policy = policy();
+        let state = proved_state(claim(), &policy);
         let candidate = CheckerDecisionCandidate::new(
             state.claim().identity(),
             state.identity(),
@@ -2322,7 +2810,7 @@ mod authority_boundary_tests {
         let decision = CheckerDecision::from_authenticated_candidate(candidate);
         let grant = state.proved_grant().expect("internal grant");
         let mut head = AuthorityHead::initial(&state);
-        let other_state = proved_state(claim_with_seed(8));
+        let other_state = proved_state(claim_with_seed(8), &policy);
         let other_head = AuthorityHead::initial(&other_state);
         assert!(matches!(
             RuntimeAdmission::admit(&grant, &policy, &decision, &other_head),
@@ -2334,7 +2822,8 @@ mod authority_boundary_tests {
         assert_eq!(admission.authority_head(), head.identity());
         assert_eq!(admission.head_generation(), 0);
 
-        head.advance(&state).expect("same-state head advancement");
+        head.advance(&state, &state)
+            .expect("same-state head advancement");
         assert_eq!(head.generation(), 1);
         assert_eq!(head.predecessor(), Some(admission.authority_head()));
         assert_eq!(
@@ -2367,9 +2856,11 @@ mod authority_boundary_tests {
             evidence(&state.claim, EvidenceKind::Revocation, "revocation"),
         )
         .expect("tombstone");
-        let invalidated = state.invalidate(&tombstone).expect("invalidated successor");
-        head.advance(&invalidated)
-            .expect("revocation head advancement");
+        let verified = VerifiedRevocationTombstone::from_authenticated_candidate(&tombstone, &head)
+            .expect("verified tombstone");
+        let invalidated = head
+            .revoke(&state, &verified)
+            .expect("atomic revocation head advancement");
         assert_eq!(head.generation(), 2);
         assert_eq!(
             refreshed
@@ -2412,7 +2903,7 @@ mod authority_boundary_tests {
         let saturated_id = saturated.identity();
         assert_eq!(
             saturated
-                .advance(&state)
+                .advance(&state, &state)
                 .expect_err("generation overflow must refuse"),
             AuthorityError::InvalidValue {
                 what: "authority-head generation overflow"
@@ -2423,7 +2914,7 @@ mod authority_boundary_tests {
 
         let revoked_id = head.identity();
         assert!(matches!(
-            head.advance(&state),
+            head.advance(&invalidated, &state),
             Err(AuthorityError::IllegalTransition {
                 from: "invalidated-authority-head",
                 to: "clear"
@@ -2443,22 +2934,73 @@ mod authority_boundary_tests {
             ),
         )
         .expect("replacement tombstone");
-        let replacement_invalidated = state
-            .invalidate(&replacement_tombstone)
-            .expect("replacement invalidated successor");
-        assert_ne!(
-            replacement_invalidated.invalidation(),
-            invalidated.invalidation()
-        );
+        let replacement_head = AuthorityHead::initial(&state);
+        let replacement_verified = VerifiedRevocationTombstone::from_authenticated_candidate(
+            &replacement_tombstone,
+            &replacement_head,
+        )
+        .expect("replacement verified tombstone");
         assert!(matches!(
-            head.advance(&replacement_invalidated),
-            Err(AuthorityError::IllegalTransition {
-                from: "invalidated-authority-head",
-                to: "invalidated"
-            })
+            head.revoke(&state, &replacement_verified),
+            Err(AuthorityError::IdentityMismatch { .. })
         ));
         assert_eq!(head.identity(), revoked_id);
         assert_eq!(head.invalidation(), invalidated.invalidation());
+
+        let mut stale_head = AuthorityHead::initial(&state);
+        let stale_verified = VerifiedRevocationTombstone::from_authenticated_candidate(
+            &replacement_tombstone,
+            &stale_head,
+        )
+        .expect("stale fixture verification");
+        stale_head
+            .advance(&state, &state)
+            .expect("advance after verification");
+        assert!(matches!(
+            stale_head.revoke(&state, &stale_verified),
+            Err(AuthorityError::IdentityMismatch { .. })
+        ));
+
+        let mut clean_head = AuthorityHead::initial(&state);
+        let other_counterexample = CounterexampleCandidate::new(
+            other_state.claim(),
+            evidence(
+                other_state.claim(),
+                EvidenceKind::Counterexample,
+                "other-counterexample",
+            ),
+        )
+        .expect("other counterexample");
+        let other_adjudication = CounterexampleAdjudication::new(
+            &other_counterexample,
+            CounterexampleVerdict::GenuineCounterexample,
+            evidence(
+                other_state.claim(),
+                EvidenceKind::Adjudication,
+                "other-adjudication",
+            ),
+        )
+        .expect("other adjudication");
+        let other_tombstone = RevocationTombstone::new(
+            &other_state,
+            &other_adjudication,
+            "wrong exact target",
+            evidence(
+                other_state.claim(),
+                EvidenceKind::Revocation,
+                "other-revocation",
+            ),
+        )
+        .expect("other tombstone");
+        let other_verified = VerifiedRevocationTombstone::from_authenticated_candidate(
+            &other_tombstone,
+            &other_head,
+        )
+        .expect("other verified tombstone");
+        assert!(matches!(
+            clean_head.revoke(&state, &other_verified),
+            Err(AuthorityError::IdentityMismatch { .. })
+        ));
     }
 }
 
@@ -2567,6 +3109,12 @@ pub fn migrate_legacy_v0(
     source_schema: u32,
     legacy: LegacyAuthorityV0,
 ) -> Result<AuthorityMigration, AuthorityError> {
+    if source_schema == RETIRED_AUTHORITY_SCHEMA_VERSION {
+        return Err(AuthorityError::MigrationUnavailable {
+            observed: source_schema,
+            target: AUTHORITY_ALGEBRA_VERSION,
+        });
+    }
     if source_schema != LEGACY_AUTHORITY_SCHEMA_VERSION {
         return Err(AuthorityError::SchemaVersionRefused {
             observed: source_schema,
@@ -2610,13 +3158,15 @@ pub struct AuthorityCatalogRow {
     pub no_claim: &'static str,
 }
 
-/// Closed v1 catalog.  It is generated from this code table, never hand-built
+/// Closed v2 catalog. It is generated from this code table, never hand-built
 /// by a dashboard. Contract tests compare every row and every descriptive
 /// column against the generated Markdown embedded in `fs-govern/CONTRACT.md`.
+pub const AUTHORITY_CATALOG_SCHEMA_VERSION: u32 = AUTHORITY_ALGEBRA_VERSION;
+
 pub const AUTHORITY_CATALOG_ROWS: &[AuthorityCatalogRow] = &[
     AuthorityCatalogRow {
         object_kind: "claim-statement",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: CLAIM_STATEMENT_IDENTITY_DOMAIN,
         identity_sources: "canonical conjunction clauses",
         binding: "clause-order invariant; clause mutation moves identity",
@@ -2624,15 +3174,15 @@ pub const AUTHORITY_CATALOG_ROWS: &[AuthorityCatalogRow] = &[
     },
     AuthorityCatalogRow {
         object_kind: "quantified-domain",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: QUANTIFIED_DOMAIN_IDENTITY_DOMAIN,
-        identity_sources: "named product bindings, quantifiers, domain predicates",
-        binding: "binding-order invariant; quantifier mutation moves identity",
+        identity_sources: "ordered quantifier blocks, explicit block commutativity, domain predicates",
+        binding: "block order is semantic; only declared-commutative intra-block variables sort",
         no_claim: "does not prove satisfiability or nonvacuity",
     },
     AuthorityCatalogRow {
         object_kind: "assumption-set",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: ASSUMPTION_SET_IDENTITY_DOMAIN,
         identity_sources: "canonical assumption conjunction",
         binding: "assumption-order invariant; semantic mutation moves identity",
@@ -2640,7 +3190,7 @@ pub const AUTHORITY_CATALOG_ROWS: &[AuthorityCatalogRow] = &[
     },
     AuthorityCatalogRow {
         object_kind: "semantic-claim",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: SEMANTIC_CLAIM_IDENTITY_DOMAIN,
         identity_sources: "statement, domain, assumptions, exact units, no-claim",
         binding: "semantic root excludes execution budget/seed/version/capability context",
@@ -2648,7 +3198,7 @@ pub const AUTHORITY_CATALOG_ROWS: &[AuthorityCatalogRow] = &[
     },
     AuthorityCatalogRow {
         object_kind: "claim-lane-binding",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: CLAIM_LANE_BINDING_IDENTITY_DOMAIN,
         identity_sources: "statement/domain/assumption roots, validated lane, binder, artifact",
         binding: "claim instances reject a binding minted for another structured claim",
@@ -2656,7 +3206,7 @@ pub const AUTHORITY_CATALOG_ROWS: &[AuthorityCatalogRow] = &[
     },
     AuthorityCatalogRow {
         object_kind: "claim-instance",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: CLAIM_INSTANCE_IDENTITY_DOMAIN,
         identity_sources: "semantic claim, claim-lane binding, Five Explicits",
         binding: "semantic and exact-instance roots are distinct",
@@ -2664,7 +3214,7 @@ pub const AUTHORITY_CATALOG_ROWS: &[AuthorityCatalogRow] = &[
     },
     AuthorityCatalogRow {
         object_kind: "proof-lane",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: PROOF_LANE_IDENTITY_DOMAIN,
         identity_sources: "validated LaneCharter",
         binding: "reuses non-forgeable lanes::ProofLaneId",
@@ -2672,23 +3222,63 @@ pub const AUTHORITY_CATALOG_ROWS: &[AuthorityCatalogRow] = &[
     },
     AuthorityCatalogRow {
         object_kind: "evidence-ref",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: EVIDENCE_REF_IDENTITY_DOMAIN,
         identity_sources: "kind, exact claim, artifact, checker, schema",
-        binding: "satisfiability and nonvacuity wrappers are non-convertible",
+        binding: "conclusion polarity is encoded before typed wrapper construction",
         no_claim: "reference is not authenticated authority",
     },
     AuthorityCatalogRow {
-        object_kind: "nonvacuity-evidence",
-        schema_version: 1,
-        identity_domain: NONVACUITY_EVIDENCE_IDENTITY_DOMAIN,
-        identity_sources: "evidence reference, strength kind, context, fibre",
-        binding: "policy requirements match the exact strength class",
-        no_claim: "one strength class cannot widen into another without an inference rule",
+        object_kind: "satisfiable-evidence",
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
+        identity_domain: SATISFIABLE_EVIDENCE_IDENTITY_DOMAIN,
+        identity_sources: "satisfiable evidence reference",
+        binding: "type and identity both bind positive satisfiability polarity",
+        no_claim: "candidate evidence is not authenticated satisfiability authority",
+    },
+    AuthorityCatalogRow {
+        object_kind: "unsatisfiable-evidence",
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
+        identity_domain: UNSATISFIABLE_EVIDENCE_IDENTITY_DOMAIN,
+        identity_sources: "unsatisfiable evidence reference",
+        binding: "type and identity both bind negative satisfiability polarity",
+        no_claim: "candidate evidence is not authenticated unsatisfiability authority",
+    },
+    AuthorityCatalogRow {
+        object_kind: "nonvacuous-evidence",
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
+        identity_domain: NONVACUOUS_EVIDENCE_IDENTITY_DOMAIN,
+        identity_sources: "nonvacuous evidence reference, strength kind, context, fibre",
+        binding: "positive polarity and exact strength are type- and identity-bound",
+        no_claim: "one strength class cannot widen without an inference rule",
+    },
+    AuthorityCatalogRow {
+        object_kind: "vacuous-evidence",
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
+        identity_domain: VACUOUS_EVIDENCE_IDENTITY_DOMAIN,
+        identity_sources: "vacuous evidence reference, strength kind, context, fibre",
+        binding: "negative polarity and exact strength are type- and identity-bound",
+        no_claim: "one strength class cannot widen without an inference rule",
+    },
+    AuthorityCatalogRow {
+        object_kind: "reproduction-failed-evidence",
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
+        identity_domain: REPRODUCTION_FAILED_EVIDENCE_IDENTITY_DOMAIN,
+        identity_sources: "reproduction-failed evidence reference",
+        binding: "type and identity both bind failed-reproduction polarity",
+        no_claim: "failure evidence is not authenticated adjudication",
+    },
+    AuthorityCatalogRow {
+        object_kind: "reproduced-evidence",
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
+        identity_domain: REPRODUCED_EVIDENCE_IDENTITY_DOMAIN,
+        identity_sources: "reproduced evidence reference",
+        binding: "type and identity both bind successful-reproduction polarity",
+        no_claim: "reproduction is distinct from proof and admission",
     },
     AuthorityCatalogRow {
         object_kind: "evidence-state",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: EVIDENCE_STATE_IDENTITY_DOMAIN,
         identity_sources: "exact evidence reference, predecessor, lifecycle/cancellation fields",
         binding: "exclusive transitions replace the token; terminal states cannot revive",
@@ -2696,15 +3286,31 @@ pub const AUTHORITY_CATALOG_ROWS: &[AuthorityCatalogRow] = &[
     },
     AuthorityCatalogRow {
         object_kind: "authority-state",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: AUTHORITY_STATE_IDENTITY_DOMAIN,
         identity_sources: "exact claim and all orthogonal authority axes",
-        binding: "validated product state with conservative meet",
+        binding: "split scientific/exact refinement, clear runtime substitution, deny-biased meet",
         no_claim: "descriptive classifications are not authenticated authority",
     },
     AuthorityCatalogRow {
+        object_kind: "exact-instance-decision",
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
+        identity_domain: EXACT_INSTANCE_DECISION_IDENTITY_DOMAIN,
+        identity_sources: "claim, policy, checker, verdict, artifact, schema",
+        binding: "runtime validation requires admitted polarity and exact field agreement",
+        no_claim: "decision candidate is not an authenticated admission receipt",
+    },
+    AuthorityCatalogRow {
+        object_kind: "invalidation-binding",
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
+        identity_domain: INVALIDATION_BINDING_IDENTITY_DOMAIN,
+        identity_sources: "target claim/state/head/generation and verified tombstone",
+        binding: "private constructor binds the exact live predecessor atomically",
+        no_claim: "binding is not cryptographic receipt authentication",
+    },
+    AuthorityCatalogRow {
         object_kind: "inference-rule",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: INFERENCE_RULE_IDENTITY_DOMAIN,
         identity_sources: "name, version, definition artifact",
         binding: "default rule set is empty",
@@ -2712,7 +3318,7 @@ pub const AUTHORITY_CATALOG_ROWS: &[AuthorityCatalogRow] = &[
     },
     AuthorityCatalogRow {
         object_kind: "support-edge",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: SUPPORT_EDGE_IDENTITY_DOMAIN,
         identity_sources: "source state, target claim/lane, rule, evidence",
         binding: "exact endpoint and rule identities",
@@ -2720,7 +3326,7 @@ pub const AUTHORITY_CATALOG_ROWS: &[AuthorityCatalogRow] = &[
     },
     AuthorityCatalogRow {
         object_kind: "attack-edge",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: ATTACK_EDGE_IDENTITY_DOMAIN,
         identity_sources: "candidate, target claim/lane, evidence",
         binding: "candidate target/domain must match",
@@ -2728,7 +3334,7 @@ pub const AUTHORITY_CATALOG_ROWS: &[AuthorityCatalogRow] = &[
     },
     AuthorityCatalogRow {
         object_kind: "counterexample-candidate",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: COUNTEREXAMPLE_IDENTITY_DOMAIN,
         identity_sources: "target claim/domain and counterexample evidence",
         binding: "exact candidate-to-domain identity",
@@ -2736,7 +3342,7 @@ pub const AUTHORITY_CATALOG_ROWS: &[AuthorityCatalogRow] = &[
     },
     AuthorityCatalogRow {
         object_kind: "counterexample-adjudication",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: ADJUDICATION_IDENTITY_DOMAIN,
         identity_sources: "candidate, target, verdict, adjudication evidence",
         binding: "only genuine verdict can derive a tombstone candidate",
@@ -2744,15 +3350,23 @@ pub const AUTHORITY_CATALOG_ROWS: &[AuthorityCatalogRow] = &[
     },
     AuthorityCatalogRow {
         object_kind: "revocation-tombstone",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: REVOCATION_IDENTITY_DOMAIN,
         identity_sources: "target state, genuine adjudication, reason, evidence",
         binding: "permanent exact-state invalidation",
         no_claim: "descriptive tombstone is not an authenticated revocation receipt",
     },
     AuthorityCatalogRow {
+        object_kind: "verified-revocation-tombstone",
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
+        identity_domain: VERIFIED_REVOCATION_IDENTITY_DOMAIN,
+        identity_sources: "authenticated tombstone candidate, target head and generation",
+        binding: "opaque wrapper has no public minting constructor",
+        no_claim: "wrapper alone makes no cryptographic-authority claim",
+    },
+    AuthorityCatalogRow {
         object_kind: "capability-policy",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: CAPABILITY_POLICY_IDENTITY_DOMAIN,
         identity_sources: "axis/strength requirements, capabilities, accepted assumptions/no-claims",
         binding: "every guard changes policy identity",
@@ -2760,7 +3374,7 @@ pub const AUTHORITY_CATALOG_ROWS: &[AuthorityCatalogRow] = &[
     },
     AuthorityCatalogRow {
         object_kind: "checker-decision",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: CHECKER_DECISION_IDENTITY_DOMAIN,
         identity_sources: "claim, authority, policy, checker, verdict, artifact, cancellation",
         binding: "public candidate is exact data; opaque decision has no public Phase 0B-A mint",
@@ -2768,7 +3382,7 @@ pub const AUTHORITY_CATALOG_ROWS: &[AuthorityCatalogRow] = &[
     },
     AuthorityCatalogRow {
         object_kind: "authority-head",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: AUTHORITY_HEAD_IDENTITY_DOMAIN,
         identity_sources: "claim, exact state, invalidation, generation, predecessor head",
         binding: "atomic advancement preserves permanent invalidation and replaces the head token",
@@ -2776,7 +3390,7 @@ pub const AUTHORITY_CATALOG_ROWS: &[AuthorityCatalogRow] = &[
     },
     AuthorityCatalogRow {
         object_kind: "runtime-admission",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: RUNTIME_ADMISSION_IDENTITY_DOMAIN,
         identity_sources: "claim, authority, policy, checker decision, current head identity/generation",
         binding: "positive typestate plus exact product-policy and live-head validation",
@@ -2784,10 +3398,10 @@ pub const AUTHORITY_CATALOG_ROWS: &[AuthorityCatalogRow] = &[
     },
     AuthorityCatalogRow {
         object_kind: "authority-migration",
-        schema_version: 1,
+        schema_version: AUTHORITY_CATALOG_SCHEMA_VERSION,
         identity_domain: AUTHORITY_MIGRATION_IDENTITY_DOMAIN,
         identity_sources: "legacy schema/record/rank/booleans and explicit demotions",
-        binding: "v0 ambiguity demotes to v1 Unknown axes",
+        binding: "v0 ambiguity demotes to v2 Unknown axes; persisted v1 is refused",
         no_claim: "migration never restores legacy positive authority",
     },
 ];
@@ -2807,8 +3421,13 @@ pub fn authority_catalog_markdown_rows() -> String {
     for row in AUTHORITY_CATALOG_ROWS {
         writeln!(
             out,
-            "| `{}` | `{}` | {} | {} | {} |",
-            row.object_kind, row.identity_domain, row.identity_sources, row.binding, row.no_claim,
+            "| `{}` | `{}` | `{}` | {} | {} | {} |",
+            row.object_kind,
+            row.schema_version,
+            row.identity_domain,
+            row.identity_sources,
+            row.binding,
+            row.no_claim,
         )
         .expect("writing to a String is infallible");
     }
@@ -2821,7 +3440,7 @@ pub fn authority_catalog_json() -> String {
     use core::fmt::Write as _;
 
     let mut out =
-        String::from("{\"schema\":\"frankensim-authority-catalog-v1\",\"algebra_version\":");
+        String::from("{\"schema\":\"frankensim-authority-catalog-v2\",\"algebra_version\":");
     write!(out, "{AUTHORITY_ALGEBRA_VERSION},\"rows\":[")
         .expect("writing to a String is infallible");
     for (index, row) in AUTHORITY_CATALOG_ROWS.iter().enumerate() {
@@ -3376,22 +3995,29 @@ impl AuthorityHead {
     }
 
     #[allow(dead_code)]
-    fn advance(&mut self, state: &AuthorityState) -> Result<(), AuthorityError> {
-        if state.claim.identity != self.claim {
+    fn advance(
+        &mut self,
+        current: &AuthorityState,
+        successor_state: &AuthorityState,
+    ) -> Result<(), AuthorityError> {
+        if self.state != current.identity || self.claim != current.claim.identity {
+            return Err(AuthorityError::IdentityMismatch {
+                what: "authority-head predecessor is stale or belongs to another claim",
+            });
+        }
+        if successor_state.claim.identity != self.claim {
             return Err(AuthorityError::IdentityMismatch {
                 what: "authority-head successor belongs to another claim",
             });
         }
-        match (self.invalidation, state.invalidation) {
-            (InvalidationState::Clear, _) => {}
-            (InvalidationState::Invalidated(current), InvalidationState::Invalidated(next))
-                if current == next => {}
-            (InvalidationState::Invalidated(_), _) => {
-                return Err(AuthorityError::IllegalTransition {
-                    from: "invalidated-authority-head",
-                    to: state.invalidation.code(),
-                });
-            }
+        if !self.invalidation.is_clear()
+            || !current.invalidation.is_clear()
+            || !successor_state.invalidation.is_clear()
+        {
+            return Err(AuthorityError::IllegalTransition {
+                from: self.invalidation.code(),
+                to: successor_state.invalidation.code(),
+            });
         }
         let generation = self
             .generation
@@ -3401,13 +4027,77 @@ impl AuthorityHead {
             })?;
         let successor = Self::from_parts(
             self.claim,
-            state.identity,
-            state.invalidation,
+            successor_state.identity,
+            successor_state.invalidation,
             generation,
             Some(self.identity),
         );
         *self = successor;
         Ok(())
+    }
+
+    /// Atomically derive the invalidated state and advance this exact live
+    /// head. The authenticated wrapper has no public constructor in Phase
+    /// 0B-A; durable receipt verification owns that boundary.
+    #[allow(dead_code)]
+    fn revoke(
+        &mut self,
+        current: &AuthorityState,
+        tombstone: &VerifiedRevocationTombstone,
+    ) -> Result<AuthorityState, AuthorityError> {
+        if self.state != current.identity || self.claim != current.claim.identity {
+            return Err(AuthorityError::IdentityMismatch {
+                what: "revocation predecessor is not the current exact authority head",
+            });
+        }
+        if !self.invalidation.is_clear() || !current.invalidation.is_clear() {
+            return Err(AuthorityError::IllegalTransition {
+                from: "invalidated-authority-head",
+                to: "invalidated-authority-head",
+            });
+        }
+        if tombstone.target_claim != self.claim
+            || tombstone.target_state != self.state
+            || tombstone.target_head != self.identity
+            || tombstone.target_generation != self.generation
+        {
+            return Err(AuthorityError::IdentityMismatch {
+                what: "verified tombstone does not target the current exact authority head",
+            });
+        }
+        let generation = self
+            .generation
+            .checked_add(1)
+            .ok_or(AuthorityError::InvalidValue {
+                what: "authority-head generation overflow",
+            })?;
+        let binding = InvalidationBinding::new(
+            self.claim,
+            self.state,
+            self.identity,
+            self.generation,
+            tombstone.identity,
+        );
+        let invalidated = AuthorityState::from_axes(
+            current.claim.clone(),
+            current.truth,
+            current.satisfiability,
+            current.nonvacuity,
+            ExactInstanceAdmission::NotEvaluated,
+            current.kernel,
+            current.scale,
+            current.reproduction,
+            InvalidationState::invalidated(binding),
+        )?;
+        let successor = Self::from_parts(
+            self.claim,
+            invalidated.identity,
+            invalidated.invalidation,
+            generation,
+            Some(self.identity),
+        );
+        *self = successor;
+        Ok(invalidated)
     }
 
     fn from_parts(
@@ -3421,11 +4111,11 @@ impl AuthorityHead {
         bytes.u32(1, AUTHORITY_ALGEBRA_VERSION);
         bytes.hash(2, *claim.as_hash());
         bytes.hash(3, *state.as_hash());
-        match invalidation {
-            InvalidationState::Clear => bytes.u8(4, 0),
-            InvalidationState::Invalidated(revocation) => {
+        match invalidation.binding() {
+            None => bytes.u8(4, 0),
+            Some(binding) => {
                 bytes.u8(4, 1);
-                bytes.hash(5, *revocation.as_hash());
+                bytes.hash(5, *binding.identity.as_hash());
             }
         }
         bytes.u64(6, generation);
@@ -3604,14 +4294,30 @@ fn validate_runtime_candidate(
             what: "checker candidate does not bind claim, authority state, and policy exactly",
         });
     }
-    if matches!(state.invalidation, InvalidationState::Invalidated(_)) {
+    if !state.invalidation.is_clear() {
         return Err(AuthorityError::RuntimeRequirementNotMet {
             requirement: "not-invalidated",
         });
     }
-    if !state.exact_admission.supports_admission() {
-        return Err(AuthorityError::RuntimeRequirementNotMet {
-            requirement: "exact-instance-admitted",
+    let exact_decision = match state.exact_admission {
+        ExactInstanceAdmission::Admitted(decision)
+            if decision.verdict == ExactInstanceVerdict::Admitted =>
+        {
+            decision
+        }
+        _ => {
+            return Err(AuthorityError::RuntimeRequirementNotMet {
+                requirement: "exact-instance-admitted",
+            });
+        }
+    };
+    if exact_decision.claim != state.claim.identity
+        || exact_decision.policy != policy.identity
+        || exact_decision.checker != candidate.checker
+        || exact_decision.artifact != candidate.decision_artifact
+    {
+        return Err(AuthorityError::IdentityMismatch {
+            what: "exact-instance admission does not bind the runtime claim, policy, checker, and decision artifact exactly",
         });
     }
     match policy.truth {
@@ -3633,7 +4339,7 @@ fn validate_runtime_candidate(
         _ => {}
     }
     if state.truth == TruthState::ConditionalProof {
-        for assumption in &state.claim.assumptions.entries {
+        for assumption in state.claim.assumptions.assumptions() {
             if policy
                 .accepted_assumptions
                 .binary_search(assumption)
@@ -3698,14 +4404,37 @@ fn validate_runtime_candidate(
     Ok(())
 }
 
-fn validate_admission_hash(admission: ExactInstanceAdmission) -> Result<(), AuthorityError> {
+fn validate_exact_instance_admission(
+    claim: ClaimInstanceId,
+    admission: ExactInstanceAdmission,
+) -> Result<(), AuthorityError> {
     match admission {
         ExactInstanceAdmission::NotEvaluated => Ok(()),
-        ExactInstanceAdmission::Refused(identity) => {
-            require_hash("exact-instance refusal", identity).map(|_| ())
+        ExactInstanceAdmission::Refused(decision) => {
+            if decision.claim != claim {
+                return Err(AuthorityError::IdentityMismatch {
+                    what: "exact-instance refusal targets another claim",
+                });
+            }
+            if decision.verdict != ExactInstanceVerdict::Refused {
+                return Err(AuthorityError::IncompatibleAxes {
+                    what: "exact-instance refusal variant carries an admitted verdict",
+                });
+            }
+            Ok(())
         }
-        ExactInstanceAdmission::Admitted(identity) => {
-            require_hash("exact-instance admission", identity).map(|_| ())
+        ExactInstanceAdmission::Admitted(decision) => {
+            if decision.claim != claim {
+                return Err(AuthorityError::IdentityMismatch {
+                    what: "exact-instance admission targets another claim",
+                });
+            }
+            if decision.verdict != ExactInstanceVerdict::Admitted {
+                return Err(AuthorityError::IncompatibleAxes {
+                    what: "exact-instance admission variant carries a refused verdict",
+                });
+            }
+            Ok(())
         }
     }
 }
@@ -3716,13 +4445,21 @@ fn validate_satisfiability_binding(
 ) -> Result<(), AuthorityError> {
     match state {
         SatisfiabilityState::Unknown => Ok(()),
-        SatisfiabilityState::Satisfiable(evidence)
-        | SatisfiabilityState::Unsatisfiable(evidence) => {
+        SatisfiabilityState::Satisfiable(evidence) => {
             if evidence.evidence().claim() == claim {
                 Ok(())
             } else {
                 Err(AuthorityError::IdentityMismatch {
                     what: "satisfiability evidence targets another claim",
+                })
+            }
+        }
+        SatisfiabilityState::Unsatisfiable(evidence) => {
+            if evidence.evidence().claim() == claim {
+                Ok(())
+            } else {
+                Err(AuthorityError::IdentityMismatch {
+                    what: "unsatisfiability evidence targets another claim",
                 })
             }
         }
@@ -3735,12 +4472,21 @@ fn validate_nonvacuity_binding(
 ) -> Result<(), AuthorityError> {
     match state {
         NonvacuityState::Unknown => Ok(()),
-        NonvacuityState::Nonvacuous(evidence) | NonvacuityState::Vacuous(evidence) => {
+        NonvacuityState::Nonvacuous(evidence) => {
             if evidence.evidence().claim() == claim {
                 Ok(())
             } else {
                 Err(AuthorityError::IdentityMismatch {
                     what: "nonvacuity evidence targets another claim",
+                })
+            }
+        }
+        NonvacuityState::Vacuous(evidence) => {
+            if evidence.evidence().claim() == claim {
+                Ok(())
+            } else {
+                Err(AuthorityError::IdentityMismatch {
+                    what: "vacuity evidence targets another claim",
                 })
             }
         }
@@ -3764,9 +4510,24 @@ fn scale_evidence(state: ScaleState) -> Option<EvidenceRef> {
 fn reproduction_evidence(state: ReproductionState) -> Option<EvidenceRef> {
     match state {
         ReproductionState::NotAttempted => None,
-        ReproductionState::Failed(evidence) | ReproductionState::Reproduced(evidence) => {
-            Some(evidence)
-        }
+        ReproductionState::Failed(evidence) => Some(evidence.evidence()),
+        ReproductionState::Reproduced(evidence) => Some(evidence.evidence()),
+    }
+}
+
+fn validate_reproduction_binding(
+    claim: ClaimInstanceId,
+    state: ReproductionState,
+) -> Result<(), AuthorityError> {
+    let Some(evidence) = reproduction_evidence(state) else {
+        return Ok(());
+    };
+    if evidence.claim() == claim {
+        Ok(())
+    } else {
+        Err(AuthorityError::IdentityMismatch {
+            what: "reproduction conclusion targets another claim",
+        })
     }
 }
 
@@ -3806,11 +4567,11 @@ fn encode_reproduction(bytes: &mut CanonicalBytes, tag: u8, state: ReproductionS
         ReproductionState::NotAttempted => bytes.u8(tag, 0),
         ReproductionState::Failed(evidence) => {
             bytes.u8(tag, 1);
-            bytes.hash(tag + 1, *evidence.identity.as_hash());
+            bytes.hash(tag + 1, *evidence.identity().as_hash());
         }
         ReproductionState::Reproduced(evidence) => {
             bytes.u8(tag, 2);
-            bytes.hash(tag + 1, *evidence.identity.as_hash());
+            bytes.hash(tag + 1, *evidence.identity().as_hash());
         }
     }
 }
@@ -3828,14 +4589,6 @@ fn optional_evidence_dominates(
 
 fn reproduction_dominates(current: ReproductionState, required: ReproductionState) -> bool {
     required == ReproductionState::NotAttempted || current == required
-}
-
-fn invalidation_dominates(current: InvalidationState, required: InvalidationState) -> bool {
-    current == required
-        || matches!(
-            (current, required),
-            (InvalidationState::Clear, InvalidationState::Invalidated(_))
-        )
 }
 
 mod grant_sealed {
@@ -3983,7 +4736,7 @@ impl SupportEdge {
         rule: &InferenceRule,
         evidence: EvidenceRef,
     ) -> Result<Self, AuthorityError> {
-        if matches!(source.invalidation, InvalidationState::Invalidated(_)) {
+        if !source.invalidation.is_clear() {
             return Err(AuthorityError::IncompatibleAxes {
                 what: "invalidated authority cannot support downstream authority",
             });
@@ -4340,29 +5093,82 @@ impl RevocationTombstone {
     }
 }
 
-impl AuthorityState {
-    /// Return the permanently invalidated successor.  The original state is
-    /// immutable and remains replayable; it cannot be restored in place.
-    pub fn invalidate(
-        &self,
-        tombstone: &RevocationTombstone,
-    ) -> Result<AuthorityState, AuthorityError> {
-        if tombstone.target_claim != self.claim.identity || tombstone.target_state != self.identity
-        {
+/// Receipt-authenticated revocation token. The public type is inspectable but
+/// has no public constructor; Phase 0B-B durable receipt verification is the
+/// only intended minting boundary. This wrapper makes no cryptographic claim
+/// by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerifiedRevocationTombstone {
+    target_claim: ClaimInstanceId,
+    target_state: AuthorityStateId,
+    target_head: AuthorityHeadId,
+    target_generation: u64,
+    candidate: RevocationId,
+    identity: VerifiedRevocationId,
+}
+
+impl VerifiedRevocationTombstone {
+    #[allow(dead_code)]
+    fn from_authenticated_candidate(
+        candidate: &RevocationTombstone,
+        head: &AuthorityHead,
+    ) -> Result<Self, AuthorityError> {
+        if candidate.target_claim != head.claim || candidate.target_state != head.state {
             return Err(AuthorityError::IdentityMismatch {
-                what: "revocation tombstone does not bind this authority state",
+                what: "revocation receipt does not target the exact live authority head",
             });
         }
-        AuthorityState::new(
-            self.claim.clone(),
-            self.truth,
-            self.satisfiability,
-            self.nonvacuity,
-            ExactInstanceAdmission::NotEvaluated,
-            self.kernel,
-            self.scale,
-            self.reproduction,
-            InvalidationState::Invalidated(tombstone.identity),
-        )
+        if !head.invalidation.is_clear() {
+            return Err(AuthorityError::IllegalTransition {
+                from: "invalidated-authority-head",
+                to: "verified-revocation",
+            });
+        }
+        let mut bytes = CanonicalBytes::default();
+        bytes.u32(1, AUTHORITY_ALGEBRA_VERSION);
+        bytes.hash(2, *candidate.identity.as_hash());
+        bytes.hash(3, *head.identity.as_hash());
+        bytes.u64(4, head.generation);
+        Ok(Self {
+            target_claim: candidate.target_claim,
+            target_state: candidate.target_state,
+            target_head: head.identity,
+            target_generation: head.generation,
+            candidate: candidate.identity,
+            identity: VerifiedRevocationId(fs_blake3::hash_domain(
+                VERIFIED_REVOCATION_IDENTITY_DOMAIN,
+                &bytes.0,
+            )),
+        })
+    }
+
+    #[must_use]
+    pub fn target_claim(&self) -> ClaimInstanceId {
+        self.target_claim
+    }
+
+    #[must_use]
+    pub fn target_state(&self) -> AuthorityStateId {
+        self.target_state
+    }
+
+    #[must_use]
+    pub fn target_head(&self) -> AuthorityHeadId {
+        self.target_head
+    }
+
+    #[must_use]
+    pub fn target_generation(&self) -> u64 {
+        self.target_generation
+    }
+
+    #[must_use]
+    pub fn candidate(&self) -> RevocationId {
+        self.candidate
+    }
+
+    #[must_use]
+    pub fn identity(&self) -> VerifiedRevocationId {
+        self.identity
     }
 }

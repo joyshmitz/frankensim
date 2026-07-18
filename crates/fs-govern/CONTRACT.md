@@ -23,7 +23,7 @@ support/threat graph and deterministic allocation-candidate planner.
 
 ## Phase 0B-A evidence-contract algebra (`evidence_contract` module)
 
-`AUTHORITY_ALGEBRA_VERSION = 1` is the pure common contract consumed by later
+`AUTHORITY_ALGEBRA_VERSION = 2` is the pure common contract consumed by later
 schema, graph, checker, ledger, and runtime layers. It owns canonical semantic
 identity and authority composition; it performs no filesystem/network I/O,
 signature verification, durable persistence, or graph traversal. Constructors,
@@ -41,39 +41,50 @@ The code-owned `AUTHORITY_CATALOG_ROWS` table is the source of
 `authority_catalog_json()`. The contract drift suite requires every row below
 and its domain to remain represented here:
 
-| Object kind | Identity domain | Identity sources | Binding | No claim |
-| --- | --- | --- | --- | --- |
-| `claim-statement` | `frankensim.fs-govern.claim-statement.v1` | canonical conjunction clauses | clause-order invariant; clause mutation moves identity | does not prove statement truth |
-| `quantified-domain` | `frankensim.fs-govern.quantified-domain.v1` | named product bindings, quantifiers, domain predicates | binding-order invariant; quantifier mutation moves identity | does not prove satisfiability or nonvacuity |
-| `assumption-set` | `frankensim.fs-govern.assumption-set.v1` | canonical assumption conjunction | assumption-order invariant; semantic mutation moves identity | does not discharge assumptions |
-| `semantic-claim` | `frankensim.fs-govern.semantic-claim.v1` | statement, domain, assumptions, exact units, no-claim | semantic root excludes execution budget/seed/version/capability context | semantic identity is not an exact execution instance |
-| `claim-lane-binding` | `frankensim.fs-govern.claim-lane-binding.v1` | statement/domain/assumption roots, validated lane, binder, artifact | claim instances reject a binding minted for another structured claim | binding data does not authenticate a dishonest binder |
-| `claim-instance` | `frankensim.fs-govern.claim-instance.v1` | semantic claim, claim-lane binding, Five Explicits | semantic and exact-instance roots are distinct | content identity is not admission |
-| `proof-lane` | `frankensim.fs-govern.proof-lane.v1` | validated LaneCharter | reuses non-forgeable lanes::ProofLaneId | lane identity is not proof |
-| `evidence-ref` | `frankensim.fs-govern.evidence-ref.v1` | kind, exact claim, artifact, checker, schema | satisfiability and nonvacuity wrappers are non-convertible | reference is not authenticated authority |
-| `nonvacuity-evidence` | `frankensim.fs-govern.nonvacuity-evidence.v1` | evidence reference, strength kind, context, fibre | policy requirements match the exact strength class | one strength class cannot widen into another without an inference rule |
-| `evidence-state` | `frankensim.fs-govern.evidence-state.v1` | exact evidence reference, predecessor, lifecycle/cancellation fields | exclusive transitions replace the token; terminal states cannot revive | lifecycle completion does not establish statement truth |
-| `authority-state` | `frankensim.fs-govern.authority-state.v1` | exact claim and all orthogonal authority axes | validated product state with conservative meet | descriptive classifications are not authenticated authority |
-| `inference-rule` | `frankensim.fs-govern.inference-rule.v1` | name, version, definition artifact | default rule set is empty | registered rule is not assumed sound |
-| `support-edge` | `frankensim.fs-govern.support-edge.v1` | source state, target claim/lane, rule, evidence | exact endpoint and rule identities | candidate edge is neither authenticated nor proof of graph acyclicity |
-| `attack-edge` | `frankensim.fs-govern.attack-edge.v1` | candidate, target claim/lane, evidence | candidate target/domain must match | attack is not adjudication |
-| `counterexample-candidate` | `frankensim.fs-govern.counterexample.v1` | target claim/domain and counterexample evidence | exact candidate-to-domain identity | candidate is not a refutation |
-| `counterexample-adjudication` | `frankensim.fs-govern.counterexample-adjudication.v1` | candidate, target, verdict, adjudication evidence | only genuine verdict can derive a tombstone candidate | candidate adjudication cannot advance an authoritative head |
-| `revocation-tombstone` | `frankensim.fs-govern.revocation-tombstone.v1` | target state, genuine adjudication, reason, evidence | permanent exact-state invalidation | descriptive tombstone is not an authenticated revocation receipt |
-| `capability-policy` | `frankensim.fs-govern.capability-policy.v1` | axis/strength requirements, capabilities, accepted assumptions/no-claims | every guard changes policy identity | policy data is neither capability possession nor checker authority |
-| `checker-decision` | `frankensim.fs-govern.checker-decision.v1` | claim, authority, policy, checker, verdict, artifact, cancellation | public candidate is exact data; opaque decision has no public Phase 0B-A mint | candidate verdict is neither authentication nor statement truth |
-| `authority-head` | `frankensim.fs-govern.authority-head.v1` | claim, exact state, invalidation, generation, predecessor head | atomic advancement preserves permanent invalidation and replaces the head token | durable single-head authentication is Phase 0B-B scope |
-| `runtime-admission` | `frankensim.fs-govern.runtime-admission.v1` | claim, authority, policy, checker decision, current head identity/generation | positive typestate plus exact product-policy and live-head validation | does not widen claim scope or survive revocation |
-| `authority-migration` | `frankensim.fs-govern.authority-migration.v1` | legacy schema/record/rank/booleans and explicit demotions | v0 ambiguity demotes to v1 Unknown axes | migration never restores legacy positive authority |
+| Object kind | Schema version | Identity domain | Identity sources | Binding | No claim |
+| --- | --- | --- | --- | --- | --- |
+| `claim-statement` | `2` | `frankensim.fs-govern.claim-statement.v2` | canonical conjunction clauses | clause-order invariant; clause mutation moves identity | does not prove statement truth |
+| `quantified-domain` | `2` | `frankensim.fs-govern.quantified-domain.v2` | ordered quantifier blocks, explicit block commutativity, domain predicates | block order is semantic; only declared-commutative intra-block variables sort | does not prove satisfiability or nonvacuity |
+| `assumption-set` | `2` | `frankensim.fs-govern.assumption-set.v2` | canonical assumption conjunction | assumption-order invariant; semantic mutation moves identity | does not discharge assumptions |
+| `semantic-claim` | `2` | `frankensim.fs-govern.semantic-claim.v2` | statement, domain, assumptions, exact units, no-claim | semantic root excludes execution budget/seed/version/capability context | semantic identity is not an exact execution instance |
+| `claim-lane-binding` | `2` | `frankensim.fs-govern.claim-lane-binding.v2` | statement/domain/assumption roots, validated lane, binder, artifact | claim instances reject a binding minted for another structured claim | binding data does not authenticate a dishonest binder |
+| `claim-instance` | `2` | `frankensim.fs-govern.claim-instance.v2` | semantic claim, claim-lane binding, Five Explicits | semantic and exact-instance roots are distinct | content identity is not admission |
+| `proof-lane` | `2` | `frankensim.fs-govern.proof-lane.v1` | validated LaneCharter | reuses non-forgeable lanes::ProofLaneId | lane identity is not proof |
+| `evidence-ref` | `2` | `frankensim.fs-govern.evidence-ref.v2` | kind, exact claim, artifact, checker, schema | conclusion polarity is encoded before typed wrapper construction | reference is not authenticated authority |
+| `satisfiable-evidence` | `2` | `frankensim.fs-govern.satisfiable-evidence.v2` | satisfiable evidence reference | type and identity both bind positive satisfiability polarity | candidate evidence is not authenticated satisfiability authority |
+| `unsatisfiable-evidence` | `2` | `frankensim.fs-govern.unsatisfiable-evidence.v2` | unsatisfiable evidence reference | type and identity both bind negative satisfiability polarity | candidate evidence is not authenticated unsatisfiability authority |
+| `nonvacuous-evidence` | `2` | `frankensim.fs-govern.nonvacuous-evidence.v2` | nonvacuous evidence reference, strength kind, context, fibre | positive polarity and exact strength are type- and identity-bound | one strength class cannot widen without an inference rule |
+| `vacuous-evidence` | `2` | `frankensim.fs-govern.vacuous-evidence.v2` | vacuous evidence reference, strength kind, context, fibre | negative polarity and exact strength are type- and identity-bound | one strength class cannot widen without an inference rule |
+| `reproduction-failed-evidence` | `2` | `frankensim.fs-govern.reproduction-failed-evidence.v2` | reproduction-failed evidence reference | type and identity both bind failed-reproduction polarity | failure evidence is not authenticated adjudication |
+| `reproduced-evidence` | `2` | `frankensim.fs-govern.reproduced-evidence.v2` | reproduced evidence reference | type and identity both bind successful-reproduction polarity | reproduction is distinct from proof and admission |
+| `evidence-state` | `2` | `frankensim.fs-govern.evidence-state.v2` | exact evidence reference, predecessor, lifecycle/cancellation fields | exclusive transitions replace the token; terminal states cannot revive | lifecycle completion does not establish statement truth |
+| `authority-state` | `2` | `frankensim.fs-govern.authority-state.v2` | exact claim and all orthogonal authority axes | split scientific/exact refinement, clear runtime substitution, deny-biased meet | descriptive classifications are not authenticated authority |
+| `exact-instance-decision` | `2` | `frankensim.fs-govern.exact-instance-decision.v2` | claim, policy, checker, verdict, artifact, schema | runtime validation requires admitted polarity and exact field agreement | decision candidate is not an authenticated admission receipt |
+| `invalidation-binding` | `2` | `frankensim.fs-govern.invalidation-binding.v2` | target claim/state/head/generation and verified tombstone | private constructor binds the exact live predecessor atomically | binding is not cryptographic receipt authentication |
+| `inference-rule` | `2` | `frankensim.fs-govern.inference-rule.v2` | name, version, definition artifact | default rule set is empty | registered rule is not assumed sound |
+| `support-edge` | `2` | `frankensim.fs-govern.support-edge.v2` | source state, target claim/lane, rule, evidence | exact endpoint and rule identities | candidate edge is neither authenticated nor proof of graph acyclicity |
+| `attack-edge` | `2` | `frankensim.fs-govern.attack-edge.v2` | candidate, target claim/lane, evidence | candidate target/domain must match | attack is not adjudication |
+| `counterexample-candidate` | `2` | `frankensim.fs-govern.counterexample.v2` | target claim/domain and counterexample evidence | exact candidate-to-domain identity | candidate is not a refutation |
+| `counterexample-adjudication` | `2` | `frankensim.fs-govern.counterexample-adjudication.v2` | candidate, target, verdict, adjudication evidence | only genuine verdict can derive a tombstone candidate | candidate adjudication cannot advance an authoritative head |
+| `revocation-tombstone` | `2` | `frankensim.fs-govern.revocation-tombstone.v2` | target state, genuine adjudication, reason, evidence | permanent exact-state invalidation | descriptive tombstone is not an authenticated revocation receipt |
+| `verified-revocation-tombstone` | `2` | `frankensim.fs-govern.verified-revocation-tombstone.v2` | authenticated tombstone candidate, target head and generation | opaque wrapper has no public minting constructor | wrapper alone makes no cryptographic-authority claim |
+| `capability-policy` | `2` | `frankensim.fs-govern.capability-policy.v2` | axis/strength requirements, capabilities, accepted assumptions/no-claims | every guard changes policy identity | policy data is neither capability possession nor checker authority |
+| `checker-decision` | `2` | `frankensim.fs-govern.checker-decision.v2` | claim, authority, policy, checker, verdict, artifact, cancellation | public candidate is exact data; opaque decision has no public Phase 0B-A mint | candidate verdict is neither authentication nor statement truth |
+| `authority-head` | `2` | `frankensim.fs-govern.authority-head.v2` | claim, exact state, invalidation, generation, predecessor head | atomic advancement preserves permanent invalidation and replaces the head token | durable single-head authentication is Phase 0B-B scope |
+| `runtime-admission` | `2` | `frankensim.fs-govern.runtime-admission.v2` | claim, authority, policy, checker decision, current head identity/generation | positive typestate plus exact product-policy and live-head validation | does not widen claim scope or survive revocation |
+| `authority-migration` | `2` | `frankensim.fs-govern.authority-migration.v2` | legacy schema/record/rank/booleans and explicit demotions | v0 ambiguity demotes to v2 Unknown axes; persisted v1 is refused | migration never restores legacy positive authority |
 
 All canonical encodings are typed, tagged and length-prefixed before
 domain-separated BLAKE3. Text sets canonicalize whitespace, order and duplicate
-spellings. `QuantifiedDomain` models an order-independent product of named
-bindings; order-sensitive nested quantification belongs in a statement clause
-and therefore moves identity when changed. Unit equivalence is exact and
+spellings. `QuantifiedDomain` stores an ordered sequence of `QuantifierBlock`s.
+Block order is semantic (`forall/exists` is not `exists/forall`), adjacent
+same-kind blocks are not merged, and only a block explicitly constructed as
+commutative sorts its variables. Ordered blocks retain variable order; names
+must be globally unique across all blocks. Predicates remain a canonical
+commutative conjunction. Unit equivalence is exact and
 structural: rational scales reduce by GCD and like factor exponents combine;
 there is no heuristic alias conversion. Reordering equivalent clauses,
-assumptions, product bindings, predicates, factors, versions or capabilities
+assumptions, declared-commutative block variables, predicates, factors, versions or capabilities
 preserves identity. Changing a quantifier, assumption, unit exponent, seed,
 budget, version, capability, lane or no-claim boundary moves the appropriate
 semantic/exact root.
@@ -84,29 +95,34 @@ semantic/exact root.
 
 - truth: `Unknown | ConditionalProof | Proved | Refuted`;
 - statement satisfiability: `Unknown | Satisfiable | Unsatisfiable`, carrying
-  type-distinct `SatisfiabilityEvidence`;
-- nonvacuity: `Unknown | Nonvacuous | Vacuous`, carrying type-distinct
-  `NonvacuityEvidence` with an exact point/open-family/positive-measure/
-  scale-family/custom strength, context and fibre, and no conversion from
-  satisfiability evidence;
+  polarity-distinct `SatisfiableEvidence` or `UnsatisfiableEvidence`;
+- nonvacuity: `Unknown | Nonvacuous | Vacuous`, carrying polarity-distinct
+  `NonvacuousEvidence` or `VacuousEvidence`, each bound to an exact
+  point/open-family/positive-measure/scale-family/custom strength, context and
+  fibre, with no cross-polarity or satisfiability conversion;
 - exact-instance admission: `NotEvaluated | Refused | Admitted`, bound to the
-  exact decision/receipt identity;
+  typed `ExactInstanceDecisionCandidate` identity over exact claim, policy,
+  checker, verdict, artifact and schema;
 - proof-kernel checking: `NotChecked | KernelChecked`;
 - empirical scale qualification: `NotQualified | ScaleQualified`;
-- reproduction: `NotAttempted | Failed | Reproduced`;
-- invalidation: `Clear | Invalidated(revocation)`.
+- reproduction: `NotAttempted | Failed | Reproduced`, carrying distinct
+  `ReproductionFailedEvidence` or `ReproducedEvidence`;
+- invalidation: a private-representation `Clear` or exact
+  `InvalidationBinding` state that public fields cannot construct.
 
 The truth partial order is `Unknown <= ConditionalProof <= Proved`, with
 `Refuted` on a separate branch sharing the `Unknown` bottom. Other positive and
 negative branches likewise share their explicit unknown/not-evaluated bottom
 and require exact evidence identity when satisfying a stronger requirement.
-`conservative_meet` is the component-wise greatest lower bound and never
-strengthens either input: different receipts and incomparable positive/negative
-classifications demote to the axis bottom. This makes the represented product
-meet commutative, idempotent and associative. Different exact claims refuse
-composition; distinct invalidation roots return a structured conflict because
-v1 intentionally has no anonymous-invalidated bottom. Invalidated candidate
-data cannot pass public runtime-candidate assessment or form a support edge.
+`scientific_evidence_refines` compares only clear descriptive scientific axes;
+`exact_decision_refines` compares the exact-decision axis;
+`is_safe_runtime_substitute_for` requires both relations and two clear states.
+`deny_biased_meet` never drops invalidation, but is explicitly not a
+substitutability greatest lower bound. Lattice-law claims apply only to the
+clear descriptive evidence product. Different exact claims refuse composition;
+distinct invalidation histories return a structured conflict. Invalidated
+candidate data cannot pass public runtime-candidate assessment or form a
+support edge.
 
 Invalid combinations refuse during construction. In particular, an explicit
 assumption-bearing proof is `ConditionalProof`, not unqualified `Proved`;
@@ -118,9 +134,13 @@ identity.
 `AuthorityGrant<S>` is a sealed typestate view, but positive and refuted grant
 constructors are module-private. `CheckerDecision` likewise wraps a candidate
 only after private receipt authentication. `AuthorityHead` is non-`Clone`,
-non-`Copy`, invalidation-, generation- and predecessor-bound; validated
-advancement atomically replaces the exclusive in-process token and refuses to
-clear or replace a permanent revocation. `RuntimeAdmission` is
+non-`Copy`, invalidation-, generation- and predecessor-bound. Public
+`AuthorityState::new` constructs only clear states. A descriptive tombstone
+cannot invalidate a state: only an opaque `VerifiedRevocationTombstone` at the
+private receipt boundary can atomically bind and advance the exact current
+head. Wrong target, stale/replayed tombstones, invalidated-head transitions and
+generation overflow fail before mutation. This algebra makes no cryptographic
+authority claim. `RuntimeAdmission` is
 non-`Clone`/non-`Copy`, binds the exact
 head identity and generation, and must validate against the authoritative
 current head on every private consumption. Phase 0B-A exposes these object
@@ -131,7 +151,8 @@ decision while minting a distinct generation-bound admission.
 
 `assess_runtime_candidate()` is the public, explicitly non-authoritative policy
 surface. It validates exact claim/state/policy binding, an accepting candidate
-verdict, current descriptive admission/invalidation, truth, accepted
+verdict, an admitted exact-instance decision with exact policy/checker/artifact
+agreement, current descriptive admission/invalidation, truth, accepted
 conditional assumptions, satisfiability, exact nonvacuity strength,
 kernel/scale/reproduction guards, declared Five-Explicits capabilities and
 accepted no-claim boundaries. Its `RuntimeAssessment` result means only
@@ -142,7 +163,7 @@ Phase 0B-B's authenticated checker receipt must verify actual possession.
 ### Evidence lifecycle, adjudication, migration and extension rules
 
 `EvidenceLifecycle` binds an exact evidence reference to `EvidenceState` under
-`frankensim.fs-govern.evidence-state.v1`. The state advances only
+`frankensim.fs-govern.evidence-state.v2`. The state advances only
 `Proposed -> Checked -> Adjudicated`, or to a terminal `Failed`/`Cancelled`
 state. Cancellation requires nonzero identities for request, drain and
 finalize; terminal states cannot transition or revive. Lifecycle tokens are
@@ -153,19 +174,20 @@ explicitly Phase 0B-B.
 
 A `CounterexampleCandidate` and `AttackEdge` bind the exact target and domain
 but grant no refutation authority. Only a descriptive `GenuineCounterexample`
-`CounterexampleAdjudication` can derive a `RevocationTombstone` candidate;
-applying it creates an immutable invalidated candidate successor while
-preserving the historical pre-revocation state. Out-of-domain, artifact-defect
-and indeterminate verdicts cannot derive a tombstone. No public path turns any
-of these raw-hash candidates into an authoritative revocation or advances the
-opaque current head.
+`CounterexampleAdjudication` can derive a `RevocationTombstone` candidate.
+Out-of-domain, artifact-defect and indeterminate verdicts cannot derive one.
+The candidate itself cannot create an invalidated successor. Private receipt
+authentication produces the opaque verified wrapper consumed by the atomic
+current-head transition; no public path turns raw hashes into revocation.
 
 V0 historical records mixed rank/admission/reproduction booleans without exact
 evidence bindings. `migrate_legacy_v0` accepts only schema 0, binds the retained
 source record and every legacy field, and demotes all positive axes to
-`Unknown`/`NotEvaluated`/`NotAttempted`. Unknown or future schema versions
-refuse. Future migrations must be explicit versioned functions and may never
-widen historical authority.
+`Unknown`/`NotEvaluated`/`NotAttempted`. Persisted v1 is explicitly refused
+because its flattened mixed quantifiers and polarity-ambiguous evidence cannot
+be reinterpreted soundly; source evidence must be regenerated under v2.
+Unknown or future schema versions refuse. Future migrations must be explicit
+versioned functions and may never widen historical authority.
 
 New inference machinery enters only through a positive-version
 `InferenceRule` bound to its exact definition artifact. `DEFAULT_INFERENCE_RULES`
@@ -182,7 +204,7 @@ bounds the returned record, not transient `String` allocation during rendering.
 ### Evidence and no-claim boundary
 
 G0/G3 coverage owns canonical identity equivalence/sensitivity, partial-order
-and conservative-composition laws, invalid product states, exact binding,
+and deny-biased clear-product laws, invalid product states, exact binding,
 schema refusal, migration demotion, typed satisfiability/nonvacuity separation,
 terminal cancellation, adjudication/revocation, policy guards and bounded log
 shape. Compile-fail documentation prevents descriptive state/assessment values

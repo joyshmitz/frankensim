@@ -10,21 +10,24 @@ use fs_govern::{
         CapabilityBinding, CapabilityPolicy, CheckerDecisionCandidate, CheckerVerdict,
         ClaimInstance, ClaimLaneBinding, ClaimStatement, CounterexampleAdjudication,
         CounterexampleCandidate, CounterexampleVerdict, DomainVariable, EvidenceKind,
-        EvidenceLifecycle, EvidenceRef, EvidenceState, ExactInstanceAdmission, FiveExplicits,
-        InferenceRule, InvalidationState, KernelState, LEGACY_AUTHORITY_SCHEMA_VERSION,
-        LegacyAuthorityRankV0, LegacyAuthorityV0, MAX_AUTHORITY_LOG_BYTES,
-        NONVACUITY_EVIDENCE_IDENTITY_DOMAIN, NoClaimBoundary, NonvacuityEvidence, NonvacuityState,
-        NonvacuityStrength, QuantifiedDomain, Quantifier, ReproductionState,
-        SEMANTIC_CLAIM_IDENTITY_DOMAIN, SatisfiabilityEvidence, SatisfiabilityState, ScaleState,
-        TruthRequirement, TruthState, UnitFactor, UnitSystem, VersionBinding,
-        assess_runtime_candidate, authority_catalog_json, authority_catalog_markdown_rows,
-        authority_log_json, migrate_legacy_v0,
+        EvidenceLifecycle, EvidenceRef, EvidenceState, ExactInstanceAdmission,
+        ExactInstanceDecisionCandidate, ExactInstanceVerdict, FiveExplicits, InferenceRule,
+        InvalidationState, KernelState, LEGACY_AUTHORITY_SCHEMA_VERSION, LegacyAuthorityRankV0,
+        LegacyAuthorityV0, MAX_AUTHORITY_LOG_BYTES, NONVACUOUS_EVIDENCE_IDENTITY_DOMAIN,
+        NoClaimBoundary, NonvacuityState, NonvacuityStrength, NonvacuousEvidence, QuantifiedDomain,
+        Quantifier, QuantifierBlock, REPRODUCED_EVIDENCE_IDENTITY_DOMAIN,
+        RETIRED_AUTHORITY_SCHEMA_VERSION, ReproducedEvidence, ReproductionFailedEvidence,
+        ReproductionState, SATISFIABLE_EVIDENCE_IDENTITY_DOMAIN, SEMANTIC_CLAIM_IDENTITY_DOMAIN,
+        SatisfiabilityState, SatisfiableEvidence, ScaleState, TruthRequirement, TruthState,
+        UnitFactor, UnitSystem, UnsatisfiableEvidence, VACUOUS_EVIDENCE_IDENTITY_DOMAIN,
+        VacuousEvidence, VersionBinding, assess_runtime_candidate, authority_catalog_json,
+        authority_catalog_markdown_rows, authority_log_json, migrate_legacy_v0,
     },
 };
 
 fn hash(label: &str) -> ContentHash {
     fs_blake3::hash_domain(
-        "frankensim.fs-govern.test-evidence-contract.v1",
+        "frankensim.fs-govern.test-evidence-contract.v2",
         label.as_bytes(),
     )
 }
@@ -59,8 +62,14 @@ fn claim_with(
             .expect("statement");
     let domain = QuantifiedDomain::new(
         vec![
-            DomainVariable::new("mach", quantifier, "[0.1, 0.3]").expect("mach"),
-            DomainVariable::new("alpha", Quantifier::ForAll, "[-2 deg, 8 deg]").expect("alpha"),
+            QuantifierBlock::commutative(
+                quantifier,
+                vec![
+                    DomainVariable::new("mach", "[0.1, 0.3]").expect("mach"),
+                    DomainVariable::new("alpha", "[-2 deg, 8 deg]").expect("alpha"),
+                ],
+            )
+            .expect("commutative quantifier block"),
         ],
         &["reynolds >= 1e6", "steady inflow"],
     )
@@ -134,11 +143,38 @@ fn evidence(claim: &ClaimInstance, kind: EvidenceKind, label: &str) -> EvidenceR
     .expect("evidence")
 }
 
-fn full_state(claim: ClaimInstance, truth: TruthState) -> AuthorityState {
-    let sat =
-        SatisfiabilityEvidence::new(claim.identity(), hash("sat-artifact"), hash("sat-checker"))
-            .expect("satisfiability evidence");
-    let nonvacuity = NonvacuityEvidence::new(
+fn exact_admission(
+    claim: &ClaimInstance,
+    verdict: ExactInstanceVerdict,
+    label: &str,
+) -> ExactInstanceAdmission {
+    let policy = strict_policy(vec![
+        CapabilityBinding::new("runtime-admit", 1).expect("capability"),
+    ]);
+    let decision = ExactInstanceDecisionCandidate::new(
+        claim.identity(),
+        policy.identity(),
+        hash(&format!("{label}-checker")),
+        verdict,
+        hash(&format!("{label}-artifact")),
+        AUTHORITY_ALGEBRA_VERSION,
+    )
+    .expect("exact-instance decision");
+    match verdict {
+        ExactInstanceVerdict::Refused => ExactInstanceAdmission::Refused(decision),
+        ExactInstanceVerdict::Admitted => ExactInstanceAdmission::Admitted(decision),
+    }
+}
+
+fn full_state_for(
+    claim: ClaimInstance,
+    truth: TruthState,
+    policy: &CapabilityPolicy,
+    checker: ContentHash,
+) -> AuthorityState {
+    let sat = SatisfiableEvidence::new(claim.identity(), hash("sat-artifact"), hash("sat-checker"))
+        .expect("satisfiability evidence");
+    let nonvacuity = NonvacuousEvidence::new(
         claim.identity(),
         hash("nonvacuity-artifact"),
         hash("nonvacuity-checker"),
@@ -147,19 +183,40 @@ fn full_state(claim: ClaimInstance, truth: TruthState) -> AuthorityState {
     .expect("nonvacuity evidence");
     let kernel = evidence(&claim, EvidenceKind::KernelProof, "kernel");
     let scale = evidence(&claim, EvidenceKind::ScaleQualification, "scale");
-    let reproduction = evidence(&claim, EvidenceKind::Reproduction, "reproduction");
+    let reproduction = ReproducedEvidence::new(
+        claim.identity(),
+        hash("reproduction-artifact"),
+        hash("reproduction-checker"),
+    )
+    .expect("reproduction");
+    let admission = ExactInstanceDecisionCandidate::new(
+        claim.identity(),
+        policy.identity(),
+        checker,
+        ExactInstanceVerdict::Admitted,
+        hash("checker-decision-artifact"),
+        AUTHORITY_ALGEBRA_VERSION,
+    )
+    .expect("exact-instance admission decision");
     AuthorityState::new(
         claim,
         truth,
         SatisfiabilityState::Satisfiable(sat),
         NonvacuityState::Nonvacuous(nonvacuity),
-        ExactInstanceAdmission::Admitted(hash("exact-admission")),
+        ExactInstanceAdmission::Admitted(admission),
         KernelState::KernelChecked(kernel),
         ScaleState::ScaleQualified(scale),
         ReproductionState::Reproduced(reproduction),
         InvalidationState::Clear,
     )
     .expect("full authority state")
+}
+
+fn full_state(claim: ClaimInstance, truth: TruthState) -> AuthorityState {
+    let policy = strict_policy(vec![
+        CapabilityBinding::new("runtime-admit", 1).expect("capability"),
+    ]);
+    full_state_for(claim, truth, &policy, hash("default-checker"))
 }
 
 fn full_proved_state(claim: ClaimInstance) -> AuthorityState {
@@ -186,8 +243,14 @@ fn g3_semantic_reordering_and_exact_unit_equivalence_are_identity_stable() {
     .expect("statement");
     let domain = QuantifiedDomain::new(
         vec![
-            DomainVariable::new("alpha", Quantifier::ForAll, "[-2 deg, 8 deg]").expect("alpha"),
-            DomainVariable::new("mach", Quantifier::ForAll, "[0.1, 0.3]").expect("mach"),
+            QuantifierBlock::commutative(
+                Quantifier::ForAll,
+                vec![
+                    DomainVariable::new("alpha", "[-2 deg, 8 deg]").expect("alpha"),
+                    DomainVariable::new("mach", "[0.1, 0.3]").expect("mach"),
+                ],
+            )
+            .expect("commutative quantifier block"),
         ],
         &["steady   inflow", "reynolds >= 1e6"],
     )
@@ -293,6 +356,77 @@ fn g3_semantic_reordering_and_exact_unit_equivalence_are_identity_stable() {
 }
 
 #[test]
+fn g0_quantifier_blocks_preserve_logic_and_only_declared_products_commute() {
+    let x = || DomainVariable::new("x", "X").expect("x");
+    let y = || DomainVariable::new("y", "Y").expect("y");
+    let forall_exists = QuantifiedDomain::new(
+        vec![
+            QuantifierBlock::ordered(Quantifier::ForAll, vec![x()]).expect("forall"),
+            QuantifierBlock::ordered(Quantifier::Exists, vec![y()]).expect("exists"),
+        ],
+        &["P(x,y)", "Q(y)"],
+    )
+    .expect("forall-exists");
+    let exists_forall = QuantifiedDomain::new(
+        vec![
+            QuantifierBlock::ordered(Quantifier::Exists, vec![y()]).expect("exists"),
+            QuantifierBlock::ordered(Quantifier::ForAll, vec![x()]).expect("forall"),
+        ],
+        &["Q(y)", "P(x,y)"],
+    )
+    .expect("exists-forall");
+    assert_ne!(forall_exists.identity(), exists_forall.identity());
+
+    let product_xy = QuantifiedDomain::new(
+        vec![QuantifierBlock::commutative(Quantifier::ForAll, vec![x(), y()]).expect("product")],
+        &["P(x,y)", "Q(y)"],
+    )
+    .expect("xy product");
+    let product_yx = QuantifiedDomain::new(
+        vec![QuantifierBlock::commutative(Quantifier::ForAll, vec![y(), x()]).expect("product")],
+        &["Q(y)", "P(x,y)"],
+    )
+    .expect("yx product");
+    assert_eq!(product_xy.identity(), product_yx.identity());
+
+    let ordered_xy = QuantifiedDomain::new(
+        vec![QuantifierBlock::ordered(Quantifier::ForAll, vec![x(), y()]).expect("ordered")],
+        &[],
+    )
+    .expect("ordered xy");
+    let ordered_yx = QuantifiedDomain::new(
+        vec![QuantifierBlock::ordered(Quantifier::ForAll, vec![y(), x()]).expect("ordered")],
+        &[],
+    )
+    .expect("ordered yx");
+    assert_ne!(ordered_xy.identity(), ordered_yx.identity());
+
+    let adjacent = QuantifiedDomain::new(
+        vec![
+            QuantifierBlock::ordered(Quantifier::ForAll, vec![x()]).expect("first block"),
+            QuantifierBlock::ordered(Quantifier::ForAll, vec![y()]).expect("second block"),
+        ],
+        &[],
+    )
+    .expect("adjacent same-kind blocks");
+    assert_ne!(adjacent.identity(), product_xy.identity());
+
+    assert!(matches!(
+        QuantifiedDomain::new(
+            vec![
+                QuantifierBlock::ordered(Quantifier::ForAll, vec![x()]).expect("first"),
+                QuantifierBlock::ordered(Quantifier::Exists, vec![x()]).expect("second"),
+            ],
+            &[],
+        ),
+        Err(AuthorityError::DuplicateMember {
+            what: "domain variable",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn g3_unit_factor_permutations_cannot_change_acceptance() {
     let first = UnitSystem::new(
         1,
@@ -342,21 +476,28 @@ fn g0_claim_instance_rejects_a_binding_for_another_structured_claim() {
 #[test]
 fn g0_satisfiability_and_nonvacuity_are_distinct_axes_and_typed_evidence() {
     let claim = basic_claim();
-    let sat = SatisfiabilityEvidence::new(
+    let sat = SatisfiableEvidence::new(
         claim.identity(),
         hash("shared-artifact"),
         hash("shared-checker"),
     )
     .expect("sat");
-    let nonvacuity = NonvacuityEvidence::new(
+    let unsat = UnsatisfiableEvidence::new(
+        claim.identity(),
+        hash("shared-artifact"),
+        hash("shared-checker"),
+    )
+    .expect("unsat");
+    let nonvacuity = NonvacuousEvidence::new(
         claim.identity(),
         hash("shared-artifact"),
         hash("shared-checker"),
         scale_family_strength(),
     )
     .expect("nonvacuity");
-    assert_eq!(sat.evidence().kind(), EvidenceKind::Satisfiability);
-    assert_eq!(nonvacuity.evidence().kind(), EvidenceKind::Nonvacuity);
+    assert_eq!(sat.evidence().kind(), EvidenceKind::Satisfiable);
+    assert_eq!(unsat.evidence().kind(), EvidenceKind::Unsatisfiable);
+    assert_eq!(nonvacuity.evidence().kind(), EvidenceKind::Nonvacuous);
     assert_ne!(sat.evidence().identity(), nonvacuity.evidence().identity());
 
     let sat_only = AuthorityState::new(
@@ -389,7 +530,7 @@ fn g0_satisfiability_and_nonvacuity_are_distinct_axes_and_typed_evidence() {
         AuthorityState::new(
             claim,
             TruthState::Unknown,
-            SatisfiabilityState::Unsatisfiable(sat),
+            SatisfiabilityState::Unsatisfiable(unsat),
             NonvacuityState::Nonvacuous(nonvacuity),
             ExactInstanceAdmission::NotEvaluated,
             KernelState::NotChecked,
@@ -399,6 +540,56 @@ fn g0_satisfiability_and_nonvacuity_are_distinct_axes_and_typed_evidence() {
         ),
         Err(AuthorityError::IncompatibleAxes { .. })
     ));
+}
+
+#[test]
+fn g0_every_conclusion_polarity_has_a_distinct_kind_type_and_identity_domain() {
+    let claim = basic_claim();
+    let artifact = hash("shared-conclusion-artifact");
+    let checker = hash("shared-conclusion-checker");
+    let satisfiable = SatisfiableEvidence::new(claim.identity(), artifact, checker).expect("sat");
+    let unsatisfiable =
+        UnsatisfiableEvidence::new(claim.identity(), artifact, checker).expect("unsat");
+    let strength = scale_family_strength();
+    let nonvacuous =
+        NonvacuousEvidence::new(claim.identity(), artifact, checker, strength).expect("nonvacuous");
+    let vacuous =
+        VacuousEvidence::new(claim.identity(), artifact, checker, strength).expect("vacuous");
+    let failed = ReproductionFailedEvidence::new(claim.identity(), artifact, checker)
+        .expect("reproduction failed");
+    let reproduced =
+        ReproducedEvidence::new(claim.identity(), artifact, checker).expect("reproduced");
+
+    assert_ne!(
+        satisfiable.evidence().identity(),
+        unsatisfiable.evidence().identity()
+    );
+    assert_ne!(
+        nonvacuous.evidence().identity(),
+        vacuous.evidence().identity()
+    );
+    assert_ne!(
+        failed.evidence().identity(),
+        reproduced.evidence().identity()
+    );
+    assert_eq!(satisfiable.evidence().kind(), EvidenceKind::Satisfiable);
+    assert_eq!(unsatisfiable.evidence().kind(), EvidenceKind::Unsatisfiable);
+    assert_eq!(nonvacuous.evidence().kind(), EvidenceKind::Nonvacuous);
+    assert_eq!(vacuous.evidence().kind(), EvidenceKind::Vacuous);
+    assert_eq!(failed.evidence().kind(), EvidenceKind::ReproductionFailed);
+    assert_eq!(reproduced.evidence().kind(), EvidenceKind::Reproduced);
+    assert_ne!(
+        SATISFIABLE_EVIDENCE_IDENTITY_DOMAIN,
+        VACUOUS_EVIDENCE_IDENTITY_DOMAIN
+    );
+    assert_ne!(
+        NONVACUOUS_EVIDENCE_IDENTITY_DOMAIN,
+        VACUOUS_EVIDENCE_IDENTITY_DOMAIN
+    );
+    assert_ne!(
+        REPRODUCED_EVIDENCE_IDENTITY_DOMAIN,
+        VACUOUS_EVIDENCE_IDENTITY_DOMAIN
+    );
 }
 
 #[test]
@@ -419,7 +610,7 @@ fn g0_nonvacuity_strength_is_exact_and_every_source_moves_identity() {
     }
 
     let make = |strength| {
-        NonvacuityEvidence::new(
+        NonvacuousEvidence::new(
             claim.identity(),
             hash("strength-artifact"),
             hash("strength-checker"),
@@ -455,12 +646,12 @@ fn g0_truth_partial_order_and_product_meet_never_widen() {
         InvalidationState::Clear,
     )
     .expect("proved");
-    assert!(proved.dominates(&unknown));
-    assert!(!unknown.dominates(&proved));
-    let meet = proved.conservative_meet(&unknown).expect("meet");
+    assert!(proved.scientific_evidence_refines(&unknown));
+    assert!(!unknown.scientific_evidence_refines(&proved));
+    let meet = proved.deny_biased_meet(&unknown).expect("meet");
     assert_eq!(meet.identity(), unknown.identity());
-    assert!(proved.dominates(&meet));
-    assert!(unknown.dominates(&meet));
+    assert!(proved.is_safe_runtime_substitute_for(&meet));
+    assert!(unknown.is_safe_runtime_substitute_for(&meet));
 
     let refuted = AuthorityState::new(
         claim,
@@ -475,11 +666,11 @@ fn g0_truth_partial_order_and_product_meet_never_widen() {
     )
     .expect("refuted");
     let contradiction_bottom = proved
-        .conservative_meet(&refuted)
+        .deny_biased_meet(&refuted)
         .expect("incomparable truth branches share Unknown bottom");
     assert_eq!(contradiction_bottom.truth(), TruthState::Unknown);
-    assert!(proved.dominates(&contradiction_bottom));
-    assert!(refuted.dominates(&contradiction_bottom));
+    assert!(proved.scientific_evidence_refines(&contradiction_bottom));
+    assert!(refuted.scientific_evidence_refines(&contradiction_bottom));
 }
 
 #[test]
@@ -513,7 +704,11 @@ fn g0_product_meet_demotes_different_positive_receipts_monotonically() {
         left.truth(),
         left.satisfiability(),
         left.nonvacuity(),
-        ExactInstanceAdmission::Admitted(hash("different-admission-receipt")),
+        exact_admission(
+            left.claim(),
+            ExactInstanceVerdict::Admitted,
+            "different-admission-receipt",
+        ),
         KernelState::KernelChecked(evidence(
             left.claim(),
             EvidenceKind::KernelProof,
@@ -524,13 +719,13 @@ fn g0_product_meet_demotes_different_positive_receipts_monotonically() {
         InvalidationState::Clear,
     )
     .expect("second positive state");
-    let meet = left.conservative_meet(&right).expect("product meet");
+    let meet = left.deny_biased_meet(&right).expect("product meet");
     assert_eq!(meet.exact_admission(), ExactInstanceAdmission::NotEvaluated);
     assert_eq!(meet.kernel(), KernelState::NotChecked);
-    assert!(left.dominates(&meet));
-    assert!(right.dominates(&meet));
-    assert!(!meet.dominates(&left));
-    assert!(!meet.dominates(&right));
+    assert!(left.is_safe_runtime_substitute_for(&meet));
+    assert!(right.is_safe_runtime_substitute_for(&meet));
+    assert!(!meet.is_safe_runtime_substitute_for(&left));
+    assert!(!meet.is_safe_runtime_substitute_for(&right));
 }
 
 #[test]
@@ -538,31 +733,57 @@ fn g0_product_meet_demotes_different_positive_receipts_monotonically() {
 fn g0_product_meet_is_commutative_idempotent_associative_and_a_lower_bound() {
     let claim = basic_claim();
     let sat_a =
-        SatisfiabilityEvidence::new(claim.identity(), hash("law-sat-a"), hash("law-sat-checker"))
+        SatisfiableEvidence::new(claim.identity(), hash("law-sat-a"), hash("law-sat-checker"))
             .expect("sat a");
     let sat_b =
-        SatisfiabilityEvidence::new(claim.identity(), hash("law-sat-b"), hash("law-sat-checker"))
+        SatisfiableEvidence::new(claim.identity(), hash("law-sat-b"), hash("law-sat-checker"))
             .expect("sat b");
-    let nonvacuity_a = NonvacuityEvidence::new(
+    let unsat =
+        UnsatisfiableEvidence::new(claim.identity(), hash("law-unsat"), hash("law-sat-checker"))
+            .expect("unsat");
+    let nonvacuity_a = NonvacuousEvidence::new(
         claim.identity(),
         hash("law-nonvacuity-a"),
         hash("law-nonvacuity-checker"),
         scale_family_strength(),
     )
     .expect("nonvacuity a");
-    let nonvacuity_b = NonvacuityEvidence::new(
+    let nonvacuity_b = NonvacuousEvidence::new(
         claim.identity(),
         hash("law-nonvacuity-b"),
         hash("law-nonvacuity-checker"),
         scale_family_strength(),
     )
     .expect("nonvacuity b");
+    let vacuity = VacuousEvidence::new(
+        claim.identity(),
+        hash("law-vacuity"),
+        hash("law-nonvacuity-checker"),
+        scale_family_strength(),
+    )
+    .expect("vacuity");
     let kernel_a = evidence(&claim, EvidenceKind::KernelProof, "law-kernel-a");
     let kernel_b = evidence(&claim, EvidenceKind::KernelProof, "law-kernel-b");
     let scale_a = evidence(&claim, EvidenceKind::ScaleQualification, "law-scale-a");
     let scale_b = evidence(&claim, EvidenceKind::ScaleQualification, "law-scale-b");
-    let reproduction_a = evidence(&claim, EvidenceKind::Reproduction, "law-reproduction-a");
-    let reproduction_b = evidence(&claim, EvidenceKind::Reproduction, "law-reproduction-b");
+    let reproduction_a = ReproducedEvidence::new(
+        claim.identity(),
+        hash("law-reproduction-a"),
+        hash("law-reproduction-checker"),
+    )
+    .expect("reproduction a");
+    let reproduction_b = ReproducedEvidence::new(
+        claim.identity(),
+        hash("law-reproduction-b"),
+        hash("law-reproduction-checker"),
+    )
+    .expect("reproduction b");
+    let reproduction_failed = ReproductionFailedEvidence::new(
+        claim.identity(),
+        hash("law-reproduction-failed"),
+        hash("law-reproduction-checker"),
+    )
+    .expect("reproduction failure");
 
     let make = |truth, satisfiability, nonvacuity, admission, kernel, scale, reproduction| {
         AuthorityState::new(
@@ -604,7 +825,7 @@ fn g0_product_meet_is_commutative_idempotent_associative_and_a_lower_bound() {
     for satisfiability in [
         SatisfiabilityState::Satisfiable(sat_a),
         SatisfiabilityState::Satisfiable(sat_b),
-        SatisfiabilityState::Unsatisfiable(sat_b),
+        SatisfiabilityState::Unsatisfiable(unsat),
     ] {
         let (_, nonvacuity, admission, kernel, scale, reproduction) = bottom_axes();
         states.push(make(
@@ -620,7 +841,7 @@ fn g0_product_meet_is_commutative_idempotent_associative_and_a_lower_bound() {
     for nonvacuity in [
         NonvacuityState::Nonvacuous(nonvacuity_a),
         NonvacuityState::Nonvacuous(nonvacuity_b),
-        NonvacuityState::Vacuous(nonvacuity_b),
+        NonvacuityState::Vacuous(vacuity),
     ] {
         let (sat, _, admission, kernel, scale, reproduction) = bottom_axes();
         states.push(make(
@@ -634,9 +855,9 @@ fn g0_product_meet_is_commutative_idempotent_associative_and_a_lower_bound() {
         ));
     }
     for admission in [
-        ExactInstanceAdmission::Admitted(hash("law-admitted-a")),
-        ExactInstanceAdmission::Admitted(hash("law-admitted-b")),
-        ExactInstanceAdmission::Refused(hash("law-refused")),
+        exact_admission(&claim, ExactInstanceVerdict::Admitted, "law-admitted-a"),
+        exact_admission(&claim, ExactInstanceVerdict::Admitted, "law-admitted-b"),
+        exact_admission(&claim, ExactInstanceVerdict::Refused, "law-refused"),
     ] {
         let (sat, nonvacuity, _, kernel, scale, reproduction) = bottom_axes();
         states.push(make(
@@ -682,7 +903,7 @@ fn g0_product_meet_is_commutative_idempotent_associative_and_a_lower_bound() {
     for reproduction in [
         ReproductionState::Reproduced(reproduction_a),
         ReproductionState::Reproduced(reproduction_b),
-        ReproductionState::Failed(reproduction_b),
+        ReproductionState::Failed(reproduction_failed),
     ] {
         let (sat, nonvacuity, admission, kernel, scale, _) = bottom_axes();
         states.push(make(
@@ -695,69 +916,32 @@ fn g0_product_meet_is_commutative_idempotent_associative_and_a_lower_bound() {
             reproduction,
         ));
     }
-    let revocation_target = full_proved_state(claim.clone());
-    let counterexample = CounterexampleCandidate::new(
-        revocation_target.claim(),
-        evidence(
-            revocation_target.claim(),
-            EvidenceKind::Counterexample,
-            "law-counterexample",
-        ),
-    )
-    .expect("counterexample");
-    let adjudication = CounterexampleAdjudication::new(
-        &counterexample,
-        CounterexampleVerdict::GenuineCounterexample,
-        evidence(
-            revocation_target.claim(),
-            EvidenceKind::Adjudication,
-            "law-adjudication",
-        ),
-    )
-    .expect("adjudication");
-    let tombstone = fs_govern::evidence_contract::RevocationTombstone::new(
-        &revocation_target,
-        &adjudication,
-        "law revocation",
-        evidence(
-            revocation_target.claim(),
-            EvidenceKind::Revocation,
-            "law-revocation",
-        ),
-    )
-    .expect("tombstone");
-    states.push(
-        revocation_target
-            .invalidate(&tombstone)
-            .expect("invalidated law state"),
-    );
-
     for left in &states {
         assert_eq!(
-            left.conservative_meet(left).expect("idempotent").identity(),
+            left.deny_biased_meet(left).expect("idempotent").identity(),
             left.identity()
         );
         for right in &states {
-            let lr = left.conservative_meet(right).expect("left/right meet");
-            let rl = right.conservative_meet(left).expect("right/left meet");
+            let lr = left.deny_biased_meet(right).expect("left/right meet");
+            let rl = right.deny_biased_meet(left).expect("right/left meet");
             assert_eq!(lr.identity(), rl.identity(), "meet must commute");
-            assert!(left.dominates(&lr), "meet must be below left");
-            assert!(right.dominates(&lr), "meet must be below right");
+            assert!(left.is_safe_runtime_substitute_for(&lr));
+            assert!(right.is_safe_runtime_substitute_for(&lr));
             for represented_lower_bound in &states {
-                if left.dominates(represented_lower_bound)
-                    && right.dominates(represented_lower_bound)
+                if left.is_safe_runtime_substitute_for(represented_lower_bound)
+                    && right.is_safe_runtime_substitute_for(represented_lower_bound)
                 {
                     assert!(
-                        lr.dominates(represented_lower_bound),
+                        lr.is_safe_runtime_substitute_for(represented_lower_bound),
                         "meet must dominate every represented common lower bound"
                     );
                 }
             }
             for third in &states {
-                let left_grouped = lr.conservative_meet(third).expect("left-associated meet");
-                let right_pair = right.conservative_meet(third).expect("right inner meet");
+                let left_grouped = lr.deny_biased_meet(third).expect("left-associated meet");
+                let right_pair = right.deny_biased_meet(third).expect("right inner meet");
                 let right_grouped = left
-                    .conservative_meet(&right_pair)
+                    .deny_biased_meet(&right_pair)
                     .expect("right-associated meet");
                 assert_eq!(
                     left_grouped.identity(),
@@ -777,7 +961,7 @@ fn g0_product_meet_is_commutative_idempotent_associative_and_a_lower_bound() {
     );
     let other = AuthorityState::unknown(other_claim).expect("other claim state");
     assert!(matches!(
-        states[0].conservative_meet(&other),
+        states[0].deny_biased_meet(&other),
         Err(AuthorityError::IdentityMismatch { .. })
     ));
 }
@@ -802,13 +986,14 @@ fn g0_invalid_truth_and_admission_combinations_refuse() {
     ));
 
     let claim = basic_claim();
+    let bad_admission = exact_admission(&claim, ExactInstanceVerdict::Admitted, "bad-admission");
     assert!(matches!(
         AuthorityState::new(
             claim,
             TruthState::Refuted,
             SatisfiabilityState::Unknown,
             NonvacuityState::Unknown,
-            ExactInstanceAdmission::Admitted(hash("bad-admission")),
+            bad_admission,
             KernelState::NotChecked,
             ScaleState::NotQualified,
             ReproductionState::NotAttempted,
@@ -818,19 +1003,24 @@ fn g0_invalid_truth_and_admission_combinations_refuse() {
     ));
 
     let impossible_claim = basic_claim();
-    let unsatisfiable = SatisfiabilityEvidence::new(
+    let unsatisfiable = UnsatisfiableEvidence::new(
         impossible_claim.identity(),
         hash("unsatisfiable-artifact"),
         hash("unsatisfiable-checker"),
     )
     .expect("unsatisfiable evidence");
+    let unsatisfiable_admission = exact_admission(
+        &impossible_claim,
+        ExactInstanceVerdict::Admitted,
+        "unsatisfiable-admission",
+    );
     assert!(matches!(
         AuthorityState::new(
             impossible_claim.clone(),
             TruthState::Unknown,
             SatisfiabilityState::Unsatisfiable(unsatisfiable),
             NonvacuityState::Unknown,
-            ExactInstanceAdmission::Admitted(hash("unsatisfiable-admission")),
+            unsatisfiable_admission,
             KernelState::NotChecked,
             ScaleState::NotQualified,
             ReproductionState::NotAttempted,
@@ -838,20 +1028,25 @@ fn g0_invalid_truth_and_admission_combinations_refuse() {
         ),
         Err(AuthorityError::IncompatibleAxes { .. })
     ));
-    let vacuity = NonvacuityEvidence::new(
+    let vacuity = VacuousEvidence::new(
         impossible_claim.identity(),
         hash("vacuous-artifact"),
         hash("vacuous-checker"),
         scale_family_strength(),
     )
     .expect("vacuity evidence");
+    let vacuous_admission = exact_admission(
+        &impossible_claim,
+        ExactInstanceVerdict::Admitted,
+        "vacuous-admission",
+    );
     assert!(matches!(
         AuthorityState::new(
             impossible_claim,
             TruthState::Unknown,
             SatisfiabilityState::Unknown,
             NonvacuityState::Vacuous(vacuity),
-            ExactInstanceAdmission::Admitted(hash("vacuous-admission")),
+            vacuous_admission,
             KernelState::NotChecked,
             ScaleState::NotQualified,
             ReproductionState::NotAttempted,
@@ -872,40 +1067,6 @@ fn g0_invalid_truth_and_admission_combinations_refuse() {
             ScaleState::NotQualified,
             ReproductionState::NotAttempted,
             InvalidationState::Clear,
-        ),
-        Err(AuthorityError::IncompatibleAxes { .. })
-    ));
-
-    let base = full_proved_state(basic_claim());
-    let candidate = CounterexampleCandidate::new(
-        base.claim(),
-        evidence(base.claim(), EvidenceKind::Counterexample, "invalid-combo"),
-    )
-    .expect("candidate");
-    let adjudication = CounterexampleAdjudication::new(
-        &candidate,
-        CounterexampleVerdict::GenuineCounterexample,
-        evidence(base.claim(), EvidenceKind::Adjudication, "invalid-combo"),
-    )
-    .expect("adjudication");
-    let tombstone = fs_govern::evidence_contract::RevocationTombstone::new(
-        &base,
-        &adjudication,
-        "invalid combination witness",
-        evidence(base.claim(), EvidenceKind::Revocation, "invalid-combo"),
-    )
-    .expect("tombstone");
-    assert!(matches!(
-        AuthorityState::new(
-            base.claim().clone(),
-            base.truth(),
-            base.satisfiability(),
-            base.nonvacuity(),
-            ExactInstanceAdmission::Admitted(hash("stale-admission")),
-            base.kernel(),
-            base.scale(),
-            base.reproduction(),
-            InvalidationState::Invalidated(tombstone.identity()),
         ),
         Err(AuthorityError::IncompatibleAxes { .. })
     ));
@@ -1015,24 +1176,8 @@ fn g0_edges_adjudication_and_revocation_bind_exact_instances() {
         evidence(&claim, EvidenceKind::Revocation, "revocation"),
     )
     .expect("revocation");
-    let invalidated = state.invalidate(&tombstone).expect("invalidate");
-    assert_eq!(
-        invalidated.invalidation(),
-        InvalidationState::Invalidated(tombstone.identity())
-    );
-    assert_eq!(
-        invalidated.exact_admission(),
-        ExactInstanceAdmission::NotEvaluated
-    );
-    assert!(matches!(
-        fs_govern::evidence_contract::SupportEdge::new(
-            &invalidated,
-            &claim,
-            &rule,
-            evidence(&claim, EvidenceKind::Support, "post-revocation"),
-        ),
-        Err(AuthorityError::IncompatibleAxes { .. })
-    ));
+    assert_eq!(tombstone.target_claim(), state.claim().identity());
+    assert_eq!(tombstone.target_state(), state.identity());
 
     let other_tombstone = fs_govern::evidence_contract::RevocationTombstone::new(
         &state,
@@ -1041,15 +1186,7 @@ fn g0_edges_adjudication_and_revocation_bind_exact_instances() {
         evidence(&claim, EvidenceKind::Revocation, "other-revocation"),
     )
     .expect("other revocation");
-    let other_invalidated = state
-        .invalidate(&other_tombstone)
-        .expect("other invalidated state");
-    assert!(matches!(
-        invalidated.conservative_meet(&other_invalidated),
-        Err(AuthorityError::CompositionConflict {
-            axis: "invalidation"
-        })
-    ));
+    assert_ne!(tombstone.identity(), other_tombstone.identity());
 }
 
 fn strict_policy(required_capabilities: Vec<CapabilityBinding>) -> CapabilityPolicy {
@@ -1072,25 +1209,168 @@ fn accepted_candidate(
     policy: &CapabilityPolicy,
     checker: ContentHash,
 ) -> CheckerDecisionCandidate {
+    let decision_artifact = match state.exact_admission() {
+        ExactInstanceAdmission::Admitted(decision) => decision.artifact(),
+        ExactInstanceAdmission::NotEvaluated | ExactInstanceAdmission::Refused(_) => {
+            hash("checker-decision-artifact")
+        }
+    };
     CheckerDecisionCandidate::new(
         state.claim().identity(),
         state.identity(),
         policy.identity(),
         checker,
         CheckerVerdict::Accept,
-        hash("checker-decision-artifact"),
+        decision_artifact,
         None,
     )
     .expect("candidate")
 }
 
 #[test]
+fn g0_exact_instance_decision_mutations_are_identity_sensitive_and_fail_closed() {
+    let claim = basic_claim();
+    let other_claim = claim_with(
+        &[],
+        Quantifier::ForAll,
+        101,
+        vec![CapabilityBinding::new("runtime-admit", 1).expect("capability")],
+        &["not cross-ISA bit stability"],
+    );
+    let policy = strict_policy(vec![
+        CapabilityBinding::new("runtime-admit", 1).expect("capability"),
+    ]);
+    let other_policy = strict_policy(vec![]);
+    let checker = hash("exact-checker");
+    let artifact = hash("exact-artifact");
+    let decision = |claim_id, policy_id, checker_id, verdict, artifact_id| {
+        ExactInstanceDecisionCandidate::new(
+            claim_id,
+            policy_id,
+            checker_id,
+            verdict,
+            artifact_id,
+            AUTHORITY_ALGEBRA_VERSION,
+        )
+        .expect("exact decision")
+    };
+    let baseline = decision(
+        claim.identity(),
+        policy.identity(),
+        checker,
+        ExactInstanceVerdict::Admitted,
+        artifact,
+    );
+    let wrong_claim = decision(
+        other_claim.identity(),
+        policy.identity(),
+        checker,
+        ExactInstanceVerdict::Admitted,
+        artifact,
+    );
+    let wrong_policy = decision(
+        claim.identity(),
+        other_policy.identity(),
+        checker,
+        ExactInstanceVerdict::Admitted,
+        artifact,
+    );
+    let wrong_checker = decision(
+        claim.identity(),
+        policy.identity(),
+        hash("other-exact-checker"),
+        ExactInstanceVerdict::Admitted,
+        artifact,
+    );
+    let wrong_artifact = decision(
+        claim.identity(),
+        policy.identity(),
+        checker,
+        ExactInstanceVerdict::Admitted,
+        hash("other-exact-artifact"),
+    );
+    let refused = decision(
+        claim.identity(),
+        policy.identity(),
+        checker,
+        ExactInstanceVerdict::Refused,
+        artifact,
+    );
+    let identities = [
+        wrong_claim.identity(),
+        wrong_policy.identity(),
+        wrong_checker.identity(),
+        wrong_artifact.identity(),
+        refused.identity(),
+    ];
+    assert!(
+        identities
+            .into_iter()
+            .all(|identity| identity != baseline.identity())
+    );
+
+    let make_state = |admission| {
+        AuthorityState::new(
+            claim.clone(),
+            TruthState::Proved,
+            SatisfiabilityState::Unknown,
+            NonvacuityState::Unknown,
+            admission,
+            KernelState::NotChecked,
+            ScaleState::NotQualified,
+            ReproductionState::NotAttempted,
+            InvalidationState::Clear,
+        )
+    };
+    assert!(matches!(
+        make_state(ExactInstanceAdmission::Admitted(wrong_claim)),
+        Err(AuthorityError::IdentityMismatch { .. })
+    ));
+    assert!(matches!(
+        make_state(ExactInstanceAdmission::Admitted(refused)),
+        Err(AuthorityError::IncompatibleAxes { .. })
+    ));
+
+    for mutated in [wrong_policy, wrong_checker, wrong_artifact] {
+        let state = make_state(ExactInstanceAdmission::Admitted(mutated)).expect("mutated state");
+        let candidate = CheckerDecisionCandidate::new(
+            claim.identity(),
+            state.identity(),
+            policy.identity(),
+            checker,
+            CheckerVerdict::Accept,
+            artifact,
+            None,
+        )
+        .expect("runtime candidate");
+        assert!(matches!(
+            assess_runtime_candidate(&state, &policy, &candidate),
+            Err(AuthorityError::IdentityMismatch { .. })
+        ));
+    }
+    assert!(matches!(
+        ExactInstanceDecisionCandidate::new(
+            claim.identity(),
+            policy.identity(),
+            checker,
+            ExactInstanceVerdict::Admitted,
+            artifact,
+            RETIRED_AUTHORITY_SCHEMA_VERSION,
+        ),
+        Err(AuthorityError::SchemaVersionRefused {
+            observed: RETIRED_AUTHORITY_SCHEMA_VERSION,
+            supported: AUTHORITY_ALGEBRA_VERSION,
+        })
+    ));
+}
+
+#[test]
 fn g0_runtime_assessment_is_explicitly_candidate_only_and_checks_policy_axes() {
-    let state = full_proved_state(basic_claim());
     let policy = strict_policy(vec![
         CapabilityBinding::new("runtime-admit", 1).expect("capability"),
     ]);
     let checker = hash("accepting-checker");
+    let state = full_state_for(basic_claim(), TruthState::Proved, &policy, checker);
     let candidate = accepted_candidate(&state, &policy, checker);
     let assessment =
         assess_runtime_candidate(&state, &policy, &candidate).expect("eligible candidate");
@@ -1102,13 +1382,19 @@ fn g0_runtime_assessment_is_explicitly_candidate_only_and_checks_policy_axes() {
     let impossible_policy = strict_policy(vec![
         CapabilityBinding::new("missing-capability", 9).expect("missing cap"),
     ]);
-    let impossible_candidate = accepted_candidate(&state, &impossible_policy, checker);
+    let impossible_state = full_state_for(
+        state.claim().clone(),
+        TruthState::Proved,
+        &impossible_policy,
+        checker,
+    );
+    let impossible_candidate = accepted_candidate(&impossible_state, &impossible_policy, checker);
     assert!(matches!(
-        assess_runtime_candidate(&state, &impossible_policy, &impossible_candidate),
+        assess_runtime_candidate(&impossible_state, &impossible_policy, &impossible_candidate,),
         Err(AuthorityError::CapabilityMissing { .. })
     ));
 
-    let point_evidence = NonvacuityEvidence::new(
+    let point_evidence = NonvacuousEvidence::new(
         state.claim().identity(),
         hash("point-only-artifact"),
         hash("point-only-checker"),
@@ -1140,11 +1426,11 @@ fn g0_runtime_assessment_is_explicitly_candidate_only_and_checks_policy_axes() {
 #[test]
 #[allow(clippy::too_many_lines)] // Keep independent identity and verdict refusals explicit.
 fn g0_runtime_candidate_identity_and_verdict_matrix_fails_closed() {
-    let state = full_proved_state(basic_claim());
     let policy = strict_policy(vec![
         CapabilityBinding::new("runtime-admit", 1).expect("capability"),
     ]);
     let checker = hash("identity-matrix-checker");
+    let state = full_state_for(basic_claim(), TruthState::Proved, &policy, checker);
     let other_claim = claim_with(
         &[],
         Quantifier::ForAll,
@@ -1261,11 +1547,11 @@ fn g0_runtime_candidate_identity_and_verdict_matrix_fails_closed() {
 #[test]
 #[allow(clippy::too_many_lines)] // Keep every runtime widening guard in one mutation matrix.
 fn g0_every_runtime_widening_guard_has_a_negative_witness() {
-    let base = full_proved_state(basic_claim());
     let policy = strict_policy(vec![
         CapabilityBinding::new("runtime-admit", 1).expect("capability"),
     ]);
     let checker = hash("guard-checker");
+    let base = full_state_for(basic_claim(), TruthState::Proved, &policy, checker);
     let missing_states = [
         (
             AuthorityState::new(
@@ -1375,7 +1661,12 @@ fn g0_every_runtime_widening_guard_has_a_negative_witness() {
         vec![CapabilityBinding::new("runtime-admit", 1).expect("cap")],
         &["not cross-ISA bit stability"],
     );
-    let conditional = full_state(conditional_claim, TruthState::ConditionalProof);
+    let conditional = full_state_for(
+        conditional_claim.clone(),
+        TruthState::ConditionalProof,
+        &policy,
+        checker,
+    );
     let conditional_candidate = accepted_candidate(&conditional, &policy, checker);
     assert_eq!(
         assess_runtime_candidate(&conditional, &policy, &conditional_candidate)
@@ -1397,9 +1688,20 @@ fn g0_every_runtime_widening_guard_has_a_negative_witness() {
         &["not cross-ISA bit stability"],
     )
     .expect("conditional policy");
-    let accepted_conditional = accepted_candidate(&conditional, &conditional_policy, checker);
-    assess_runtime_candidate(&conditional, &conditional_policy, &accepted_conditional)
-        .expect("exactly accepted assumption is eligible candidate data");
+    let conditional_accepted_state = full_state_for(
+        conditional_claim.clone(),
+        TruthState::ConditionalProof,
+        &conditional_policy,
+        checker,
+    );
+    let accepted_conditional =
+        accepted_candidate(&conditional_accepted_state, &conditional_policy, checker);
+    assess_runtime_candidate(
+        &conditional_accepted_state,
+        &conditional_policy,
+        &accepted_conditional,
+    )
+    .expect("exactly accepted assumption is eligible candidate data");
 
     let unaccepted_assumption_policy = CapabilityPolicy::new(
         TruthRequirement::ConditionalOrProved,
@@ -1413,11 +1715,20 @@ fn g0_every_runtime_widening_guard_has_a_negative_witness() {
         &["not cross-ISA bit stability"],
     )
     .expect("missing-assumption policy");
-    let unaccepted_assumption =
-        accepted_candidate(&conditional, &unaccepted_assumption_policy, checker);
+    let unaccepted_assumption_state = full_state_for(
+        conditional_claim,
+        TruthState::ConditionalProof,
+        &unaccepted_assumption_policy,
+        checker,
+    );
+    let unaccepted_assumption = accepted_candidate(
+        &unaccepted_assumption_state,
+        &unaccepted_assumption_policy,
+        checker,
+    );
     assert!(matches!(
         assess_runtime_candidate(
-            &conditional,
+            &unaccepted_assumption_state,
             &unaccepted_assumption_policy,
             &unaccepted_assumption,
         ),
@@ -1436,9 +1747,20 @@ fn g0_every_runtime_widening_guard_has_a_negative_witness() {
         &[],
     )
     .expect("unaccepted-boundary policy");
-    let boundary_candidate = accepted_candidate(&base, &unaccepted_boundary_policy, checker);
+    let boundary_state = full_state_for(
+        base.claim().clone(),
+        TruthState::Proved,
+        &unaccepted_boundary_policy,
+        checker,
+    );
+    let boundary_candidate =
+        accepted_candidate(&boundary_state, &unaccepted_boundary_policy, checker);
     assert!(matches!(
-        assess_runtime_candidate(&base, &unaccepted_boundary_policy, &boundary_candidate,),
+        assess_runtime_candidate(
+            &boundary_state,
+            &unaccepted_boundary_policy,
+            &boundary_candidate,
+        ),
         Err(AuthorityError::NoClaimNotAccepted { .. })
     ));
 
@@ -1459,57 +1781,16 @@ fn g0_every_runtime_widening_guard_has_a_negative_witness() {
             verdict: CheckerVerdict::Refuse
         }
     );
-
-    let candidate = CounterexampleCandidate::new(
-        base.claim(),
-        evidence(
-            base.claim(),
-            EvidenceKind::Counterexample,
-            "guard-counterexample",
-        ),
-    )
-    .expect("candidate");
-    let adjudication = CounterexampleAdjudication::new(
-        &candidate,
-        CounterexampleVerdict::GenuineCounterexample,
-        evidence(
-            base.claim(),
-            EvidenceKind::Adjudication,
-            "guard-adjudication",
-        ),
-    )
-    .expect("adjudication");
-    let tombstone = fs_govern::evidence_contract::RevocationTombstone::new(
-        &base,
-        &adjudication,
-        "guard revocation",
-        evidence(base.claim(), EvidenceKind::Revocation, "guard-revocation"),
-    )
-    .expect("tombstone");
-    let invalidated = base.invalidate(&tombstone).expect("invalidate");
-    let safety_meet = base
-        .conservative_meet(&invalidated)
-        .expect("clear/invalidated meet");
-    assert_eq!(safety_meet.identity(), invalidated.identity());
-    assert!(base.dominates(&safety_meet));
-    assert!(invalidated.dominates(&safety_meet));
-    let invalidated_candidate = accepted_candidate(&invalidated, &policy, checker);
-    assert_eq!(
-        assess_runtime_candidate(&invalidated, &policy, &invalidated_candidate)
-            .expect_err("invalidation must refuse"),
-        AuthorityError::RuntimeRequirementNotMet {
-            requirement: "not-invalidated"
-        }
-    );
 }
 
 #[test]
 #[allow(clippy::too_many_lines)] // One closed policy-preimage mutation table prevents omissions.
 fn g0_checker_and_policy_identity_mutations_fail_closed() {
-    let state = full_proved_state(basic_claim());
     let baseline = strict_policy(vec![
         CapabilityBinding::new("runtime-admit", 1).expect("capability"),
     ]);
+    let checker = hash("checker-mutation");
+    let state = full_state_for(basic_claim(), TruthState::Proved, &baseline, checker);
     let variants = [
         CapabilityPolicy::new(
             TruthRequirement::ConditionalOrProved,
@@ -1624,7 +1905,7 @@ fn g0_checker_and_policy_identity_mutations_fail_closed() {
         assert_ne!(baseline.identity(), variant.identity());
     }
 
-    let candidate = accepted_candidate(&state, &baseline, hash("checker-mutation"));
+    let candidate = accepted_candidate(&state, &baseline, checker);
     let other_policy = &variants[0];
     assert!(matches!(
         assess_runtime_candidate(&state, other_policy, &candidate),
@@ -1749,8 +2030,8 @@ fn g0_schema_versions_and_legacy_migration_never_widen() {
         assert_ne!(baseline, changed);
     }
 
-    let future = LegacyAuthorityV0::new(
-        claim,
+    let retired_v1 = LegacyAuthorityV0::new(
+        claim.clone(),
         LegacyAuthorityRankV0::Unknown,
         false,
         false,
@@ -1758,7 +2039,22 @@ fn g0_schema_versions_and_legacy_migration_never_widen() {
     )
     .expect("legacy");
     assert!(matches!(
-        migrate_legacy_v0(LEGACY_AUTHORITY_SCHEMA_VERSION + 1, future),
+        migrate_legacy_v0(RETIRED_AUTHORITY_SCHEMA_VERSION, retired_v1),
+        Err(AuthorityError::MigrationUnavailable {
+            observed: RETIRED_AUTHORITY_SCHEMA_VERSION,
+            target: AUTHORITY_ALGEBRA_VERSION,
+        })
+    ));
+    let future = LegacyAuthorityV0::new(
+        claim,
+        LegacyAuthorityRankV0::Unknown,
+        false,
+        false,
+        hash("future-v3"),
+    )
+    .expect("future");
+    assert!(matches!(
+        migrate_legacy_v0(AUTHORITY_ALGEBRA_VERSION + 1, future),
         Err(AuthorityError::SchemaVersionRefused { .. })
     ));
 }
@@ -1769,7 +2065,7 @@ fn g0_catalog_is_code_derived_unique_and_contract_drift_checked() {
     let first = authority_catalog_json();
     let second = authority_catalog_json();
     assert_eq!(first, second);
-    assert!(first.contains("frankensim-authority-catalog-v1"));
+    assert!(first.contains("frankensim-authority-catalog-v2"));
     assert_eq!(
         first.matches("\"object_kind\":").count(),
         AUTHORITY_CATALOG_ROWS.len()
@@ -1777,6 +2073,7 @@ fn g0_catalog_is_code_derived_unique_and_contract_drift_checked() {
     for row in AUTHORITY_CATALOG_ROWS {
         for exact_field in [
             format!("\"object_kind\":\"{}\"", row.object_kind),
+            format!("\"schema_version\":{}", row.schema_version),
             format!("\"identity_domain\":\"{}\"", row.identity_domain),
             format!("\"identity_sources\":\"{}\"", row.identity_sources),
             format!("\"binding\":\"{}\"", row.binding),
@@ -1806,65 +2103,97 @@ fn g0_catalog_is_code_derived_unique_and_contract_drift_checked() {
     }
     assert_eq!(
         AUTHORITY_CATALOG_ROWS.len(),
-        22,
-        "the closed v1 catalog changed; update the contract and migration policy explicitly"
+        30,
+        "the closed v2 catalog changed; update contract, order, and migration policy explicitly"
     );
     let actual = AUTHORITY_CATALOG_ROWS
         .iter()
         .map(|row| (row.object_kind, row.identity_domain))
         .collect::<Vec<_>>();
     let expected = vec![
-        ("claim-statement", "frankensim.fs-govern.claim-statement.v1"),
+        ("claim-statement", "frankensim.fs-govern.claim-statement.v2"),
         (
             "quantified-domain",
-            "frankensim.fs-govern.quantified-domain.v1",
+            "frankensim.fs-govern.quantified-domain.v2",
         ),
-        ("assumption-set", "frankensim.fs-govern.assumption-set.v1"),
-        ("semantic-claim", "frankensim.fs-govern.semantic-claim.v1"),
+        ("assumption-set", "frankensim.fs-govern.assumption-set.v2"),
+        ("semantic-claim", "frankensim.fs-govern.semantic-claim.v2"),
         (
             "claim-lane-binding",
-            "frankensim.fs-govern.claim-lane-binding.v1",
+            "frankensim.fs-govern.claim-lane-binding.v2",
         ),
-        ("claim-instance", "frankensim.fs-govern.claim-instance.v1"),
+        ("claim-instance", "frankensim.fs-govern.claim-instance.v2"),
         ("proof-lane", "frankensim.fs-govern.proof-lane.v1"),
-        ("evidence-ref", "frankensim.fs-govern.evidence-ref.v1"),
+        ("evidence-ref", "frankensim.fs-govern.evidence-ref.v2"),
         (
-            "nonvacuity-evidence",
-            "frankensim.fs-govern.nonvacuity-evidence.v1",
+            "satisfiable-evidence",
+            "frankensim.fs-govern.satisfiable-evidence.v2",
         ),
-        ("evidence-state", "frankensim.fs-govern.evidence-state.v1"),
-        ("authority-state", "frankensim.fs-govern.authority-state.v1"),
-        ("inference-rule", "frankensim.fs-govern.inference-rule.v1"),
-        ("support-edge", "frankensim.fs-govern.support-edge.v1"),
-        ("attack-edge", "frankensim.fs-govern.attack-edge.v1"),
+        (
+            "unsatisfiable-evidence",
+            "frankensim.fs-govern.unsatisfiable-evidence.v2",
+        ),
+        (
+            "nonvacuous-evidence",
+            "frankensim.fs-govern.nonvacuous-evidence.v2",
+        ),
+        (
+            "vacuous-evidence",
+            "frankensim.fs-govern.vacuous-evidence.v2",
+        ),
+        (
+            "reproduction-failed-evidence",
+            "frankensim.fs-govern.reproduction-failed-evidence.v2",
+        ),
+        (
+            "reproduced-evidence",
+            "frankensim.fs-govern.reproduced-evidence.v2",
+        ),
+        ("evidence-state", "frankensim.fs-govern.evidence-state.v2"),
+        ("authority-state", "frankensim.fs-govern.authority-state.v2"),
+        (
+            "exact-instance-decision",
+            "frankensim.fs-govern.exact-instance-decision.v2",
+        ),
+        (
+            "invalidation-binding",
+            "frankensim.fs-govern.invalidation-binding.v2",
+        ),
+        ("inference-rule", "frankensim.fs-govern.inference-rule.v2"),
+        ("support-edge", "frankensim.fs-govern.support-edge.v2"),
+        ("attack-edge", "frankensim.fs-govern.attack-edge.v2"),
         (
             "counterexample-candidate",
-            "frankensim.fs-govern.counterexample.v1",
+            "frankensim.fs-govern.counterexample.v2",
         ),
         (
             "counterexample-adjudication",
-            "frankensim.fs-govern.counterexample-adjudication.v1",
+            "frankensim.fs-govern.counterexample-adjudication.v2",
         ),
         (
             "revocation-tombstone",
-            "frankensim.fs-govern.revocation-tombstone.v1",
+            "frankensim.fs-govern.revocation-tombstone.v2",
+        ),
+        (
+            "verified-revocation-tombstone",
+            "frankensim.fs-govern.verified-revocation-tombstone.v2",
         ),
         (
             "capability-policy",
-            "frankensim.fs-govern.capability-policy.v1",
+            "frankensim.fs-govern.capability-policy.v2",
         ),
         (
             "checker-decision",
-            "frankensim.fs-govern.checker-decision.v1",
+            "frankensim.fs-govern.checker-decision.v2",
         ),
-        ("authority-head", "frankensim.fs-govern.authority-head.v1"),
+        ("authority-head", "frankensim.fs-govern.authority-head.v2"),
         (
             "runtime-admission",
-            "frankensim.fs-govern.runtime-admission.v1",
+            "frankensim.fs-govern.runtime-admission.v2",
         ),
         (
             "authority-migration",
-            "frankensim.fs-govern.authority-migration.v1",
+            "frankensim.fs-govern.authority-migration.v2",
         ),
     ];
     assert_eq!(actual, expected, "closed catalog order/domain drift");
@@ -1890,24 +2219,25 @@ fn g0_catalog_is_code_derived_unique_and_contract_drift_checked() {
         AUTHORITY_CATALOG_ROWS
             .iter()
             .all(|row| row.schema_version == AUTHORITY_ALGEBRA_VERSION),
-        "every v1 catalog row must bind the current algebra version"
+        "every v2 catalog row must bind the current algebra version"
     );
 }
 
 #[test]
 fn g0_authority_logs_are_complete_bounded_and_never_truncated() {
-    let state = full_proved_state(basic_claim());
     let policy = strict_policy(vec![
         CapabilityBinding::new("runtime-admit", 1).expect("capability"),
     ]);
-    let candidate = accepted_candidate(&state, &policy, hash("log-checker"));
+    let checker = hash("log-checker");
+    let state = full_state_for(basic_claim(), TruthState::Proved, &policy, checker);
+    let candidate = accepted_candidate(&state, &policy, checker);
     let log = authority_log_json(&state, Some(&policy), Some(&candidate), None).expect("log");
     for required in [
         "\"object_kind\":\"authority-state\"",
         "\"source_identity\"",
         "\"authority_identity\"",
-        "\"schema_version\":1",
-        "\"policy_version\":1",
+        "\"schema_version\":2",
+        "\"policy_version\":2",
         "\"checker_identity\"",
         "\"truth\":\"proved\"",
         "\"satisfiability\":\"satisfiable\"",
@@ -1993,7 +2323,10 @@ fn identity_domain_constants_remain_distinct() {
         ATTACK_EDGE_IDENTITY_DOMAIN,
         AUTHORITY_HEAD_IDENTITY_DOMAIN,
         AUTHORITY_MIGRATION_IDENTITY_DOMAIN,
-        NONVACUITY_EVIDENCE_IDENTITY_DOMAIN,
+        NONVACUOUS_EVIDENCE_IDENTITY_DOMAIN,
+        SATISFIABLE_EVIDENCE_IDENTITY_DOMAIN,
+        REPRODUCED_EVIDENCE_IDENTITY_DOMAIN,
+        VACUOUS_EVIDENCE_IDENTITY_DOMAIN,
         SEMANTIC_CLAIM_IDENTITY_DOMAIN,
     ];
     let unique = domains

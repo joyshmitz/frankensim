@@ -11,16 +11,16 @@
 
 use crate::{
     evidence_contract::{
-        AssumptionSetId, AttackEdge, AuthorityState, AuthorityStateId, ClaimInstance,
-        ClaimInstanceId, CounterexampleCandidate, CounterexampleId, EvidenceId, EvidenceKind,
-        EvidenceRef, SupportEdge,
+        AUTHORITY_ALGEBRA_VERSION, AssumptionSetId, AttackEdge, AuthorityState, AuthorityStateId,
+        ClaimInstance, ClaimInstanceId, CounterexampleCandidate, CounterexampleId, EvidenceId,
+        EvidenceKind, EvidenceRef, SupportEdge,
     },
     lanes::{LaneCharter, ProofLaneId},
 };
 use fs_blake3::ContentHash;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-pub const EVIDENCE_GRAPH_VERSION: u32 = 1;
+pub const EVIDENCE_GRAPH_VERSION: u32 = 2;
 pub const FIXED_RATE_SCALE: u32 = 1_000_000;
 pub const MAX_GRAPH_NODES: usize = 1_024;
 pub const MAX_GRAPH_EDGES: usize = 4_096;
@@ -29,16 +29,16 @@ pub const MAX_ALLOCATION_SELECTIONS: usize = 256;
 pub const MAX_FEASIBILITY_SEARCH_STATES: usize = 100_000;
 pub const MAX_GRAPH_TEXT_BYTES: usize = 4_096;
 
-pub const GRAPH_NODE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.evidence-graph-node.v1";
-pub const GRAPH_SNAPSHOT_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.evidence-graph-snapshot.v1";
+pub const GRAPH_NODE_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.evidence-graph-node.v2";
+pub const GRAPH_SNAPSHOT_IDENTITY_DOMAIN: &str = "frankensim.fs-govern.evidence-graph-snapshot.v2";
 pub const ANYTIME_ACCOUNTING_IDENTITY_DOMAIN: &str =
-    "frankensim.fs-govern.anytime-accounting-candidate.v1";
+    "frankensim.fs-govern.anytime-accounting-candidate.v2";
 pub const ALLOCATION_CANDIDATE_IDENTITY_DOMAIN: &str =
-    "frankensim.fs-govern.evidence-allocation-candidate.v1";
+    "frankensim.fs-govern.evidence-allocation-candidate.v2";
 pub const ALLOCATION_POLICY_IDENTITY_DOMAIN: &str =
-    "frankensim.fs-govern.evidence-allocation-policy.v1";
+    "frankensim.fs-govern.evidence-allocation-policy.v2";
 pub const ALLOCATION_DECISION_IDENTITY_DOMAIN: &str =
-    "frankensim.fs-govern.evidence-allocation-decision.v1";
+    "frankensim.fs-govern.evidence-allocation-decision.v2";
 
 fn push_field(out: &mut Vec<u8>, tag: u8, bytes: &[u8]) {
     out.push(tag);
@@ -362,6 +362,11 @@ impl GraphNode {
     fn from_kind(kind: GraphNodeKind) -> Self {
         let mut canonical = Vec::new();
         push_field(&mut canonical, 0, &EVIDENCE_GRAPH_VERSION.to_le_bytes());
+        push_field(
+            &mut canonical,
+            250,
+            &AUTHORITY_ALGEBRA_VERSION.to_le_bytes(),
+        );
         kind.encode(&mut canonical);
         Self {
             kind,
@@ -758,6 +763,11 @@ impl GraphSnapshot {
         }
         let mut canonical = Vec::new();
         push_field(&mut canonical, 0, &EVIDENCE_GRAPH_VERSION.to_le_bytes());
+        push_field(
+            &mut canonical,
+            250,
+            &AUTHORITY_ALGEBRA_VERSION.to_le_bytes(),
+        );
         for node in &nodes {
             push_hash(&mut canonical, 1, node.identity.as_hash());
         }
