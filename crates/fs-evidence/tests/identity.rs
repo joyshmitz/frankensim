@@ -4955,20 +4955,75 @@ fn sourced_certified_f64_identity_enforces_resources_and_cancellation() {
             && limit == MAX_CERTIFIED_F64_SOURCE_FIELD_BYTES_V1
     ));
 
-    let field_limits = CanonicalLimits::new(1_024, 64, 32, 64, 8);
-    identify_certified_f64_source_v1("d".to_string(), 1, vec![0x11; 64], field_limits, || false)
-        .expect("exact caller field limit is admitted");
+    // `max_field_bytes` bounds schema descriptors as well as caller fields.
+    // Derive the minimum realizable budget from every source-schema descriptor,
+    // then make the caller field exactly that large so both share one boundary.
+    type SourceSchema = fs_evidence::CertifiedF64SourceIdentitySchemaV1;
+    let longest_declared_field = SourceSchema::FIELDS
+        .iter()
+        .copied()
+        .map(|field| field.name().len())
+        .max()
+        .unwrap_or(0);
+    let exact_field_len = [
+        SourceSchema::DOMAIN.len(),
+        SourceSchema::NAME.len(),
+        SourceSchema::CONTEXT.len(),
+        longest_declared_field,
+    ]
+    .into_iter()
+    .max()
+    .expect("source schema has descriptor fields");
+    let exact_field_bytes =
+        u64::try_from(exact_field_len).expect("static schema descriptor length fits u64");
+    let one_less_field_bytes = exact_field_bytes
+        .checked_sub(1)
+        .expect("source schema descriptors are non-empty");
+    let one_more_field_len = exact_field_len
+        .checked_add(1)
+        .expect("static schema descriptor length plus one fits usize");
+    let one_more_field_bytes =
+        u64::try_from(one_more_field_len).expect("one-more field length fits u64");
+    let field_limits = CanonicalLimits::new(16_384, exact_field_bytes, 32, 64, 8);
+    identify_certified_f64_source_v1(
+        "d".to_string(),
+        1,
+        vec![0x11; exact_field_len],
+        field_limits,
+        || false,
+    )
+    .expect("schema descriptors and caller field fit their shared exact limit");
     assert!(matches!(
-        identify_certified_f64_source_v1("d".to_string(), 1, vec![0x11; 65], field_limits, || {
-            false
-        },),
+        identify_certified_f64_source_v1(
+            "d".to_string(),
+            1,
+            vec![0x11; exact_field_len],
+            CanonicalLimits::new(16_384, one_less_field_bytes, 32, 64, 8),
+            || false,
+        ),
         Err(CertifiedF64SourceIdentityError::Canonical(
             CanonicalError::LimitExceeded {
                 kind: fs_blake3::identity::LimitKind::FieldBytes,
-                requested: 65,
-                limit: 64,
+                requested,
+                limit,
             }
-        ))
+        )) if requested == exact_field_bytes && limit == one_less_field_bytes
+    ));
+    assert!(matches!(
+        identify_certified_f64_source_v1(
+            "d".to_string(),
+            1,
+            vec![0x11; one_more_field_len],
+            field_limits,
+            || false,
+        ),
+        Err(CertifiedF64SourceIdentityError::Canonical(
+            CanonicalError::LimitExceeded {
+                kind: fs_blake3::identity::LimitKind::FieldBytes,
+                requested,
+                limit,
+            }
+        )) if requested == one_more_field_bytes && limit == exact_field_bytes
     ));
     assert!(matches!(
         identify_certified_f64_source_v1(
