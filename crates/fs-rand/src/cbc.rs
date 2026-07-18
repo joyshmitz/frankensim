@@ -21,12 +21,12 @@
 //! internals, instructions, energy, or elapsed time.
 
 /// Version of the CBC admission and resource-estimate semantics.
-pub const CBC_ADMISSION_SCHEMA_VERSION: u32 = 2;
+pub const CBC_ADMISSION_SCHEMA_VERSION: u32 = 3;
 
 const LIMB_BYTES: u128 = 4;
 const FACTOR_SCRATCH_BYTES: u128 = 4 * LIMB_BYTES;
 // Scalar work units are source-level logical charges, not CPU instructions or
-// elapsed-time predictions. These constants are part of schema v2. A visit
+// elapsed-time predictions. These constants are retained by schema v3. A visit
 // debits six residue primitives, ten kernel-numerator primitives, and four
 // loop/index primitives. A factor debits one fixed termination primitive plus
 // eight decomposition primitives per limb; a Euclidean step debits
@@ -99,7 +99,9 @@ impl CbcProblem {
     /// [`CbcAdmissionError::EstimateOverflow`] naming the first bound that
     /// leaves the `u128` accounting domain, or
     /// [`CbcAdmissionError::TargetCapacityExceeded`] when a modeled `Vec`
-    /// length or byte allocation cannot be represented on this target.
+    /// length/byte allocation cannot be represented on this target or the
+    /// simultaneously live logical state exceeds the target address-space
+    /// cardinality.
     #[must_use]
     #[allow(clippy::too_many_lines)] // One checked derivation keeps the envelope auditable.
     pub fn estimate(self) -> Result<CbcEstimate, CbcAdmissionError> {
@@ -253,10 +255,19 @@ impl CbcProblem {
 
         // Vec APIs take usize element counts and reject allocations larger than
         // isize::MAX bytes. Check each allocation independently. Aggregate
-        // logical state is intentionally not compared with isize::MAX: it is
-        // not one allocation.
+        // logical state is not one allocation and may exceed isize::MAX, but
+        // simultaneously live modeled bytes cannot exceed the target's entire
+        // address-space cardinality. This is an impossibility filter, not a
+        // promise that the operating system can map every admitted byte.
         let usize_limit =
             u128::try_from(usize::MAX).map_err(|_| overflow("target usize conversion"))?;
+        // `2^usize::BITS` is representable in u128 on today's 16/32/64-bit
+        // targets. On a hypothetical 128-bit-pointer target the exact
+        // cardinality is one beyond this estimator's u128 range, while every
+        // representable logical-state estimate is necessarily smaller; `None`
+        // therefore means that this particular impossibility check is vacuous,
+        // not that admission failed open.
+        let address_space_cardinality_bytes = usize_limit.checked_add(1);
         let vec_byte_limit =
             u128::try_from(isize::MAX).map_err(|_| overflow("target isize conversion"))?;
         target_bound("point-count element count", points, usize_limit)?;
@@ -299,6 +310,13 @@ impl CbcProblem {
             score_payload_bytes,
             vec_byte_limit,
         )?;
+        if let Some(address_space_cardinality_bytes) = address_space_cardinality_bytes {
+            target_bound(
+                "logical-state address-space bytes",
+                logical_state_bytes,
+                address_space_cardinality_bytes,
+            )?;
+        }
 
         let multiply_add_units = lattice_visits
             .checked_mul(max_source_product_limbs)
@@ -460,7 +478,7 @@ impl CbcBudget {
         }
     }
 
-    /// Maximum conservative schema-v2 work units.
+    /// Maximum conservative schema-v3 work units.
     #[must_use]
     pub const fn max_work_units(self) -> u128 {
         self.max_work_units
@@ -683,6 +701,7 @@ impl CbcAdmission {
 }
 
 /// Typed CBC admission refusal. All payloads are fixed-size and allocation-free.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CbcAdmissionError {
     /// `n` is below the exact constructor's supported domain.
@@ -700,10 +719,11 @@ pub enum CbcAdmissionError {
         /// Stable name of the first overflowing quantity.
         quantity: &'static str,
     },
-    /// One modeled allocation length or byte capacity cannot be represented
-    /// by this target's `usize`/`isize`-bounded `Vec` API.
+    /// A modeled allocation cannot be represented by this target's
+    /// `usize`/`isize`-bounded `Vec` API, or the modeled simultaneously live
+    /// state exceeds the target address-space cardinality.
     TargetCapacityExceeded {
-        /// Stable name of the rejected allocation quantity.
+        /// Stable name of the rejected target-capacity quantity.
         quantity: &'static str,
         /// Required element count or bytes, as named by `quantity`.
         required: u128,
@@ -712,7 +732,7 @@ pub enum CbcAdmissionError {
     },
     /// The explicit work budget is insufficient.
     WorkBudgetExceeded {
-        /// Required total schema-v2 work units.
+        /// Required total schema-v3 work units.
         required: u128,
         /// Available units.
         available: u128,
@@ -751,7 +771,7 @@ impl core::fmt::Display for CbcAdmissionError {
                 available,
             } => write!(
                 formatter,
-                "CBC work needs {required} schema-v2 units but budget provides {available}"
+                "CBC work needs {required} schema-v3 units but budget provides {available}"
             ),
             Self::MemoryBudgetExceeded {
                 required,

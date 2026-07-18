@@ -146,6 +146,120 @@ fn g0_multilimb_kat_charges_carry_for_every_source_limb() {
     assert!(estimate.work_units() > boundary.work_units());
 }
 
+/// Independent large-factor KAT. Unlike the small/multidimensional cases
+/// above, `n=25_000` makes one kernel factor itself two limbs, exercising the
+/// second multiplicand axis in every multiplication and factor-decomposition
+/// charge without relying on an enormous dimension.
+#[test]
+fn g0_multilimb_kernel_factor_kat_binds_both_work_axes() {
+    let estimate = CbcProblem::new(25_000, 2)
+        .expect("valid multi-limb factor problem")
+        .estimate()
+        .expect("finite multi-limb factor estimate");
+    assert_eq!(estimate.kernel_numerator_bits(), 33);
+    assert_eq!(estimate.kernel_factor_limbs(), 2);
+    assert_eq!(estimate.max_source_product_limbs(), 2);
+    assert_eq!(estimate.lattice_visits(), 625_025_000);
+    assert_eq!(estimate.limb_work_units(), 8_751_174_987);
+    assert_eq!(estimate.scalar_work_units(), 23_128_674_909);
+    assert_eq!(estimate.work_units(), 31_879_849_896);
+}
+
+/// Maximum supported point-count KAT. `7*(2^32-1)^2` is 67 bits, so the
+/// exact kernel factor occupies three base-2^32 limbs. Dimension one keeps the
+/// problem allocation-free while independently pinning the widest live factor,
+/// its multiply/carry charges, initialization debit, and update-phase memory.
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn g0_three_limb_kernel_factor_kat_reaches_u32_point_boundary() {
+    let estimate = CbcProblem::new(u32::MAX, 1)
+        .expect("maximum point count is structurally supported")
+        .estimate()
+        .expect("dimension-one boundary estimate remains representable");
+    assert_eq!(
+        estimate.kernel_numerator_upper(),
+        129_127_208_455_837_319_175
+    );
+    assert_eq!(estimate.kernel_numerator_bits(), 67);
+    assert_eq!(estimate.kernel_factor_limbs(), 3);
+    assert_eq!(estimate.max_source_product_limbs(), 1);
+    assert_eq!(estimate.product_capacity_limbs(), 5);
+    assert_eq!(estimate.score_capacity_limbs(), 5);
+    assert_eq!(estimate.lattice_visits(), u128::from(u32::MAX));
+    assert_eq!(estimate.limb_work_units(), 77_309_411_310);
+    assert_eq!(estimate.scalar_work_units(), 197_568_495_579);
+    assert_eq!(estimate.work_units(), 274_877_906_889);
+    assert_eq!(estimate.candidate_phase_bytes(), 0);
+    assert_eq!(estimate.update_phase_bytes(), 188_978_561_076);
+    assert_eq!(estimate.logical_state_bytes(), 188_978_561_076);
+}
+
+/// Bounded property grid over all small structural regimes, including limb-
+/// width plateaus. Increasing either axis may leave a stepped bound unchanged
+/// briefly, but must never lower visits, work, or live-state authority.
+#[test]
+fn g0_resource_bounds_are_monotone_over_bounded_grid() {
+    for point_count in 3..=31 {
+        let mut previous = CbcProblem::new(point_count, 1)
+            .expect("grid point count is valid")
+            .estimate()
+            .expect("small grid estimate is finite");
+        for dimension in 2..=12 {
+            let current = CbcProblem::new(point_count, dimension)
+                .expect("grid dimension is valid")
+                .estimate()
+                .expect("small grid estimate is finite");
+            assert!(
+                current.lattice_visits() >= previous.lattice_visits(),
+                "visits decreased at n={point_count}, d={dimension}"
+            );
+            assert!(
+                current.limb_work_units() >= previous.limb_work_units(),
+                "limb work decreased at n={point_count}, d={dimension}"
+            );
+            assert!(
+                current.scalar_work_units() >= previous.scalar_work_units(),
+                "scalar work decreased at n={point_count}, d={dimension}"
+            );
+            assert!(
+                current.logical_state_bytes() >= previous.logical_state_bytes(),
+                "state decreased at n={point_count}, d={dimension}"
+            );
+            previous = current;
+        }
+    }
+
+    for dimension in 1..=12 {
+        let mut previous = CbcProblem::new(3, dimension)
+            .expect("grid dimension is valid")
+            .estimate()
+            .expect("small grid estimate is finite");
+        for point_count in 4..=31 {
+            let current = CbcProblem::new(point_count, dimension)
+                .expect("grid point count is valid")
+                .estimate()
+                .expect("small grid estimate is finite");
+            assert!(
+                current.lattice_visits() >= previous.lattice_visits(),
+                "visits decreased at n={point_count}, d={dimension}"
+            );
+            assert!(
+                current.limb_work_units() >= previous.limb_work_units(),
+                "limb work decreased at n={point_count}, d={dimension}"
+            );
+            assert!(
+                current.scalar_work_units() >= previous.scalar_work_units(),
+                "scalar work decreased at n={point_count}, d={dimension}"
+            );
+            assert!(
+                current.logical_state_bytes() >= previous.logical_state_bytes(),
+                "state decreased at n={point_count}, d={dimension}"
+            );
+            previous = current;
+        }
+    }
+}
+
 #[test]
 fn g0_each_vec_capacity_is_checked_before_work_or_budget() {
     let problem = CbcProblem::new(3, usize::MAX).expect("structural counts are nonzero");
@@ -236,6 +350,50 @@ fn g0_aggregate_state_above_isize_is_not_mistaken_for_one_allocation() {
         .expect("aggregate logical bytes are not a single allocation");
 }
 
+// Every individual Vec in this fixture remains below isize::MAX, but the
+// simultaneously live candidate phase is larger than the entire 32-bit
+// address-space cardinality. Per-allocation checks alone therefore cannot
+// authenticate the logical-state proposition.
+#[cfg(target_pointer_width = "32")]
+#[test]
+fn g0_aggregate_state_above_address_space_is_refused() {
+    let problem = CbcProblem::new(5, 500_000_000).expect("large 32-bit counts remain structural");
+    let expected = CbcAdmissionError::TargetCapacityExceeded {
+        quantity: "logical-state address-space bytes",
+        required: 5_500_000_188,
+        limit: 1_u128 << 32,
+    };
+    assert_eq!(problem.estimate(), Err(expected));
+    assert_eq!(problem.admit(CbcBudget::UNBOUNDED), Err(expected));
+    assert_eq!(
+        problem.admit(CbcBudget::new(0, 0)),
+        Err(expected),
+        "target impossibility must precede both budget refusals"
+    );
+}
+
+// Exercise the aggregate theorem on the reference 64-bit lane as well. Every
+// modeled Vec remains below isize::MAX, while the exact candidate-phase state
+// exceeds all 2^64 byte addresses and must refuse before budget comparison.
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn g0_aggregate_state_above_64_bit_address_space_is_refused() {
+    let problem = CbcProblem::new(5, 1_800_000_000_000_000_000)
+        .expect("large 64-bit counts remain structural");
+    let expected = CbcAdmissionError::TargetCapacityExceeded {
+        quantity: "logical-state address-space bytes",
+        required: 19_800_000_000_000_000_304,
+        limit: 1_u128 << 64,
+    };
+    assert_eq!(problem.estimate(), Err(expected));
+    assert_eq!(problem.admit(CbcBudget::UNBOUNDED), Err(expected));
+    assert_eq!(
+        problem.admit(CbcBudget::new(0, 0)),
+        Err(expected),
+        "target impossibility must precede both budget refusals"
+    );
+}
+
 #[test]
 fn g0_dimension_one_memory_charges_moved_old_and_new_product_overlap() {
     let estimate = CbcProblem::new(5, 1)
@@ -264,7 +422,7 @@ fn g0_work_and_memory_budgets_have_exact_boundaries() {
     let estimate = problem.estimate().expect("finite estimate");
     let exact = CbcBudget::new(estimate.work_units(), estimate.logical_state_bytes());
     let admission = problem.admit(exact).expect("exact budgets admit");
-    assert_eq!(CBC_ADMISSION_SCHEMA_VERSION, 2);
+    assert_eq!(CBC_ADMISSION_SCHEMA_VERSION, 3);
     assert_eq!(admission.schema_version(), CBC_ADMISSION_SCHEMA_VERSION);
     assert_eq!(admission.problem(), problem);
     assert_eq!(admission.budget(), exact);
@@ -273,8 +431,8 @@ fn g0_work_and_memory_budgets_have_exact_boundaries() {
     assert_eq!(exact.max_memory_bytes(), estimate.logical_state_bytes());
 
     // Schema v1 admitted this budget because it omitted scalar, zero-fill,
-    // normalization, and per-source carry charges. Schema v2 must not silently
-    // preserve that undercount.
+    // normalization, and per-source carry charges. Schemas v2/v3 must not
+    // silently preserve that undercount.
     assert_eq!(
         problem.admit(CbcBudget::new(244, estimate.logical_state_bytes())),
         Err(CbcAdmissionError::WorkBudgetExceeded {

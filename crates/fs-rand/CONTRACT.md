@@ -28,6 +28,15 @@ distributions (plan §6.7; P2's seed pillar). Layer: L1.
   generation (bead 1za9): `fill_f64` / `fill_u64` fill via 8-lane batched
   `philox4x32_10_batch` (structure-of-arrays, auto-vectorizable) and are
   BITWISE-IDENTICAL to the sequential draws (index advances by `len`).
+- `cbc::{CbcProblem, CbcBudget, CbcEstimate, CbcAdmission}` — allocation-free
+  schema-v3 preflight for exact component-by-component lattice construction.
+  It derives checked candidate/visit counts, exact-integer limb widths, a
+  source-level logical work debit, mutually exclusive candidate/update phase
+  memory maxima, every individual `Vec` capacity, and an aggregate
+  address-space impossibility bound before budget admission. The estimate may
+  legitimately exceed one allocation's `isize::MAX` total while refusing live
+  modeled state beyond `2^usize::BITS` bytes. This is the prerequisite receipt
+  for a future checked executor; legacy `Lattice::cbc` does not consume it yet.
 
 ### Extended distributions (bead 6ys.19, module `dist`)
 - `Stream::{next_gamma, next_beta, next_dirichlet, next_truncated_normal,
@@ -73,6 +82,12 @@ distributions (plan §6.7; P2's seed pillar). Layer: L1.
   magic/domain mutations are refused as cross-type/cross-domain input.
 - Integer core is trivially cross-ISA; float distributions inherit fs-math's
   proven cross-ISA determinism.
+- A CBC admission receipt binds the current target pointer width, problem,
+  explicit budgets, and the complete schema-v3 estimate. Its arithmetic and
+  target-capacity refusals precede work/memory budget refusals and allocate
+  nothing. Schema v3's work schedule preserves v2's scalar/limb charges while
+  adding the aggregate address-space theorem; changing either requires a
+  schema bump.
 
 ## Error model
 Invalid distribution parameters panic as programmer errors (`next_below(0)`,
@@ -85,9 +100,18 @@ Untrusted retained replay state returns `StreamReplayError` for a non-canonical
 length (including trailing data), foreign magic/domain, or an unknown past or
 future checkpoint/stream-semantics version; it is never interpreted under the
 current Philox mapping by guesswork.
+CBC structural, arithmetic, target-capacity, and budget failures are returned
+as the allocation-free, non-exhaustive `CbcAdmissionError`; they do not panic.
 
 ## Determinism class
-Deterministic CROSS-ISA (integer core + fs-math-strict distributions).
+The Philox integer core and fs-math-strict distributions are deterministic
+CROSS-ISA. CBC's checked integer accounting and declared logical debit formulas
+are deterministic; candidate/visit/limb-width/work quantities remain documented
+conservative bounds rather than exact executed-operation counts. A complete
+`CbcEstimate`/`CbcAdmission` is deterministic only for the same target
+ABI/layout: it deliberately retains pointer width, `usize`/`isize` capacity
+refusals, and live `Vec`/`Option` owner sizes. No equality of the complete CBC
+receipt is claimed across pointer widths, Rust layout changes, or target ABIs.
 
 ## Cancellation behavior
 Pure computation, O(1) per draw; no poll points needed.
@@ -147,6 +171,16 @@ The generated battery checks distinct blocks at counters 0, 1, and 2⁶⁴−1
 plus a 4,096-sample `|correlation| < 0.10` smoke band; seed
 `0xF5_AA_0001` is the replay root.
 
+`tests/cbc_admission.rs` is the G0 admission battery. It pins small and
+multi-limb hand calculations (including independent two- and 64-bit-lane
+three-limb kernel-factor KATs), a bounded point/dimension monotonicity grid,
+exact budget boundaries and refusal precedence, individual `Vec` limits, the
+valid distinction between aggregate state and one
+`isize`-bounded allocation, and separately cfg-gated 32-bit and 64-bit aggregate
+address-space refusal fixtures. A fixture's presence is not execution evidence:
+the central 64-bit lane exercises the 64-bit case; the 32-bit case remains
+pending an actual 32-bit test lane.
+
 ## QMC (qmc module)
 - `Sobol::new(dim)` / `Sobol::scrambled(dim, seed)` — base-2 Sobol,
   embedded Joe-Kuo head (dims 1..=10, preconditions asserted at load),
@@ -189,6 +223,20 @@ plus a 4,096-sample `|correlation| < 0.10` smoke band; seed
   representative dev-only subset (χ²/serial/monobit/inter-stream); the complete
   suite + CI wiring remain a follow-up. Finite sampled correlation bands are
   defect detectors, not proofs of statistical independence.
+- CBC schema v3 is conservative structural admission, not execution evidence:
+  `Lattice::cbc` is not yet receipt-gated or metered. The owner layout terms are
+  explicit `Vec<u32>` / `Option<(Vec<u32>, u32)>` surrogates for the current
+  private `qmc::ExactNat` shape, not compile-time authority over that private
+  owner. The execution tranche must centralize/share the owner type and limb/
+  kernel constants (or add an equivalently strong schema coupling), meter the
+  identical logical schedule, and independently observe limb, carry,
+  allocation-capacity, and phase-live-byte maxima. Exact-capacity allocation,
+  allocator metadata, stacks, process RSS, cancellation, pause/resume, compact
+  minimality certificates, elapsed time, and energy remain explicit no-claims.
+  Both 64-bit and 32-bit fixtures are retained, but neither is execution
+  evidence until its cfg-specific lane is actually green; passing either
+  necessary impossibility filter is not a claim that an OS can map the admitted
+  logical state.
 
 ## Exec key bridge (bead wf9.7.1, v1)
 
