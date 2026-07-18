@@ -37,7 +37,7 @@ use fs_exec::{Budget, CancelGate, Cx, ExecMode, StreamKey};
 use fs_fab::min_feature_size;
 use fs_grammar_e2e::{SimplificationSummary, assess_simplification};
 use fs_lbm::{Lbm, plan_scaling, poiseuille_analytic};
-use fs_neuroshape_e2e::ComponentCountEvidence;
+use fs_neuroshape_e2e::{ComponentCountEvidence, NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION};
 use fs_rep_neural::{Layer, MlpSdf};
 use fs_schedule_e2e::{ScheduleDisposition, Study};
 use fs_shapeprog::max_sdf_discrepancy;
@@ -1173,7 +1173,10 @@ fn neuro_net(lift: f64) -> MlpSdf {
 /// - `[20]` — `component_evidence_status` (`0` = unknown, `1` = certified
 ///   enclosed-component lower bound).
 /// - `[21]` — `component_count_lower_bound` (0 or 1).
-/// - `[22..24]` — reserved (0).
+/// - `[22]` — `component_evidence_schema_version` (currently `1`; consumers
+///   must refuse unsupported versions before interpreting `[16]`, `[17]`,
+///   `[20]`, or `[21]`).
+/// - `[23]` — reserved (0).
 /// - then `64·64` SDF field row-major (`j` outer / y, `i` inner / x) over the
 ///   render window.
 pub fn neuroshape(lift: f64, ring_r: f64, inner: f64) -> Vec<f64> {
@@ -1239,7 +1242,7 @@ pub fn neuroshape(lift: f64, ring_r: f64, inner: f64) -> Vec<f64> {
     out.extend_from_slice(&[
         component_evidence_status,
         component_count_lower_bound,
-        0.0,
+        f64::from(NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION),
         0.0,
     ]);
     for j in 0..grid_n {
@@ -1918,6 +1921,12 @@ mod tests {
         assert_eq!(v[17], -1.0, "exact component count remains unknown");
         assert_eq!(v[20], 1.0, "certified lower-bound evidence");
         assert_eq!(v[21], 1.0, "component-count lower bound");
+        assert_eq!(
+            v[22],
+            f64::from(NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION),
+            "component-evidence schema version"
+        );
+        assert_eq!(v[23], 0.0, "reserved header slot");
         assert_eq!(v.len(), 24 + 64 * 64, "total length");
     }
 
@@ -1928,6 +1937,12 @@ mod tests {
         assert_eq!(v[17], -1.0, "exact component count remains unknown");
         assert_eq!(v[20], 0.0, "component evidence is unknown");
         assert_eq!(v[21], 0.0, "only the trivial lower bound is available");
+        assert_eq!(
+            v[22],
+            f64::from(NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION),
+            "schema version applies independently of evidence status"
+        );
+        assert_eq!(v[23], 0.0, "reserved header slot");
         assert_eq!(v.len(), 24 + 64 * 64, "wire length remains stable");
     }
 

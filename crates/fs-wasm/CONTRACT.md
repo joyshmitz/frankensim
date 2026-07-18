@@ -72,9 +72,14 @@ crates. Layer: **L6 HELM / interface surface**. The crate compiles as an
    one. Header slot `[17]` is therefore always the JSON-safe `-1` exact-count
    unknown sentinel in this tranche; `[20]` is `0` for unknown evidence or `1`
    for a certified enclosed-component lower bound, and `[21]` carries that
-   lower bound. The positive-definite finite-difference Hessian at the origin
-   is curvature corroboration only; without a zero-gradient certificate it is
-   not a critical-point or minimum theorem. It and the sampled contour
+   lower bound. Reserved slot `[22]` now carries
+   `NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION = 1`; version-aware consumers
+   must refuse unsupported values before interpreting slots `[16]`, `[17]`,
+   `[20]`, or `[21]`. Slot `[23]` remains reserved zero. Legacy consumers that
+   ignored both reserved slots are not thereby made version-aware and must be
+   migrated explicitly. The positive-definite finite-difference Hessian at the
+   origin is curvature corroboration only; without a zero-gradient certificate
+   it is not a critical-point or minimum theorem. It and the sampled contour
    crossings cannot promote these fields to an exact count.
 
 ## Error model
@@ -135,7 +140,8 @@ threshold serializes typed refusals and cannot promote the headline.
 NeuroShape tests assert that the default closed-frame certificate serializes a
 lower bound of one but an unknown exact count, while an unenclosed case retains
 the same wire shape and claims neither an exact zero nor a positive lower
-bound.
+bound. Both cases pin schema version 1 in slot `[22]` and retain zero in the
+remaining reserved slot `[23]`.
 Current verification is native cargo test/clippy of the nested workspace plus
 any wasm32 build lane provided by DSR or site automation. The wasm32 browser
 surface itself remains a build/smoke lane rather than a browser-E2E test suite.

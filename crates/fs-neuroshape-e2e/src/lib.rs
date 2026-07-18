@@ -40,6 +40,15 @@ use fs_evidence::Color;
 use fs_rep_neural::{Layer, MlpSdf, safe_step_radius};
 use fs_viz::{CriticalKind, Grid2, Vec2, classify_hessian};
 
+/// Version of the public component-evidence semantics carried by
+/// [`NeuroShapeReport`].
+///
+/// Version 1 means that enclosed-component evidence carries only a global
+/// lower bound, while an exact component count remains unavailable. Adapters
+/// serializing these fields must carry this value so consumers can refuse
+/// layouts whose topology semantics they do not understand.
+pub const NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION: u32 = 1;
+
 /// The blob SDF network. `MlpSdf::new` spectral-normalizes every layer to
 /// exactly `bound`, so with `bound = √18` the effective hidden slope is
 /// `√18/√2 = 3` (a wall at `|coord| = 0.7`) and the effective output weight is

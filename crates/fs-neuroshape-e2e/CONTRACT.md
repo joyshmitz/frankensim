@@ -25,6 +25,11 @@ classification),
 - `ComponentCountEvidence` — non-exhaustive typed state: `Unknown` has lower
   bound zero; `LowerBound(CertifiedEnclosedComponentExists)` has lower bound one.
   `exact_count()` is always `None` in this tranche.
+- `NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION = 1` — the public semantic
+  version for component evidence. Version 1 means that an enclosed-component
+  witness supplies a global lower bound only and never an exact count. Any
+  serialized adapter must carry this value and version-aware consumers must
+  reject versions they do not implement.
 
 ## Invariants
 
@@ -71,10 +76,11 @@ None.
 
 ## Conformance tests
 
-`tests/neuroshape.rs` (3): G0 typed lower-bound state and private witness payload
-for the certified frame, including explicit refusal to return an exact count;
-Lipschitz/safe-radius/enclosure checks; an open frame yields typed `Unknown`; G5
-determinism includes the typed topology evidence.
+`tests/neuroshape.rs` (4): G0 pins component-evidence schema version 1, typed
+lower-bound state, and the private witness payload for the certified frame,
+including explicit refusal to return an exact count; Lipschitz/safe-radius/
+enclosure checks; an open frame yields typed `Unknown`; G5 determinism includes
+the typed topology evidence.
 
 ## No-claim boundaries
 

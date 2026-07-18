@@ -3,7 +3,15 @@
 //! The global component count deliberately remains inexact.
 
 use fs_evidence::Color;
-use fs_neuroshape_e2e::{ComponentCountEvidence, blob_sdf_net, run_campaign};
+use fs_neuroshape_e2e::{
+    ComponentCountEvidence, NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION, blob_sdf_net,
+    run_campaign,
+};
+
+#[test]
+fn component_evidence_schema_versions_the_lower_bound_semantics() {
+    assert_eq!(NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION, 1);
+}
 
 #[test]
 fn an_enclosed_component_lower_bound_is_certified() {
