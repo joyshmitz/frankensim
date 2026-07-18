@@ -53,7 +53,7 @@ the fs-opt problem IR is a wiring bead once that crate stabilizes
   Its schema-v3 report exposes immutable canonical `BipopRootInputs` with a
   schema-v2 root identity, one
   `BipopEvaluationRecord` for every completed production callback, a
-  schema-v2 length/domain-framed `BipopTraceIdentity`, an immutable
+  schema-v3 length/domain-framed, derive-key `BipopTraceIdentity`, an immutable
   schema-versioned `BipopRestartRecord` for every run, the retained hard
   `total_budget`, the exact named `best_restart`, and legacy
   best/schedule/total-evaluation projections. Each record binds lane,
@@ -62,11 +62,11 @@ the fs-opt problem IR is a wiring bead once that crate stabilizes
   typed first-invariant refusal. Local CMA best selection and global restart
   selection both use strict `f64::total_cmp`, preserving the earliest exact-bit
   winner, including signed-zero and NaN payload ordering.
-- `BipopReport::validate_study_identity()` recomputes the schema-v1 full-study
-  BLAKE3 over retained and recomputed root/trace receipts, every compatibility
-  projection, and every ordered restart/report bit. It distinguishes a stale
-  payload from a valid payload that merely names a different externally retained
-  study.
+- `BipopReport::validate_study_identity()` recomputes the schema-v2 full-study
+  derive-key BLAKE3 over retained and recomputed root/trace receipts, every
+  compatibility projection, and every ordered restart/report bit. It
+  distinguishes a stale payload from a valid payload that merely names a
+  different externally retained study.
 - `BIPOP_ROOT_IDENTITY_SCHEMA_DECLARATION`,
   `BIPOP_TRACE_IDENTITY_SCHEMA_DECLARATION`, and
   `BIPOP_STUDY_IDENTITY_SCHEMA_DECLARATION` are the owner-local field,
@@ -76,16 +76,40 @@ the fs-opt problem IR is a wiring bead once that crate stabilizes
   than documentary constants. Their source guards exhaustively destructure the
   top-level sources and every nested identity-bearing root, evaluation row,
   restart record, CMA report, and trace receipt. Their mutation lanes move each
-  declared schema input and nested retained-study field independently. The raw
-  streaming plain-hash BLAKE3 closure and `ReplayIdentity::canonical_bytes`
-  accessor are implementation dependencies, not ambient library assumptions.
+  declared schema input and nested retained-study field independently. The
+  streaming `DomainHasher`, BLAKE3 derive-key context/material flags, complete
+  compression closure, and `ReplayIdentity::canonical_bytes` accessor are
+  implementation dependencies, not ambient library assumptions.
 - Root identity v2 deliberately inserts `root-schema-version` into the typed
   canonical preimage and changes the kind to `fs-dfo-bipop-root-v2`. Root v1
   carried a public version constant that did not move its bytes; it is therefore
   not accepted as a compatibility alias. This migration intentionally re-keys
-  dependent callback-trace and full-study values. Their schema numbers remain
-  trace v2 and study v1 because their own byte grammars are unchanged and the
-  registered root dependency records the re-keying cause.
+  dependent callback-trace and full-study values.
+- Callback-trace v3 and full-study v2 deliberately migrate their typed 32-byte
+  roots from plain BLAKE3 to the standard BLAKE3 derive-key construction. Trace
+  v2 and study v1 are not silently re-keyed or accepted as compatibility aliases:
+  their old digests name a different hash mode. The derive-key context is the
+  complete versioned domain, while the same domain remains in the canonical
+  payload as defense-in-depth. This separates typed identities from plain
+  content hashes even for identical payload bytes and separates equal payloads
+  across trace and study domains at the compression-mode/key level.
+- The trace v3 canonical payload remains fully specified as little-endian
+  `u64(domain_len) || domain || u32(schema_version) || u64(dimension) ||
+  u64(row_count) || u64(root_len) || root`, followed in row order by each
+  row's `u32(schema_version)`, `u64(restart)`, checked `u64(local_offset)`,
+  `u64(objective.to_bits())`, and exactly `dimension` coordinate bit patterns.
+  Full-study v2 retains the v1 ordered field grammar: every field is
+  `u64(label_len) || label || u64(value_len) || value`; integers and float bit
+  patterns are little-endian, booleans and enum tags are single bytes, and
+  ordered collections bind explicit counts and indices. The in-band study
+  domain and schema version are the first canonical pair.
+- The enclosing `BipopReport` deliberately remains schema v3. Its record shape,
+  root-input grammar, and report-level structural invariants did not change;
+  nested identity validation already follows the independently versioned
+  trace/study receipts and fails closed on their legacy versions. A report bump
+  would unnecessarily re-key the separate FNV/`ReplayIdentity` root through its
+  bound report version. The root kind, root schema v2 grammar, and FNV digest
+  path are therefore unchanged by this migration.
 - `BipopReport::admit_study_identity(expected)` is the cheap callback-free
   identity plus structural-ledger gate. It deliberately does not reconstruct
   candidate generation, final CMA state, or objective semantics.
