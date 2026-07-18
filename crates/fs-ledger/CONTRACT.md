@@ -1,6 +1,6 @@
 # CONTRACT: fs-ledger
 
-> Status: ACTIVE (Design Ledger, schema v17). Owns the core schema + Rev S
+> Status: ACTIVE (Design Ledger, schema v19). Owns the core schema + Rev S
 > extension tables, BLAKE3 content addressing, the WAL/snapshot concurrency
 > contract, and — since schema v2 — forkable worlds, `at(t)` views,
 > `explain()`, the replay audit, and unreferenced-artifact GC (`travel`
@@ -90,8 +90,8 @@ and the lower-layer Franken crates declared in `Cargo.toml`, including
   query), `op_content_identity` (independently re-hashes the optional session,
   IR, seed, versions, budget, and capability bytes into six distinct typed
   raw-content fields), `op_execution_context` (fixed-size typed branch/mode
-  read after the same op-envelope preflight), `link` (FK-checked `in|out` edges accepted only
-  while the target op is bounded, branch-valid, and unfinished),
+  read after the same op-envelope preflight), `link` (FK-checked `in|out`
+  edges accepted only while the target op is bounded, branch-valid, and unfinished),
   `edge_exists` (exact role-qualified verifier query), plus
   `artifact_producer_ops_bounded` and `op_artifact_edges_bounded`. The bounded
   lineage reads accept caller caps through 1,024 rows, issue `LIMIT cap+1`
@@ -122,10 +122,12 @@ and the lower-layer Franken crates declared in `Cargo.toml`, including
   revalidating their complete bounded historic lineage; conflicting seals are
   immutable and must fail closed.
 - Streams: `record_metric` (finite REAL only), `append_event` /
-  `append_events` (batched, atomic), `tune_put`/`tune_get` (single-statement
-  atomic upsert keyed kernel × shape-class × exact machine fingerprint),
+  `append_events` (batched, atomic), `tune_put`/`tune_get` (one row upsert keyed
+  by kernel × shape-class × exact machine fingerprint; schema-v19 writers
+  publish its typed raw-content sidecar in the same transaction),
   `tune_put_if_absent` (insert-only conflict preservation for evidence-ledger
-  adoption), and `tune_rows` (deterministic `(shape_class, machine)` order).
+  adoption), `tune_content_identity` (independently re-hashes all five exact
+  key/value fields), and `tune_rows` (deterministic `(shape_class, machine)` order).
   Tune kernel/shape identities are 1..=64 KiB visible ASCII bytes; machine
   identities are exact opaque 1..=256-byte BLOBs; parameter and measurement
   JSON are each at most 1 MiB. Reads metadata-preflight stored values and
@@ -330,6 +332,19 @@ and the lower-layer Franken crates declared in `Cargo.toml`, including
   compute BLAKE3 in a SQLite trigger; its post-migration insert is therefore
   outside the declared compatibility proof and fails closed at typed reads
   until an explicit authenticated backfill is provided.
+- Autotuner typed-content sidecars (`identity_migration`, schema v19): every
+  bounded `tune` row receives one `tune_content_identities` row with distinct
+  plain `ContentId` values for exact kernel, shape-class, machine, params JSON,
+  and measured JSON bytes. Migration pages only fixed-size SQLite row IDs,
+  materializes one fully bounded cache row at a time, and independently
+  re-hashes every field before the marker advances. Successful current
+  `tune_put` and `tune_put_if_absent` calls publish source and sidecar in the
+  same owned or caller-owned transaction. Key content IDs and row schema are immutable;
+  mutable params/measured IDs move atomically with an upsert. Sidecar presence
+  assigns no owner-defined cache-key schema, scientific validity, freshness,
+  or authority. Already-open pre-v19 writers cannot compute BLAKE3 in SQLite;
+  their post-migration inserts or updates remain outside compatibility proof
+  and fail closed through `tune_content_identity` until authenticated repair.
 - Rev S extension tables (sparse v0, uniform `(name UNIQUE, body JSON)`
   shape): `put_extension`/`get_extension` over `requirements`, `model_cards`,
   `evidence`, `scenarios`, `constraints`, `capability_probes`, `imports`,
@@ -660,7 +675,12 @@ refusal, or verifier panic).
     independently re-hashes from the exact bounded operation bytes. The local
     row ID and every execution/provenance envelope field remain non-semantic;
     sidecar presence cannot assign IR meaning or authority.
-21. The nightly writer publishes op + metric + benchmark event + terminal
+21. An autotuner content-identity sidecar is valid only when its row schema and
+    immutable key IDs are supported and all five field IDs independently
+    re-hash from the exact bounded cache row. Mutable params/measured IDs must
+    change atomically with the source values. Raw equality cannot establish a
+    cache-key schema, measurement validity, freshness, or authority.
+22. The nightly writer publishes op + metric + benchmark event + terminal
     outcome in one explicit transaction. A write or commit failure is primary;
     rollback is always attempted, and a rollback failure is retained after the
     primary failure in a deterministic combined diagnostic. Cleanup failure
@@ -1054,13 +1074,16 @@ The graph is the minting authority for `fs_evidence::AdmittedColor`:
   same only for explicitly bound exact evidence JSON bytes; it neither
   canonicalizes historical JSON nor infers semantics from it. Schema v18 adds
   only exact raw-content identities for frozen operation bytes; it does not
-  identify their semantic schema or authority. Historical cache rows remain
-  untouched. The v1 migration-receipt wire transport now
+  identify their semantic schema or authority. Schema v19 independently does
+  the same for bounded autotuner key/value bytes while leaving cache-key
+  semantics, validity, freshness, and authority unclaimed. The v1
+  migration-receipt wire transport now
   preserves every receipt field and fails closed on truncation, extension,
   unknown versions, forged IDs, malformed lengths, and content divergence, but
   package integration and end-to-end database-wire-package parity remain open;
   resumable fleet backfill, a declared multi-version compatibility window
-  covering pre-v18 operation writers beyond the artifact/edge triggers,
+  covering pre-v18 operation writers and pre-v19 cache writers beyond the
+  artifact/edge triggers,
   coverage, cancellation/crash fault injection, and rollback views remain
   required before the parent persistence bead can close.
 - Safe std-only identity generation is implemented through `/dev/urandom` on

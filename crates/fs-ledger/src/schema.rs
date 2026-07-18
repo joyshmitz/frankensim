@@ -44,9 +44,11 @@
 //! evidence JSON bytes and makes a bound evidence body immutable.
 //! Schema v18 gives every operation's frozen session/IR/Five-Explicits fields
 //! separate typed raw-content identities without assigning semantic meaning.
+//! Schema v19 gives every mutable autotuner-cache key/value field a separate
+//! typed raw-content identity without inventing cache-key semantics.
 
 /// The schema version this crate writes and reads.
-pub const SCHEMA_VERSION: i64 = 18;
+pub const SCHEMA_VERSION: i64 = 19;
 
 /// Storage chunk length for large artifacts (bytes). Artifacts strictly
 /// larger than this are stored as `artifact_chunks` rows of at most this
@@ -56,7 +58,7 @@ pub const STORAGE_CHUNK_LEN: usize = 4 * 1024 * 1024;
 /// Migration ladder: `MIGRATIONS[i]` migrates a database at `user_version`
 /// `i` to `i + 1`. Append-only; never edit a shipped batch.
 pub(crate) const MIGRATIONS: &[&[&str]] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19,
 ];
 
 /// v1: the six core tables (Appendix D), chunk storage, and the Rev S
@@ -1284,7 +1286,58 @@ pub const V18: &[&str] = &[
      END",
 ];
 
-/// Every table the CURRENT schema owns (v1 set + v2 through v18 additions); the
+/// v19: exact typed raw-content identities for autotuner cache keys and values.
+///
+/// Cache-key meaning remains with the owning kernel/session schema. Rust
+/// backfills and verifies exact BLAKE3 `ContentId` values inside the migration
+/// transaction. Current binaries update a mutable cache row and its sidecar in
+/// one transaction; the sidecar permits value-ID replacement while its key-ID
+/// projection remains immutable.
+pub const V19: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS tune_content_identities(
+        kernel TEXT NOT NULL,
+        shape_class TEXT NOT NULL,
+        machine BLOB NOT NULL,
+        kernel_content_id BLOB NOT NULL CHECK(length(kernel_content_id) = 32),
+        shape_class_content_id BLOB NOT NULL CHECK(length(shape_class_content_id) = 32),
+        machine_content_id BLOB NOT NULL CHECK(length(machine_content_id) = 32),
+        params_content_id BLOB NOT NULL CHECK(length(params_content_id) = 32),
+        measured_content_id BLOB NOT NULL CHECK(length(measured_content_id) = 32),
+        row_schema_version INTEGER NOT NULL CHECK(row_schema_version = 1),
+        PRIMARY KEY(kernel, shape_class, machine),
+        FOREIGN KEY(kernel, shape_class, machine)
+            REFERENCES tune(kernel, shape_class, machine) ON DELETE CASCADE
+    ) STRICT",
+    "CREATE INDEX IF NOT EXISTS idx_tune_content_identity_key
+     ON tune_content_identities(
+         kernel_content_id, shape_class_content_id, machine_content_id
+     )",
+    "CREATE INDEX IF NOT EXISTS idx_tune_content_identity_params
+     ON tune_content_identities(params_content_id, kernel_content_id)",
+    "CREATE INDEX IF NOT EXISTS idx_tune_content_identity_measured
+     ON tune_content_identities(measured_content_id, kernel_content_id)",
+    "CREATE TRIGGER IF NOT EXISTS trg_tune_content_identity_key_immutable
+     BEFORE UPDATE OF kernel, shape_class, machine, kernel_content_id,
+                      shape_class_content_id, machine_content_id,
+                      row_schema_version
+     ON tune_content_identities
+     BEGIN
+       SELECT RAISE(ABORT, 'tune content identity key is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_tune_content_identity_guard_delete
+     BEFORE DELETE ON tune_content_identities
+     WHEN EXISTS(
+         SELECT 1 FROM tune
+         WHERE kernel = OLD.kernel
+           AND shape_class = OLD.shape_class
+           AND machine = OLD.machine
+     )
+     BEGIN
+       SELECT RAISE(ABORT, 'tune content identity is retained with its cache row');
+     END",
+];
+
+/// Every table the CURRENT schema owns (v1 set + v2 through v19 additions); the
 /// `table_count`/lint whitelist.
 pub const ALL_TABLES: &[&str] = &[
     "artifacts",
@@ -1322,4 +1375,5 @@ pub const ALL_TABLES: &[&str] = &[
     "artifact_semantic_bindings",
     "evidence_semantic_bindings",
     "op_content_identities",
+    "tune_content_identities",
 ];

@@ -9,7 +9,7 @@ use fs_ledger::{
     ExtensionTable, FiveExplicits, IDENTITY_MIGRATION_RECEIPT_WIRE_VERSION, IdentityMigrationClaim,
     IdentityMigrationReceipt, IdentityMigrationWireError, Ledger, LedgerError,
     MAX_IDENTITY_MIGRATION_PAYLOAD_BYTES, MAX_IDENTITY_MIGRATION_RECEIPT_WIRE_BYTES,
-    OP_CONTENT_IDENTITY_ROW_VERSION,
+    OP_CONTENT_IDENTITY_ROW_VERSION, TUNE_CONTENT_IDENTITY_ROW_VERSION,
 };
 
 const LIMITS: CanonicalLimits = CanonicalLimits::new(64 * 1024, 16 * 1024, 8, 16, 4096);
@@ -386,7 +386,7 @@ fn lineage_edges_dual_write_the_linked_artifact_content_identity() {
 
 #[test]
 fn operation_fields_receive_separate_exact_typed_content_identities() {
-    let ledger = Ledger::open(":memory:").expect("fresh v18 ledger");
+    let ledger = Ledger::open(":memory:").expect("fresh v19 ledger");
     let session = b"operation-session";
     let ir = r#"{"op":"identity-fixture","units":"m"}"#;
     let explicits = FiveExplicits {
@@ -452,6 +452,95 @@ fn operation_fields_receive_separate_exact_typed_content_identities() {
     assert_eq!(ledger.op(rolled_back).unwrap(), None);
     assert_eq!(ledger.op_content_identity(rolled_back).unwrap(), None);
     assert_eq!(ledger.table_count("op_content_identities").unwrap(), 1);
+}
+
+#[test]
+fn tune_cache_keys_and_values_receive_separate_exact_content_identities() {
+    let ledger = Ledger::open(":memory:").expect("fresh v19 ledger");
+    let kernel = "gemm:f64";
+    let shape = "m512-n512-k512";
+    let machine = b"machine-fingerprint-v1";
+    let original_params = r#"{"mc":256,"nc":128}"#;
+    let original_measured = r#"{"gflops":100.5}"#;
+    ledger
+        .tune_put(kernel, shape, machine, original_params, original_measured)
+        .expect("atomically write cache row and typed sidecar");
+
+    let original = ledger
+        .tune_content_identity(kernel, shape, machine)
+        .expect("independently re-hash tune fields")
+        .expect("typed tune sidecar exists");
+    assert_eq!(
+        original.kernel_content_id(),
+        ContentId::of_bytes(kernel.as_bytes())
+    );
+    assert_eq!(
+        original.shape_class_content_id(),
+        ContentId::of_bytes(shape.as_bytes())
+    );
+    assert_eq!(original.machine_content_id(), ContentId::of_bytes(machine));
+    assert_eq!(
+        original.params_content_id(),
+        ContentId::of_bytes(original_params.as_bytes())
+    );
+    assert_eq!(
+        original.measured_content_id(),
+        ContentId::of_bytes(original_measured.as_bytes())
+    );
+    assert_eq!(
+        original.row_schema_version(),
+        TUNE_CONTENT_IDENTITY_ROW_VERSION
+    );
+
+    let updated_params = r#"{"mc":384,"nc":128}"#;
+    let updated_measured = r#"{"gflops":117.25}"#;
+    ledger
+        .tune_put(kernel, shape, machine, updated_params, updated_measured)
+        .expect("atomically update mutable cache values and sidecar");
+    let updated = ledger
+        .tune_content_identity(kernel, shape, machine)
+        .unwrap()
+        .expect("updated tune sidecar exists");
+    assert_eq!(updated.kernel_content_id(), original.kernel_content_id());
+    assert_eq!(
+        updated.shape_class_content_id(),
+        original.shape_class_content_id()
+    );
+    assert_eq!(updated.machine_content_id(), original.machine_content_id());
+    assert_ne!(updated.params_content_id(), original.params_content_id());
+    assert_ne!(
+        updated.measured_content_id(),
+        original.measured_content_id()
+    );
+
+    ledger
+        .tune_put_if_absent(kernel, shape, machine, "{}", "{}")
+        .expect("conflicting insert-if-absent preserves authenticated row");
+    assert_eq!(
+        ledger
+            .tune_content_identity(kernel, shape, machine)
+            .unwrap(),
+        Some(updated)
+    );
+
+    ledger.begin().expect("open caller-owned tune transaction");
+    ledger
+        .tune_put("rollback-kernel", "shape", b"machine", "{}", "{}")
+        .expect("write cache row and sidecar inside caller transaction");
+    assert!(
+        ledger
+            .tune_content_identity("rollback-kernel", "shape", b"machine")
+            .unwrap()
+            .is_some()
+    );
+    ledger.rollback().expect("roll back tune transaction");
+    assert_eq!(
+        ledger
+            .tune_content_identity("rollback-kernel", "shape", b"machine")
+            .unwrap(),
+        None
+    );
+    assert_eq!(ledger.table_count("tune_content_identities").unwrap(), 1);
 }
 
 #[test]

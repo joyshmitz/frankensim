@@ -54,6 +54,7 @@ pub use identity_migration::{
     MAX_IDENTITY_MIGRATION_DOMAIN_BYTES, MAX_IDENTITY_MIGRATION_PAYLOAD_BYTES,
     MAX_IDENTITY_MIGRATION_RECEIPT_WIRE_BYTES, MAX_IDENTITY_MIGRATION_RULE_BYTES,
     MAX_IDENTITY_MIGRATION_SCHEMA_NAME_BYTES, OP_CONTENT_IDENTITY_ROW_VERSION, OpContentIdentity,
+    TUNE_CONTENT_IDENTITY_ROW_VERSION, TuneContentIdentity,
 };
 pub use schema::{ALL_TABLES, SCHEMA_VERSION, STORAGE_CHUNK_LEN, V1_TABLES};
 pub use state_checkpoint::{
@@ -1254,8 +1255,8 @@ pub const ARTIFACT_CONTENT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
     "domain_const=ARTIFACT_CONTENT_IDENTITY_DOMAIN",
     "encoder=ledger_artifact_content_identity",
     "encoder_helpers=none",
-    "schema_constants=ARTIFACT_CONTENT_IDENTITY_VERSION,ARTIFACT_CONTENT_IDENTITY_DOMAIN,crates/fs-ledger/src/identity_migration.rs#ARTIFACT_CONTENT_IDENTITY_ROW_VERSION,crates/fs-ledger/src/identity_migration.rs#EDGE_CONTENT_IDENTITY_ROW_VERSION,crates/fs-ledger/src/identity_migration.rs#OP_CONTENT_IDENTITY_ROW_VERSION,crates/fs-ledger/src/schema.rs#V14,crates/fs-ledger/src/schema.rs#V15,crates/fs-ledger/src/schema.rs#V16,crates/fs-ledger/src/schema.rs#V18,crates/fs-blake3/src/lib.rs#IV,crates/fs-blake3/src/lib.rs#MSG_PERMUTATION,crates/fs-blake3/src/lib.rs#BLOCK_LEN,crates/fs-blake3/src/lib.rs#CHUNK_LEN,crates/fs-blake3/src/lib.rs#CHUNK_START,crates/fs-blake3/src/lib.rs#CHUNK_END,crates/fs-blake3/src/lib.rs#PARENT,crates/fs-blake3/src/lib.rs#ROOT,crates/fs-blake3/src/lib.rs#MAX_DEPTH",
-    "schema_functions=crates/fs-blake3/src/lib.rs#hash_bytes,crates/fs-blake3/src/lib.rs#Blake3::new,crates/fs-blake3/src/lib.rs#Blake3::update,crates/fs-blake3/src/lib.rs#Blake3::finalize,crates/fs-blake3/src/identity.rs#ContentId::of_bytes,Ledger::put_artifact,Ledger::artifact_writer,ArtifactWriter::finish,ArtifactWriter::finish_inner,Ledger::insert_inline_artifact,Ledger::read_artifact_chunks_with_info,crates/fs-ledger/src/identity_migration.rs#derive_op_content_identity,crates/fs-ledger/src/identity_migration.rs#Ledger::artifact_content_identity,crates/fs-ledger/src/identity_migration.rs#Ledger::verify_artifact_content_identity_backfill,crates/fs-ledger/src/identity_migration.rs#Ledger::edge_content_identity,crates/fs-ledger/src/identity_migration.rs#Ledger::verify_edge_content_identity_backfill,crates/fs-ledger/src/identity_migration.rs#Ledger::write_op_content_identity,crates/fs-ledger/src/identity_migration.rs#Ledger::insert_op_content_identity,crates/fs-ledger/src/identity_migration.rs#Ledger::op_content_identity,crates/fs-ledger/src/identity_migration.rs#Ledger::backfill_and_verify_op_content_identities,crates/fs-ledger/src/identity_migration.rs#Ledger::bind_artifact_semantic_identity,crates/fs-ledger/src/identity_migration.rs#Ledger::artifact_semantic_binding,crates/fs-ledger/src/identity_migration.rs#Ledger::verify_artifact_semantic_bindings,identity_schema_is_current",
+    "schema_constants=ARTIFACT_CONTENT_IDENTITY_VERSION,ARTIFACT_CONTENT_IDENTITY_DOMAIN,crates/fs-ledger/src/identity_migration.rs#ARTIFACT_CONTENT_IDENTITY_ROW_VERSION,crates/fs-ledger/src/identity_migration.rs#EDGE_CONTENT_IDENTITY_ROW_VERSION,crates/fs-ledger/src/identity_migration.rs#OP_CONTENT_IDENTITY_ROW_VERSION,crates/fs-ledger/src/identity_migration.rs#TUNE_CONTENT_IDENTITY_ROW_VERSION,crates/fs-ledger/src/schema.rs#V14,crates/fs-ledger/src/schema.rs#V15,crates/fs-ledger/src/schema.rs#V16,crates/fs-ledger/src/schema.rs#V18,crates/fs-ledger/src/schema.rs#V19,crates/fs-blake3/src/lib.rs#IV,crates/fs-blake3/src/lib.rs#MSG_PERMUTATION,crates/fs-blake3/src/lib.rs#BLOCK_LEN,crates/fs-blake3/src/lib.rs#CHUNK_LEN,crates/fs-blake3/src/lib.rs#CHUNK_START,crates/fs-blake3/src/lib.rs#CHUNK_END,crates/fs-blake3/src/lib.rs#PARENT,crates/fs-blake3/src/lib.rs#ROOT,crates/fs-blake3/src/lib.rs#MAX_DEPTH",
+    "schema_functions=crates/fs-blake3/src/lib.rs#hash_bytes,crates/fs-blake3/src/lib.rs#Blake3::new,crates/fs-blake3/src/lib.rs#Blake3::update,crates/fs-blake3/src/lib.rs#Blake3::finalize,crates/fs-blake3/src/identity.rs#ContentId::of_bytes,Ledger::put_artifact,Ledger::artifact_writer,ArtifactWriter::finish,ArtifactWriter::finish_inner,Ledger::insert_inline_artifact,Ledger::read_artifact_chunks_with_info,Ledger::tune_put,Ledger::tune_put_if_absent,Ledger::tune_get_inner,crates/fs-ledger/src/identity_migration.rs#derive_op_content_identity,crates/fs-ledger/src/identity_migration.rs#derive_tune_content_identity,crates/fs-ledger/src/identity_migration.rs#Ledger::artifact_content_identity,crates/fs-ledger/src/identity_migration.rs#Ledger::verify_artifact_content_identity_backfill,crates/fs-ledger/src/identity_migration.rs#Ledger::edge_content_identity,crates/fs-ledger/src/identity_migration.rs#Ledger::verify_edge_content_identity_backfill,crates/fs-ledger/src/identity_migration.rs#Ledger::write_op_content_identity,crates/fs-ledger/src/identity_migration.rs#Ledger::insert_op_content_identity,crates/fs-ledger/src/identity_migration.rs#Ledger::op_content_identity,crates/fs-ledger/src/identity_migration.rs#Ledger::backfill_and_verify_op_content_identities,crates/fs-ledger/src/identity_migration.rs#Ledger::write_tune_content_identity,crates/fs-ledger/src/identity_migration.rs#Ledger::upsert_tune_content_identity,crates/fs-ledger/src/identity_migration.rs#Ledger::tune_content_identity,crates/fs-ledger/src/identity_migration.rs#Ledger::verify_tune_content_identity,crates/fs-ledger/src/identity_migration.rs#Ledger::backfill_and_verify_tune_content_identities,crates/fs-ledger/src/identity_migration.rs#Ledger::bind_artifact_semantic_identity,crates/fs-ledger/src/identity_migration.rs#Ledger::artifact_semantic_binding,crates/fs-ledger/src/identity_migration.rs#Ledger::verify_artifact_semantic_bindings,identity_schema_is_current",
     "schema_dependencies=none",
     "digest=blake3-256-plain-hash",
     "encoding=typed-binary",
@@ -1265,7 +1266,7 @@ pub const ARTIFACT_CONTENT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
     "external_semantic_fields=none",
     "semantic_fields=content-bytes",
     "excluded_fields=kind:typed-envelope-not-content,metadata:provenance-envelope-not-content,created-at:wall-clock-envelope,chunk-boundaries:storage-layout-only",
-    "consumers=Ledger::put_artifact,ArtifactWriter::finish,Ledger::get_artifact,Ledger::read_artifact_chunks,Ledger::verify_artifact_integrity,Ledger::artifact_content_identity,Ledger::edge_content_identity,Ledger::op_content_identity,Ledger::bind_artifact_semantic_identity,Ledger::artifact_semantic_binding,fs-ledger:vcs-commit-leaf",
+    "consumers=Ledger::put_artifact,ArtifactWriter::finish,Ledger::get_artifact,Ledger::read_artifact_chunks,Ledger::verify_artifact_integrity,Ledger::artifact_content_identity,Ledger::edge_content_identity,Ledger::op_content_identity,Ledger::tune_content_identity,Ledger::bind_artifact_semantic_identity,Ledger::artifact_semantic_binding,fs-ledger:vcs-commit-leaf",
     "mutations=content-bytes:crates/fs-ledger/src/lib.rs#artifact_content_identity_fields_move_independently",
     "nonsemantic_mutations=kind:crates/fs-ledger/src/lib.rs#artifact_content_excluded_fields_do_not_move_identity,metadata:crates/fs-ledger/src/lib.rs#artifact_content_excluded_fields_do_not_move_identity,created-at:crates/fs-ledger/src/lib.rs#artifact_content_excluded_fields_do_not_move_identity,chunk-boundaries:crates/fs-ledger/src/lib.rs#artifact_content_excluded_fields_do_not_move_identity",
     "field_guard=classify_artifact_content_identity_fields",
@@ -3291,9 +3292,9 @@ impl Ledger {
     }
 
     /// Monotone count of typed read-API queries issued through this
-    /// connection (bead vm3i): `tune_rows`/`tune_get`/`get_artifact`/`op`,
-    /// bounded lineage reads, seal reads, `edge_exists`, and
-    /// `checked_instance_id` each count once. The measurable basis for
+    /// connection (bead vm3i): `tune_rows`/`tune_get`/`tune_content_identity`,
+    /// `get_artifact`/`op`, bounded lineage reads, seal reads, `edge_exists`,
+    /// and `checked_instance_id` each count once. The measurable basis for
     /// verification query budgets; diagnostic only, never part of a receipt.
     #[must_use]
     pub fn read_queries(&self) -> u64 {
@@ -3438,6 +3439,7 @@ impl Ledger {
                 let _ = self.read_current_instance_id()?;
                 self.verify_evidence_semantic_bindings()?;
                 self.backfill_and_verify_op_content_identities()?;
+                self.backfill_and_verify_tune_content_identities()?;
                 self.conn
                     .execute(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
                     .map_err(|error| sql_err("init: set user_version", &error))?;
@@ -3529,6 +3531,12 @@ impl Ledger {
                     // types separately, and verify every source/sidecar pair
                     // before the marker commits.
                     self.backfill_and_verify_op_content_identities()?;
+                }
+                if target == 19 {
+                    // V19 hashes only the exact bounded cache key/value bytes.
+                    // Re-hash every field independently and refuse a partial
+                    // or semantically guessed cache migration.
+                    self.backfill_and_verify_tune_content_identities()?;
                 }
                 self.conn
                     .execute(&format!("PRAGMA user_version = {target}"))
@@ -5678,8 +5686,9 @@ impl Ledger {
     /// Upsert one autotuner cache row (`kernel` × `shape_class` × machine
     /// fingerprint).
     ///
-    /// Single-statement `INSERT .. ON CONFLICT .. DO UPDATE` — atomic under
-    /// any connection model. (Between 2026-07-11 and the upstream fix
+    /// The cache-row upsert remains one `INSERT .. ON CONFLICT .. DO UPDATE`;
+    /// schema-v19 binaries publish its typed content sidecar in the same
+    /// transaction. (Between 2026-07-11 and the upstream fix
     /// 3c388122 this was routed UPDATE-then-INSERT around the fsqlite
     /// upsert-after-leaf-split corruption, bead u8og /
     /// Dicklesworthstone/frankensqlite#123; the raw repro from that issue
@@ -5697,23 +5706,49 @@ impl Ledger {
         measured: &str,
     ) -> Result<(), LedgerError> {
         self.require_tune_row(kernel, shape_class, machine, params, measured)?;
-        self.conn
-            .prepare(
-                "INSERT INTO tune(kernel, shape_class, machine, params, measured) \
-                 VALUES (?1, ?2, ?3, ?4, ?5) \
-                 ON CONFLICT(kernel, shape_class, machine) \
-                 DO UPDATE SET params = excluded.params, measured = excluded.measured",
-            )
-            .map_err(|e| sql_err("tune upsert prepare", &e))?
-            .execute_with_params(&[
-                text_param(kernel),
-                text_param(shape_class),
-                blob_param(machine),
-                text_param(params),
-                text_param(measured),
-            ])
-            .map_err(|e| sql_err("tune upsert", &e))?;
-        Ok(())
+        let owns_txn = !self.conn.in_transaction();
+        if owns_txn {
+            self.begin()?;
+        }
+        let result = (|| {
+            let changed = self
+                .conn
+                .prepare(
+                    "INSERT INTO tune(kernel, shape_class, machine, params, measured) \
+                     VALUES (?1, ?2, ?3, ?4, ?5) \
+                     ON CONFLICT(kernel, shape_class, machine) \
+                     DO UPDATE SET params = excluded.params, measured = excluded.measured",
+                )
+                .map_err(|e| sql_err("tune upsert prepare", &e))?
+                .execute_with_params(&[
+                    text_param(kernel),
+                    text_param(shape_class),
+                    blob_param(machine),
+                    text_param(params),
+                    text_param(measured),
+                ])
+                .map_err(|e| sql_err("tune upsert", &e))?;
+            if changed != 1 {
+                return Err(tune_corrupt(
+                    kernel,
+                    format!("one tune upsert changed {changed} rows"),
+                ));
+            }
+            self.upsert_tune_content_identity(kernel, shape_class, machine, params, measured)
+        })();
+        match (&result, owns_txn) {
+            (Ok(()), true) => {
+                if let Err(error) = self.commit() {
+                    let _ = self.rollback();
+                    return Err(error);
+                }
+            }
+            (Err(_), true) => {
+                let _ = self.rollback();
+            }
+            _ => {}
+        }
+        result
     }
 
     /// Insert one autotuner row only when its exact storage key is absent.
@@ -5732,22 +5767,55 @@ impl Ledger {
         measured: &str,
     ) -> Result<(), LedgerError> {
         self.require_tune_row(kernel, shape_class, machine, params, measured)?;
-        self.conn
-            .prepare(
-                "INSERT INTO tune(kernel, shape_class, machine, params, measured) \
-                 VALUES (?1, ?2, ?3, ?4, ?5) \
-                 ON CONFLICT(kernel, shape_class, machine) DO NOTHING",
-            )
-            .map_err(|e| sql_err("tune insert-if-absent prepare", &e))?
-            .execute_with_params(&[
-                text_param(kernel),
-                text_param(shape_class),
-                blob_param(machine),
-                text_param(params),
-                text_param(measured),
-            ])
-            .map_err(|e| sql_err("tune insert-if-absent", &e))?;
-        Ok(())
+        let owns_txn = !self.conn.in_transaction();
+        if owns_txn {
+            self.begin()?;
+        }
+        let result = (|| {
+            let changed = self
+                .conn
+                .prepare(
+                    "INSERT INTO tune(kernel, shape_class, machine, params, measured) \
+                     VALUES (?1, ?2, ?3, ?4, ?5) \
+                     ON CONFLICT(kernel, shape_class, machine) DO NOTHING",
+                )
+                .map_err(|e| sql_err("tune insert-if-absent prepare", &e))?
+                .execute_with_params(&[
+                    text_param(kernel),
+                    text_param(shape_class),
+                    blob_param(machine),
+                    text_param(params),
+                    text_param(measured),
+                ])
+                .map_err(|e| sql_err("tune insert-if-absent", &e))?;
+            match changed {
+                1 => self.upsert_tune_content_identity(
+                    kernel,
+                    shape_class,
+                    machine,
+                    params,
+                    measured,
+                ),
+                0 => self.verify_tune_content_identity(kernel, shape_class, machine),
+                other => Err(tune_corrupt(
+                    kernel,
+                    format!("one tune insert-if-absent changed {other} rows"),
+                )),
+            }
+        })();
+        match (&result, owns_txn) {
+            (Ok(()), true) => {
+                if let Err(error) = self.commit() {
+                    let _ = self.rollback();
+                    return Err(error);
+                }
+            }
+            (Err(_), true) => {
+                let _ = self.rollback();
+            }
+            _ => {}
+        }
+        result
     }
 
     /// Fetch one autotuner cache row, if present.
@@ -5763,6 +5831,15 @@ impl Ledger {
         machine: &[u8],
     ) -> Result<Option<TuneRow>, LedgerError> {
         self.note_read_query();
+        self.tune_get_inner(kernel, shape_class, machine)
+    }
+
+    fn tune_get_inner(
+        &self,
+        kernel: &str,
+        shape_class: &str,
+        machine: &[u8],
+    ) -> Result<Option<TuneRow>, LedgerError> {
         validate_tune_identity("kernel", kernel, MAX_TUNE_KERNEL_BYTES)?;
         validate_tune_identity("shape_class", shape_class, MAX_TUNE_SHAPE_CLASS_BYTES)?;
         validate_tune_machine(machine)?;
@@ -9713,23 +9790,25 @@ mod tests {
         assert_eq!(l.read_queries(), 0, "writes are not read queries");
         let _ = l.tune_get("k", "s", b"m").unwrap();
         assert_eq!(l.read_queries(), 1);
-        let _ = l.tune_rows("k").unwrap();
+        let _ = l.tune_content_identity("k", "s", b"m").unwrap();
         assert_eq!(l.read_queries(), 2);
-        let _ = l.op(1).unwrap();
+        let _ = l.tune_rows("k").unwrap();
         assert_eq!(l.read_queries(), 3);
-        let _ = l.op_execution_context(1).unwrap();
+        let _ = l.op(1).unwrap();
         assert_eq!(l.read_queries(), 4);
+        let _ = l.op_execution_context(1).unwrap();
+        assert_eq!(l.read_queries(), 5);
         let absent = hash_bytes(b"absent");
         let _ = l.artifact_producer_ops_bounded(&absent, 1).unwrap();
         let _ = l.op_artifact_edges_bounded(1, 1).unwrap();
-        assert_eq!(l.read_queries(), 6);
+        assert_eq!(l.read_queries(), 7);
         let _ = l.artifact_output_seal(&absent).unwrap();
         let _ = l.op_artifact_edge_seal(1).unwrap();
-        assert_eq!(l.read_queries(), 8);
+        assert_eq!(l.read_queries(), 9);
         let _ = l.get_artifact(&absent).unwrap();
         let _ = l.edge_exists(1, &absent, EdgeRole::Out).unwrap();
-        assert_eq!(l.read_queries(), 10);
-        let _ = l.checked_instance_id().unwrap();
         assert_eq!(l.read_queries(), 11);
+        let _ = l.checked_instance_id().unwrap();
+        assert_eq!(l.read_queries(), 12);
     }
 }

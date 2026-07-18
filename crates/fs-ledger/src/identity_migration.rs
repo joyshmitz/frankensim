@@ -23,7 +23,10 @@ use fs_blake3::identity::{
 use fsqlite::SqliteValue;
 
 use crate::{
-    ContentHash, EdgeRole, FiveExplicits, Ledger, LedgerError, blob_param, now_wall_ns, sql_err,
+    ContentHash, EdgeRole, FiveExplicits, Ledger, LedgerError, MAX_TUNE_KERNEL_BYTES,
+    MAX_TUNE_MACHINE_BYTES, MAX_TUNE_MEASURED_BYTES, MAX_TUNE_PARAMS_BYTES,
+    MAX_TUNE_SHAPE_CLASS_BYTES, TuneRow, blob_param, now_wall_ns, row_text, sql_err, text_param,
+    tune_corrupt,
 };
 
 /// Schema version of one artifact compatibility-hash to typed-content-ID row.
@@ -32,6 +35,8 @@ pub const ARTIFACT_CONTENT_IDENTITY_ROW_VERSION: u32 = 1;
 pub const EDGE_CONTENT_IDENTITY_ROW_VERSION: u32 = 1;
 /// Schema version of one frozen-operation-field typed-content-ID sidecar.
 pub const OP_CONTENT_IDENTITY_ROW_VERSION: u32 = 1;
+/// Schema version of one autotuner-cache typed-content-ID sidecar.
+pub const TUNE_CONTENT_IDENTITY_ROW_VERSION: u32 = 1;
 /// Maximum receipt IDs exposed by one artifact-semantic candidate lookup.
 pub const MAX_ARTIFACT_SEMANTIC_BINDING_CANDIDATES: usize = 256;
 /// Maximum UTF-8 bytes in an evidence name admitted to a semantic binding.
@@ -681,6 +686,59 @@ impl OpContentIdentity {
     }
 }
 
+/// Independently verified typed raw-content identities for one autotuner row.
+///
+/// Each exact cache-key and cache-value field receives its own plain content
+/// identity. The sidecar does not claim that a kernel, shape, machine, params,
+/// or measurement payload has an owner-defined semantic schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TuneContentIdentity {
+    kernel_content_id: ContentId,
+    shape_class_content_id: ContentId,
+    machine_content_id: ContentId,
+    params_content_id: ContentId,
+    measured_content_id: ContentId,
+    row_schema_version: u32,
+}
+
+impl TuneContentIdentity {
+    /// Typed raw-content identity of the exact kernel bytes.
+    #[must_use]
+    pub const fn kernel_content_id(self) -> ContentId {
+        self.kernel_content_id
+    }
+
+    /// Typed raw-content identity of the exact shape-class bytes.
+    #[must_use]
+    pub const fn shape_class_content_id(self) -> ContentId {
+        self.shape_class_content_id
+    }
+
+    /// Typed raw-content identity of the exact machine-fingerprint bytes.
+    #[must_use]
+    pub const fn machine_content_id(self) -> ContentId {
+        self.machine_content_id
+    }
+
+    /// Typed raw-content identity of the exact params JSON bytes.
+    #[must_use]
+    pub const fn params_content_id(self) -> ContentId {
+        self.params_content_id
+    }
+
+    /// Typed raw-content identity of the exact measured JSON bytes.
+    #[must_use]
+    pub const fn measured_content_id(self) -> ContentId {
+        self.measured_content_id
+    }
+
+    /// Exact sidecar row schema version.
+    #[must_use]
+    pub const fn row_schema_version(self) -> u32 {
+        self.row_schema_version
+    }
+}
+
 impl EdgeContentIdentity {
     /// Operation owning this role-qualified lineage edge.
     #[must_use]
@@ -983,6 +1041,40 @@ fn derive_op_content_identity(
         budget_content_id: ContentId::of_bytes(explicits.budget.as_bytes()),
         capability_content_id: ContentId::of_bytes(explicits.capability.as_bytes()),
         row_schema_version: OP_CONTENT_IDENTITY_ROW_VERSION,
+    }
+}
+
+fn tune_content_id(
+    value: Option<&SqliteValue>,
+    kernel: &str,
+    field: &'static str,
+) -> Result<ContentId, LedgerError> {
+    match value {
+        Some(SqliteValue::Blob(bytes)) => ContentId::parse_slice(bytes),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        tune_corrupt(
+            kernel,
+            format!("{field} is not an exact 32-byte typed content identity"),
+        )
+    })
+}
+
+fn derive_tune_content_identity(
+    kernel: &str,
+    shape_class: &str,
+    machine: &[u8],
+    params: &str,
+    measured: &str,
+) -> TuneContentIdentity {
+    TuneContentIdentity {
+        kernel_content_id: ContentId::of_bytes(kernel.as_bytes()),
+        shape_class_content_id: ContentId::of_bytes(shape_class.as_bytes()),
+        machine_content_id: ContentId::of_bytes(machine),
+        params_content_id: ContentId::of_bytes(params.as_bytes()),
+        measured_content_id: ContentId::of_bytes(measured.as_bytes()),
+        row_schema_version: TUNE_CONTENT_IDENTITY_ROW_VERSION,
     }
 }
 
@@ -2489,6 +2581,362 @@ impl Ledger {
         Ok(())
     }
 
+    fn bounded_tune_key_at_rowid(
+        &self,
+        rowid: i64,
+    ) -> Result<(String, String, Vec<u8>), LedgerError> {
+        let sql = format!(
+            "SELECT kernel, shape_class, machine FROM tune
+             WHERE rowid = ?1 AND
+                   typeof(kernel) = 'text' AND
+                   length(CAST(kernel AS BLOB)) BETWEEN 1 AND {MAX_TUNE_KERNEL_BYTES} AND
+                   length(CAST(kernel AS BLOB)) = length(kernel) AND
+                   kernel NOT GLOB '*[^!-~]*' AND
+                   typeof(shape_class) = 'text' AND
+                   length(CAST(shape_class AS BLOB)) BETWEEN 1 AND {MAX_TUNE_SHAPE_CLASS_BYTES} AND
+                   length(CAST(shape_class AS BLOB)) = length(shape_class) AND
+                   shape_class NOT GLOB '*[^!-~]*' AND
+                   typeof(machine) = 'blob' AND
+                   length(machine) BETWEEN 1 AND {MAX_TUNE_MACHINE_BYTES} AND
+                   CASE WHEN typeof(params) = 'text' THEN
+                       CASE WHEN length(CAST(params AS BLOB)) BETWEEN 1 AND {MAX_TUNE_PARAMS_BYTES}
+                           THEN json_valid(params) ELSE 0 END
+                       ELSE 0 END = 1 AND
+                   CASE WHEN typeof(measured) = 'text' THEN
+                       CASE WHEN length(CAST(measured AS BLOB)) BETWEEN 1 AND {MAX_TUNE_MEASURED_BYTES}
+                           THEN json_valid(measured) ELSE 0 END
+                       ELSE 0 END = 1 LIMIT 2"
+        );
+        let rows = self
+            .conn
+            .query_with_params(&sql, &[SqliteValue::Integer(rowid)])
+            .map_err(|error| sql_err("tune identity bounded-key read", &error))?;
+        let row_label = format!("<rowid:{rowid}>");
+        if rows.len() != 1 {
+            let exists = self
+                .conn
+                .query_with_params(
+                    "SELECT 1 FROM tune WHERE rowid = ?1 LIMIT 1",
+                    &[SqliteValue::Integer(rowid)],
+                )
+                .map_err(|error| sql_err("tune identity rowid existence", &error))?;
+            return Err(tune_corrupt(
+                &row_label,
+                if exists.is_empty() {
+                    "cache row disappeared during the v19 migration transaction"
+                } else {
+                    "cache row is outside the bounded canonical tune storage contract"
+                },
+            ));
+        }
+        let row = rows
+            .first()
+            .expect("single bounded tune key row checked above");
+        let kernel = row_text(row, 0, "tune identity kernel")?;
+        let shape_class = row_text(row, 1, "tune identity shape_class")?;
+        let machine = match row.get(2) {
+            Some(SqliteValue::Blob(bytes)) => bytes.to_vec(),
+            other => {
+                return Err(tune_corrupt(
+                    &kernel,
+                    format!("machine is not a bounded BLOB: {other:?}"),
+                ));
+            }
+        };
+        Ok((kernel, shape_class, machine))
+    }
+
+    fn write_tune_content_identity(
+        &self,
+        kernel: &str,
+        shape_class: &str,
+        machine: &[u8],
+        params: &str,
+        measured: &str,
+        if_absent: bool,
+    ) -> Result<TuneContentIdentity, LedgerError> {
+        let identity = derive_tune_content_identity(kernel, shape_class, machine, params, measured);
+        let sql = if if_absent {
+            "INSERT OR IGNORE INTO tune_content_identities(
+                 kernel, shape_class, machine, kernel_content_id,
+                 shape_class_content_id, machine_content_id, params_content_id,
+                 measured_content_id, row_schema_version
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
+        } else {
+            "INSERT INTO tune_content_identities(
+                 kernel, shape_class, machine, kernel_content_id,
+                 shape_class_content_id, machine_content_id, params_content_id,
+                 measured_content_id, row_schema_version
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(kernel, shape_class, machine) DO UPDATE SET
+                 params_content_id = excluded.params_content_id,
+                 measured_content_id = excluded.measured_content_id"
+        };
+        let affected = self
+            .conn
+            .prepare(sql)
+            .map_err(|error| sql_err("tune content identity prepare", &error))?
+            .execute_with_params(&[
+                text_param(kernel),
+                text_param(shape_class),
+                blob_param(machine),
+                blob_param(identity.kernel_content_id.as_bytes()),
+                blob_param(identity.shape_class_content_id.as_bytes()),
+                blob_param(identity.machine_content_id.as_bytes()),
+                blob_param(identity.params_content_id.as_bytes()),
+                blob_param(identity.measured_content_id.as_bytes()),
+                SqliteValue::Integer(i64::from(identity.row_schema_version)),
+            ])
+            .map_err(|error| sql_err("tune content identity write", &error))?;
+        if affected != 1 && !(if_absent && affected == 0) {
+            return Err(tune_corrupt(
+                kernel,
+                format!("one tune identity write changed {affected} rows"),
+            ));
+        }
+        let stored = self
+            .tune_content_identity_inner(kernel, shape_class, machine)?
+            .ok_or_else(|| tune_corrupt(kernel, "cache row disappeared after sidecar write"))?;
+        if stored != identity {
+            return Err(tune_corrupt(
+                kernel,
+                "stored tune content identity differs from the requested exact row bytes",
+            ));
+        }
+        Ok(stored)
+    }
+
+    pub(crate) fn upsert_tune_content_identity(
+        &self,
+        kernel: &str,
+        shape_class: &str,
+        machine: &[u8],
+        params: &str,
+        measured: &str,
+    ) -> Result<(), LedgerError> {
+        self.write_tune_content_identity(kernel, shape_class, machine, params, measured, false)
+            .map(|_| ())
+    }
+
+    /// Return independently re-hashed typed identities for one autotuner
+    /// cache row's exact kernel, shape, machine, params, and measured bytes.
+    ///
+    /// Cache-key semantics, JSON schemas, scientific validity, freshness, and
+    /// authority remain separate. Absence means the compatibility cache row
+    /// itself does not exist.
+    ///
+    /// # Errors
+    /// [`LedgerError::TuneCorrupt`] when a retained row or its v19 sidecar is
+    /// missing, malformed, future-versioned, or content-divergent; invalid
+    /// lookup keys and storage failures otherwise.
+    pub fn tune_content_identity(
+        &self,
+        kernel: &str,
+        shape_class: &str,
+        machine: &[u8],
+    ) -> Result<Option<TuneContentIdentity>, LedgerError> {
+        self.note_read_query();
+        self.tune_content_identity_inner(kernel, shape_class, machine)
+    }
+
+    fn tune_content_identity_inner(
+        &self,
+        kernel: &str,
+        shape_class: &str,
+        machine: &[u8],
+    ) -> Result<Option<TuneContentIdentity>, LedgerError> {
+        let Some(source) = self.tune_get_inner(kernel, shape_class, machine)? else {
+            return Ok(None);
+        };
+        let rows = self
+            .conn
+            .query_with_params(
+                "SELECT kernel_content_id, shape_class_content_id,
+                        machine_content_id, params_content_id,
+                        measured_content_id, row_schema_version
+                 FROM tune_content_identities
+                 WHERE kernel = ?1 AND shape_class = ?2 AND machine = ?3 LIMIT 2",
+                &[
+                    text_param(kernel),
+                    text_param(shape_class),
+                    blob_param(machine),
+                ],
+            )
+            .map_err(|error| sql_err("tune content identity read", &error))?;
+        if rows.len() != 1 {
+            return Err(tune_corrupt(
+                kernel,
+                if rows.is_empty() {
+                    "retained cache row has no typed content-identity sidecar"
+                } else {
+                    "one cache key selected multiple typed content-identity sidecars"
+                },
+            ));
+        }
+        let row = rows
+            .first()
+            .expect("single tune content identity row checked above");
+        let stored = TuneContentIdentity {
+            kernel_content_id: tune_content_id(row.first(), kernel, "kernel_content_id")?,
+            shape_class_content_id: tune_content_id(row.get(1), kernel, "shape_class_content_id")?,
+            machine_content_id: tune_content_id(row.get(2), kernel, "machine_content_id")?,
+            params_content_id: tune_content_id(row.get(3), kernel, "params_content_id")?,
+            measured_content_id: tune_content_id(row.get(4), kernel, "measured_content_id")?,
+            row_schema_version: match row.get(5) {
+                Some(SqliteValue::Integer(value)) => u32::try_from(*value).map_err(|_| {
+                    tune_corrupt(
+                        kernel,
+                        "tune content-identity row version is outside the u32 domain",
+                    )
+                })?,
+                _ => {
+                    return Err(tune_corrupt(
+                        kernel,
+                        "tune content-identity row version is not an INTEGER",
+                    ));
+                }
+            },
+        };
+        if stored.row_schema_version != TUNE_CONTENT_IDENTITY_ROW_VERSION {
+            return Err(tune_corrupt(
+                kernel,
+                format!(
+                    "tune content-identity row version {} differs from supported {}",
+                    stored.row_schema_version, TUNE_CONTENT_IDENTITY_ROW_VERSION
+                ),
+            ));
+        }
+        let expected = derive_tune_content_identity(
+            &source.kernel,
+            &source.shape_class,
+            &source.machine,
+            &source.params,
+            &source.measured,
+        );
+        for (field, found, required) in [
+            (
+                "kernel_content_id",
+                stored.kernel_content_id,
+                expected.kernel_content_id,
+            ),
+            (
+                "shape_class_content_id",
+                stored.shape_class_content_id,
+                expected.shape_class_content_id,
+            ),
+            (
+                "machine_content_id",
+                stored.machine_content_id,
+                expected.machine_content_id,
+            ),
+            (
+                "params_content_id",
+                stored.params_content_id,
+                expected.params_content_id,
+            ),
+            (
+                "measured_content_id",
+                stored.measured_content_id,
+                expected.measured_content_id,
+            ),
+        ] {
+            if found != required {
+                return Err(tune_corrupt(
+                    kernel,
+                    format!("{field} differs from the independently re-hashed source bytes"),
+                ));
+            }
+        }
+        Ok(Some(stored))
+    }
+
+    pub(crate) fn verify_tune_content_identity(
+        &self,
+        kernel: &str,
+        shape_class: &str,
+        machine: &[u8],
+    ) -> Result<(), LedgerError> {
+        self.tune_content_identity_inner(kernel, shape_class, machine)?
+            .map(|_| ())
+            .ok_or_else(|| tune_corrupt(kernel, "cache row has no compatibility source"))
+    }
+
+    /// Backfill and authenticate v19 autotuner content identities before the
+    /// schema marker commits. Only fixed-size row IDs are paged; each bounded
+    /// cache row is materialized and re-hashed independently.
+    pub(crate) fn backfill_and_verify_tune_content_identities(&self) -> Result<(), LedgerError> {
+        let mut after = None;
+        loop {
+            let rows = match after {
+                Some(last) => self.conn.query_with_params(
+                    "SELECT rowid FROM tune WHERE rowid > ?1 ORDER BY rowid LIMIT 64",
+                    &[SqliteValue::Integer(last)],
+                ),
+                None => self
+                    .conn
+                    .query("SELECT rowid FROM tune ORDER BY rowid LIMIT 64"),
+            }
+            .map_err(|error| sql_err("tune identity backfill page", &error))?;
+            if rows.is_empty() {
+                break;
+            }
+            for row in &rows {
+                let rowid = match row.first() {
+                    Some(SqliteValue::Integer(rowid)) => *rowid,
+                    _ => {
+                        return Err(tune_corrupt(
+                            "<migration>",
+                            "tune identity backfill selected a non-integer row ID",
+                        ));
+                    }
+                };
+                let (kernel, shape_class, machine) = self.bounded_tune_key_at_rowid(rowid)?;
+                let source = self
+                    .tune_get_inner(&kernel, &shape_class, &machine)?
+                    .ok_or_else(|| {
+                        tune_corrupt(&kernel, "cache row disappeared during v19 backfill")
+                    })?;
+                self.write_tune_content_identity(
+                    &source.kernel,
+                    &source.shape_class,
+                    &source.machine,
+                    &source.params,
+                    &source.measured,
+                    true,
+                )?;
+                after = Some(rowid);
+            }
+            if rows.len() < 64 {
+                break;
+            }
+        }
+
+        let orphans = self
+            .conn
+            .query(
+                "SELECT i.kernel_content_id FROM tune_content_identities AS i
+                 LEFT JOIN tune AS t
+                   ON t.kernel = i.kernel
+                  AND t.shape_class = i.shape_class
+                  AND t.machine = i.machine
+                 WHERE t.kernel IS NULL LIMIT 1",
+            )
+            .map_err(|error| sql_err("verify tune identity orphan", &error))?;
+        if let Some(row) = orphans.first() {
+            let kernel = match row.first() {
+                Some(SqliteValue::Blob(bytes)) => ContentId::parse_slice(bytes)
+                    .map(|id| format!("<content:{}>", id.to_hex()))
+                    .unwrap_or_else(|| "<malformed-content-id>".to_string()),
+                _ => "<malformed-content-id>".to_string(),
+            };
+            return Err(tune_corrupt(
+                &kernel,
+                "v19 tune content-identity sidecar has no compatibility cache row",
+            ));
+        }
+        Ok(())
+    }
+
     fn stored_artifact_semantic_binding(
         &self,
         artifact_hash: &ContentHash,
@@ -3767,6 +4215,19 @@ mod tests {
         }
     }
 
+    fn drop_v19_objects(ledger: &Ledger) {
+        for ddl in [
+            "DROP TRIGGER IF EXISTS trg_tune_content_identity_guard_delete",
+            "DROP TRIGGER IF EXISTS trg_tune_content_identity_key_immutable",
+            "DROP INDEX IF EXISTS idx_tune_content_identity_measured",
+            "DROP INDEX IF EXISTS idx_tune_content_identity_params",
+            "DROP INDEX IF EXISTS idx_tune_content_identity_key",
+            "DROP TABLE IF EXISTS tune_content_identities",
+        ] {
+            ledger.conn.execute(ddl).expect("remove v19 fixture object");
+        }
+    }
+
     fn v14_edge_fixture(ledger: &Ledger) -> (i64, ContentHash) {
         let artifact = ledger
             .put_artifact("v14-edge-artifact", b"exact v14 edge bytes", None)
@@ -3787,8 +4248,8 @@ mod tests {
     }
 
     #[test]
-    fn genuine_v12_and_stale_v13_markers_migrate_through_v18() {
-        let ledger = Ledger::open(":memory:").expect("fresh v18 ledger");
+    fn genuine_v12_and_stale_v13_markers_migrate_through_v19() {
+        let ledger = Ledger::open(":memory:").expect("fresh v19 ledger");
         drop_v13_objects(&ledger);
         ledger
             .conn
@@ -4039,7 +4500,7 @@ mod tests {
     #[test]
     fn v18_backfills_frozen_operation_fields_and_replays_a_stale_marker() {
         for preapply_v18 in [false, true] {
-            let ledger = Ledger::open(":memory:").expect("fresh v18 ledger");
+            let ledger = Ledger::open(":memory:").expect("fresh v19 ledger");
             let explicits = crate::FiveExplicits {
                 seed: b"v17-operation-seed",
                 versions: r#"{"version":17}"#,
@@ -4090,7 +4551,7 @@ mod tests {
 
     #[test]
     fn v18_malformed_source_rolls_back_objects_rows_and_marker() {
-        let ledger = Ledger::open(":memory:").expect("fresh v18 ledger");
+        let ledger = Ledger::open(":memory:").expect("fresh v19 ledger");
         let explicits = crate::FiveExplicits {
             seed: b"bounded-seed",
             versions: "{}",
@@ -4131,7 +4592,96 @@ mod tests {
     }
 
     #[test]
-    fn migration_ladder_ends_with_v18() {
+    fn v19_backfills_tune_fields_and_replays_a_stale_marker() {
+        for preapply_v19 in [false, true] {
+            let ledger = Ledger::open(":memory:").expect("fresh v19 ledger");
+            ledger
+                .tune_put(
+                    "v18-kernel",
+                    "v18-shape",
+                    b"v18-machine",
+                    r#"{"tile":64}"#,
+                    r#"{"gflops":91}"#,
+                )
+                .expect("record tune row before recreating v18 fixture");
+            drop_v19_objects(&ledger);
+            ledger
+                .conn
+                .execute("PRAGMA user_version = 18")
+                .expect("mark genuine v18 fixture");
+            if preapply_v19 {
+                for ddl in schema::V19 {
+                    ledger
+                        .conn
+                        .execute(ddl)
+                        .expect("preapply exact v19 migration batch");
+                }
+            }
+
+            ledger
+                .migrate_from_observed_version(18)
+                .expect("backfill and authenticate exact v18 tune fields");
+            assert_eq!(ledger.schema_version().unwrap(), SCHEMA_VERSION);
+            let identity = ledger
+                .tune_content_identity("v18-kernel", "v18-shape", b"v18-machine")
+                .unwrap()
+                .expect("backfilled tune identity exists");
+            assert_eq!(
+                identity.kernel_content_id(),
+                ContentId::of_bytes(b"v18-kernel")
+            );
+            assert_eq!(
+                identity.params_content_id(),
+                ContentId::of_bytes(br#"{"tile":64}"#)
+            );
+            assert_eq!(ledger.table_count("tune_content_identities").unwrap(), 1);
+        }
+    }
+
+    #[test]
+    fn v19_malformed_tune_source_rolls_back_objects_rows_and_marker() {
+        let ledger = Ledger::open(":memory:").expect("fresh v19 ledger");
+        ledger
+            .tune_put("v18-kernel", "v18-shape", b"v18-machine", "{}", "{}")
+            .expect("record tune row before recreating v18 fixture");
+        drop_v19_objects(&ledger);
+        ledger
+            .conn
+            .execute("PRAGMA user_version = 18")
+            .expect("mark genuine v18 fixture");
+        let oversized = format!("\"{}\"", "x".repeat(crate::MAX_TUNE_PARAMS_BYTES));
+        ledger
+            .conn
+            .prepare(
+                "UPDATE tune SET params = ?1
+                 WHERE kernel = ?2 AND shape_class = ?3 AND machine = ?4",
+            )
+            .expect("prepare oversized cache-source corruption")
+            .execute_with_params(&[
+                text_param(&oversized),
+                text_param("v18-kernel"),
+                text_param("v18-shape"),
+                blob_param(b"v18-machine"),
+            ])
+            .expect("inject oversized cache-source corruption");
+
+        assert!(matches!(
+            ledger.migrate_from_observed_version(18),
+            Err(LedgerError::TuneCorrupt { .. })
+        ));
+        assert_eq!(ledger.schema_version().unwrap(), 18);
+        let objects = ledger
+            .conn
+            .query(
+                "SELECT name FROM sqlite_master
+                 WHERE name = 'tune_content_identities' LIMIT 1",
+            )
+            .expect("inspect rolled-back v19 schema");
+        assert!(objects.is_empty());
+    }
+
+    #[test]
+    fn migration_ladder_ends_with_v19() {
         assert_eq!(
             schema::MIGRATIONS.len(),
             usize::try_from(SCHEMA_VERSION).unwrap()
@@ -4141,6 +4691,7 @@ mod tests {
         assert_eq!(schema::MIGRATIONS.get(14), Some(&schema::V15));
         assert_eq!(schema::MIGRATIONS.get(15), Some(&schema::V16));
         assert_eq!(schema::MIGRATIONS.get(16), Some(&schema::V17));
-        assert_eq!(schema::MIGRATIONS.last(), Some(&schema::V18));
+        assert_eq!(schema::MIGRATIONS.get(17), Some(&schema::V18));
+        assert_eq!(schema::MIGRATIONS.last(), Some(&schema::V19));
     }
 }
