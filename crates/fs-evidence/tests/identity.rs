@@ -9,26 +9,29 @@ use fs_blake3::identity::{
     FieldSpec, NoClaimState, SchemaId, SourceId, StrongIdentity, TrustState, WireType,
 };
 use fs_evidence::{
-    Ambition, COLOR_ALGEBRA_VERSION, Certified, CertifiedF64EvidenceIdV1,
-    CertifiedF64EvidenceIdentityError, CertifiedF64EvidenceReceiptV1, Color,
-    ColorEvidenceCompositionOpV1, ColorEvidenceIdentityError, ColorEvidenceNodeIdV1,
+    Ambition, COLOR_ALGEBRA_VERSION, Certified, CertifiedF64DecisionAssessmentIdV1,
+    CertifiedF64DecisionAssessmentIdentityError, CertifiedF64DecisionAssessmentReceiptV1,
+    CertifiedF64EvidenceIdV1, CertifiedF64EvidenceIdentityError, CertifiedF64EvidenceReceiptV1,
+    Color, ColorEvidenceCompositionOpV1, ColorEvidenceIdentityError, ColorEvidenceNodeIdV1,
     ColorEvidenceNodeIdentitySchemaV1, ColorEvidenceNodeKindV1, ColorEvidenceNodeV1,
     ColorEvidenceOperationV1, ColorEvidenceParentSemanticsV1, ColorEvidenceSourceIdV1,
-    ColorEvidenceSourceV1, DiscrepancyBand, DiscrepancyBandIdV1, DiscrepancyBandIdentityError,
-    DiscrepancyBandReceiptV1, Evidence, FidelityPair, FidelityPairIdV1, FidelityPairIdentityError,
-    FidelityPairReceiptV1, IdentifiedCertifiedF64EvidenceV1, IdentifiedModelCardV1,
-    IdentifiedModelEvidenceV1, IdentifiedValidityDomainV1, ModelCard,
-    ModelCardCalibrationSourceIdV1, ModelCardCalibrationSourceReceiptV1, ModelCardIdV1,
-    ModelCardIdentityError, ModelCardReceiptV1, ModelEvidence, ModelEvidenceIdV1,
-    ModelEvidenceIdentityError, ModelEvidenceReceiptV1, NumericalCertificate,
-    NumericalCertificateIdV1, NumericalCertificateIdentityError, NumericalCertificateReceiptV1,
-    NumericalKind, ProvenanceHash, SensitivitySummary, StatisticalCertificate,
-    StatisticalCertificateIdV1, StatisticalCertificateIdentityError,
-    StatisticalCertificateReceiptV1, ValidityDomain, ValidityDomainIdV1,
+    ColorEvidenceSourceV1, DECISION_ASSESSMENT_ALGORITHM_VERSION_V1, DecisionStatus,
+    DiscrepancyBand, DiscrepancyBandIdV1, DiscrepancyBandIdentityError, DiscrepancyBandReceiptV1,
+    EscalationAdvice, Evidence, FidelityPair, FidelityPairIdV1, FidelityPairIdentityError,
+    FidelityPairReceiptV1, IdentifiedCertifiedF64DecisionAssessmentV1,
+    IdentifiedCertifiedF64EvidenceV1, IdentifiedModelCardV1, IdentifiedModelEvidenceV1,
+    IdentifiedValidityDomainV1, ModelCard, ModelCardCalibrationSourceIdV1,
+    ModelCardCalibrationSourceReceiptV1, ModelCardIdV1, ModelCardIdentityError, ModelCardReceiptV1,
+    ModelEvidence, ModelEvidenceIdV1, ModelEvidenceIdentityError, ModelEvidenceReceiptV1,
+    NumericalCertificate, NumericalCertificateIdV1, NumericalCertificateIdentityError,
+    NumericalCertificateReceiptV1, NumericalKind, ProvenanceHash, SensitivitySummary,
+    StatisticalCertificate, StatisticalCertificateIdV1, StatisticalCertificateIdentityError,
+    StatisticalCertificateReceiptV1, UncertaintySource, ValidityDomain, ValidityDomainIdV1,
     ValidityDomainIdentityError, compose_color_evidence_nodes_v1,
-    identify_certified_f64_evidence_v1, identify_color_evidence_source_node_v1,
-    identify_color_evidence_source_v1, identify_discrepancy_band_v1, identify_fidelity_pair_v1,
-    identify_model_card_v1, identify_model_evidence_v1, identify_numerical_certificate_v1,
+    identify_certified_f64_decision_assessment_v1, identify_certified_f64_evidence_v1,
+    identify_color_evidence_source_node_v1, identify_color_evidence_source_v1,
+    identify_discrepancy_band_v1, identify_fidelity_pair_v1, identify_model_card_v1,
+    identify_model_evidence_v1, identify_numerical_certificate_v1,
     identify_statistical_certificate_v1, identify_validity_domain_v1,
 };
 
@@ -275,6 +278,19 @@ fn identified_certified(certified: Certified<f64>) -> IdentifiedCertifiedF64Evid
         .expect("valid certified-f64 identity")
 }
 
+fn identified_decision_assessment(
+    certified: Certified<f64>,
+    threshold_rel: f64,
+) -> IdentifiedCertifiedF64DecisionAssessmentV1 {
+    identify_certified_f64_decision_assessment_v1(
+        identified_certified(certified),
+        threshold_rel,
+        LIMITS,
+        || false,
+    )
+    .expect("valid certified-f64 decision assessment")
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "independent full-schema framing is the replay oracle for the helper"
@@ -382,6 +398,74 @@ fn manual_certified_receipt(
         .expect("adjoint presence")
         .finish()
         .expect("manual certified-f64 identity")
+}
+
+fn manual_decision_assessment_receipt(
+    certified: &IdentifiedCertifiedF64EvidenceV1,
+    threshold_rel: f64,
+) -> CertifiedF64DecisionAssessmentReceiptV1 {
+    let evidence = certified.certified();
+    let breakdown = evidence.breakdown();
+    let total_rel = breakdown.total_rel();
+    let status = evidence.assess(threshold_rel);
+    let advice = evidence.escalation_advice(threshold_rel);
+    let source_tag = |source| match source {
+        UncertaintySource::ModelForm => 1_u32,
+        UncertaintySource::Statistical => 2,
+        UncertaintySource::Numerical => 3,
+    };
+    let mut status_payload = [0_u8; 4];
+    let (status_tag, status_payload_len) = match status {
+        DecisionStatus::DecisionGrade => (1, 0),
+        DecisionStatus::NotDecisionGrade { dominant, .. } => {
+            status_payload.copy_from_slice(&source_tag(dominant).to_le_bytes());
+            (2, status_payload.len())
+        }
+    };
+    let advice_tag = match advice {
+        EscalationAdvice::NoneNeeded => 1,
+        EscalationAdvice::RefineNumerics => 2,
+        EscalationAdvice::GatherMoreSamples => 3,
+        EscalationAdvice::EscalateModelFidelity => 4,
+    };
+    CanonicalEncoder::<CertifiedF64DecisionAssessmentIdV1, _>::new(LIMITS, || false)
+        .expect("decision-assessment schema")
+        .child(Field::new(0, "certified-f64-evidence"), certified.id())
+        .expect("certified child")
+        .u64(
+            Field::new(1, "assessment-algorithm-version"),
+            u64::from(DECISION_ASSESSMENT_ALGORITHM_VERSION_V1),
+        )
+        .expect("assessment algorithm")
+        .finite_f64(Field::new(2, "threshold-rel"), threshold_rel)
+        .expect("threshold")
+        .u64(
+            Field::new(3, "numerical-rel-ieee754-bits"),
+            breakdown.numerical_rel.to_bits(),
+        )
+        .expect("numerical band")
+        .u64(
+            Field::new(4, "statistical-rel-ieee754-bits"),
+            breakdown.statistical_rel.to_bits(),
+        )
+        .expect("statistical band")
+        .u64(
+            Field::new(5, "model-rel-ieee754-bits"),
+            breakdown.model_rel.to_bits(),
+        )
+        .expect("model band")
+        .u64(Field::new(6, "total-rel-ieee754-bits"), total_rel.to_bits())
+        .expect("total band")
+        .variant(
+            Field::new(7, "status"),
+            status_tag,
+            &status_payload[..status_payload_len],
+        )
+        .expect("status")
+        .variant(Field::new(8, "advice"), advice_tag, &[])
+        .expect("advice")
+        .finish()
+        .expect("manual decision-assessment identity")
 }
 
 const CALIBRATION_BYTES: &[u8] = b"calibration-artifact-v1\0binary";
@@ -1676,6 +1760,354 @@ fn fidelity_pair_and_discrepancy_band_identities_enforce_resources_and_cancellat
             },
         ),
         Err(DiscrepancyBandIdentityError::Canonical(
+            CanonicalError::Cancelled { absorbed_bytes }
+        )) if absorbed_bytes > 0
+    ));
+}
+
+fn decision_model_evidence(discrepancy_rel: f64) -> ModelEvidence {
+    ModelEvidence {
+        cards: vec!["model-a".to_string()],
+        assumptions: vec!["local-model-assumption".to_string()],
+        validity: ValidityDomain::unconstrained(),
+        discrepancy_rel,
+        in_domain: true,
+    }
+}
+
+#[test]
+fn certified_f64_decision_assessment_replays_and_covers_every_advice_lane() {
+    let grade = Evidence::exact(1.0, ProvenanceHash(1))
+        .certified()
+        .expect("exact grade fixture");
+    let numerical = Evidence::enclosed(1.0, 0.8, 1.2, ProvenanceHash(2))
+        .certified()
+        .expect("numerical fixture");
+    let statistical = Evidence::exact(1.0, ProvenanceHash(3))
+        .with_statistical(StatisticalCertificate::HalfWidth {
+            half_width: 0.2,
+            confidence: 0.95,
+        })
+        .certified()
+        .expect("statistical fixture");
+    let model = Evidence::exact(1.0, ProvenanceHash(4))
+        .with_model(decision_model_evidence(0.2))
+        .certified()
+        .expect("model fixture");
+
+    let cases = [
+        (grade.clone(), 0.0, EscalationAdvice::NoneNeeded, None),
+        (
+            numerical.clone(),
+            0.1,
+            EscalationAdvice::RefineNumerics,
+            Some(UncertaintySource::Numerical),
+        ),
+        (
+            statistical.clone(),
+            0.1,
+            EscalationAdvice::GatherMoreSamples,
+            Some(UncertaintySource::Statistical),
+        ),
+        (
+            model.clone(),
+            0.1,
+            EscalationAdvice::EscalateModelFidelity,
+            Some(UncertaintySource::ModelForm),
+        ),
+    ];
+    for (certified, threshold, expected_advice, expected_dominant) in cases {
+        let child = identified_certified(certified);
+        let manual = manual_decision_assessment_receipt(&child, threshold);
+        let first =
+            identify_certified_f64_decision_assessment_v1(child.clone(), threshold, LIMITS, || {
+                false
+            })
+            .expect("decision assessment");
+        let replay =
+            identify_certified_f64_decision_assessment_v1(child, threshold, LIMITS, || false)
+                .expect("replayed decision assessment");
+        assert_eq!(first.id(), replay.id());
+        assert_eq!(first.id(), manual.id());
+        assert_eq!(
+            first.receipt().canonical_preimage(),
+            manual.canonical_preimage()
+        );
+        assert_eq!(
+            first.certified_evidence_id(),
+            first.certified_evidence().id()
+        );
+        assert_eq!(first.threshold_rel().to_bits(), threshold.to_bits());
+        assert_eq!(
+            first.total_rel().to_bits(),
+            first.breakdown().total_rel().to_bits()
+        );
+        assert_eq!(first.advice(), expected_advice);
+        match (first.status(), expected_dominant) {
+            (DecisionStatus::DecisionGrade, None) => {}
+            (DecisionStatus::NotDecisionGrade { dominant, detail }, Some(expected_dominant)) => {
+                assert_eq!(*dominant, expected_dominant);
+                assert!(!detail.is_empty());
+            }
+            (status, dominant) => panic!("unexpected status {status:?} for {dominant:?}"),
+        }
+        assert_eq!(first.id_bytes(), first.receipt().audit_record().id());
+        assert_eq!(first.trust_state(), TrustState::Unanchored);
+        assert_eq!(
+            first.receipt().audit_record().no_claim(),
+            NoClaimState::ExternalTrustRequired
+        );
+        let (recovered_child, recovered_threshold) = first.into_inputs();
+        assert_eq!(recovered_child.id(), replay.certified_evidence_id());
+        assert_eq!(recovered_threshold.to_bits(), threshold.to_bits());
+    }
+
+    let tie = Evidence::enclosed(1.0, 0.8, 1.2, ProvenanceHash(5))
+        .with_statistical(StatisticalCertificate::HalfWidth {
+            half_width: 0.2,
+            confidence: 0.95,
+        })
+        .with_model(decision_model_evidence(0.2))
+        .certified()
+        .expect("tie fixture");
+    let tie = identified_decision_assessment(tie, 0.1);
+    assert_eq!(tie.advice(), EscalationAdvice::EscalateModelFidelity);
+    assert!(matches!(
+        tie.status(),
+        DecisionStatus::NotDecisionGrade {
+            dominant: UncertaintySource::ModelForm,
+            ..
+        }
+    ));
+
+    let statistical_numerical_tie = Evidence::enclosed(1.0, 0.75, 1.25, ProvenanceHash(8))
+        .with_statistical(StatisticalCertificate::HalfWidth {
+            half_width: 0.25,
+            confidence: 0.95,
+        })
+        .certified()
+        .expect("statistical-numerical tie fixture");
+    let statistical_numerical_tie = identified_decision_assessment(statistical_numerical_tie, 0.1);
+    assert_eq!(
+        statistical_numerical_tie.advice(),
+        EscalationAdvice::GatherMoreSamples
+    );
+    assert!(matches!(
+        statistical_numerical_tie.status(),
+        DecisionStatus::NotDecisionGrade {
+            dominant: UncertaintySource::Statistical,
+            ..
+        }
+    ));
+
+    let unbounded_numerical = Evidence::enclosed(1.0, -f64::MAX, f64::MAX, ProvenanceHash(9))
+        .certified()
+        .expect("unbounded relative numerical fixture");
+    let unbounded_numerical = identified_decision_assessment(unbounded_numerical, 1.0);
+    assert!(unbounded_numerical.breakdown().numerical_rel.is_infinite());
+    assert!(unbounded_numerical.total_rel().is_infinite());
+    assert_eq!(
+        unbounded_numerical.advice(),
+        EscalationAdvice::RefineNumerics
+    );
+
+    let unbounded_statistical = Evidence::exact(f64::MIN_POSITIVE, ProvenanceHash(6))
+        .with_statistical(StatisticalCertificate::HalfWidth {
+            half_width: f64::MAX,
+            confidence: 0.95,
+        })
+        .certified()
+        .expect("unbounded relative statistical fixture");
+    let unbounded_statistical = identified_decision_assessment(unbounded_statistical, 1.0);
+    assert!(
+        unbounded_statistical
+            .breakdown()
+            .statistical_rel
+            .is_infinite()
+    );
+    assert!(unbounded_statistical.total_rel().is_infinite());
+    assert_eq!(
+        unbounded_statistical.advice(),
+        EscalationAdvice::GatherMoreSamples
+    );
+
+    let unbounded_model = Evidence::exact(1.0, ProvenanceHash(7))
+        .with_model(decision_model_evidence(f64::INFINITY))
+        .certified()
+        .expect("unbounded model fixture");
+    let unbounded_model = identified_decision_assessment(unbounded_model, 1.0);
+    assert!(unbounded_model.breakdown().model_rel.is_infinite());
+    assert_eq!(
+        unbounded_model.advice(),
+        EscalationAdvice::EscalateModelFidelity
+    );
+}
+
+#[test]
+fn certified_f64_decision_assessment_binds_child_threshold_and_derived_state() {
+    let grade = Evidence::exact(1.0, ProvenanceHash(10))
+        .certified()
+        .expect("grade fixture");
+    let positive_zero = identified_decision_assessment(grade.clone(), 0.0);
+    let negative_zero = identified_decision_assessment(grade.clone(), -0.0);
+    assert!(matches!(
+        positive_zero.status(),
+        DecisionStatus::DecisionGrade
+    ));
+    assert!(matches!(
+        negative_zero.status(),
+        DecisionStatus::DecisionGrade
+    ));
+    assert_ne!(positive_zero.id(), negative_zero.id());
+
+    let looser = identified_decision_assessment(grade.clone(), 0.1);
+    assert_ne!(positive_zero.id(), looser.id());
+
+    let numerical = Evidence::enclosed(1.0, 0.9, 1.1, ProvenanceHash(11))
+        .certified()
+        .expect("numerical child fixture");
+    let numerical = identified_decision_assessment(numerical, 0.0);
+    assert_ne!(
+        positive_zero.certified_evidence_id(),
+        numerical.certified_evidence_id()
+    );
+    assert_ne!(positive_zero.id(), numerical.id());
+
+    let provenance_a = Evidence::exact(1.0, ProvenanceHash(100))
+        .certified()
+        .expect("provenance-a fixture");
+    let provenance_b = Evidence::exact(1.0, ProvenanceHash(200))
+        .certified()
+        .expect("provenance-b fixture");
+    let provenance_a = identified_decision_assessment(provenance_a, 0.0);
+    let provenance_b = identified_decision_assessment(provenance_b, 0.0);
+    assert_eq!(
+        provenance_a.certified_evidence_id(),
+        provenance_b.certified_evidence_id()
+    );
+    assert_eq!(provenance_a.id(), provenance_b.id());
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one refusal matrix shares exact frame and cancellation accounting"
+)]
+fn certified_f64_decision_assessment_refuses_thresholds_resources_and_cancellation() {
+    let certified = Evidence::exact(1.0, ProvenanceHash(20))
+        .certified()
+        .expect("decision resource fixture");
+    for (threshold, reason) in [
+        (f64::NAN, "threshold must be finite"),
+        (f64::INFINITY, "threshold must be finite"),
+        (f64::NEG_INFINITY, "threshold must be finite"),
+        (-0.1, "threshold must be non-negative"),
+    ] {
+        let child = identified_certified(certified.clone());
+        assert!(matches!(
+            identify_certified_f64_decision_assessment_v1(
+                child,
+                threshold,
+                LIMITS,
+                || false,
+            ),
+            Err(CertifiedF64DecisionAssessmentIdentityError::InvalidThreshold {
+                bits,
+                reason: actual_reason,
+            }) if bits == threshold.to_bits() && actual_reason == reason
+        ));
+    }
+
+    let child = identified_certified(certified.clone());
+    let baseline =
+        identify_certified_f64_decision_assessment_v1(child.clone(), 0.0, LIMITS, || false)
+            .expect("baseline decision assessment");
+    let frame = baseline.receipt().canonical_bytes();
+    identify_certified_f64_decision_assessment_v1(
+        child.clone(),
+        0.0,
+        CanonicalLimits::new(frame, 8_192, 13, 64, 64),
+        || false,
+    )
+    .expect("exact decision-assessment frame limit");
+    assert!(matches!(
+        identify_certified_f64_decision_assessment_v1(
+            child.clone(),
+            0.0,
+            CanonicalLimits::new(frame - 1, 8_192, 13, 64, 64),
+            || false,
+        ),
+        Err(CertifiedF64DecisionAssessmentIdentityError::Canonical(
+            CanonicalError::LimitExceeded {
+                kind: fs_blake3::identity::LimitKind::CanonicalBytes,
+                requested,
+                limit,
+            }
+        )) if requested > limit && limit == frame - 1
+    ));
+    assert!(matches!(
+        identify_certified_f64_decision_assessment_v1(
+            child.clone(),
+            0.0,
+            CanonicalLimits::new(16_384, 8_192, 8, 64, 64),
+            || false,
+        ),
+        Err(CertifiedF64DecisionAssessmentIdentityError::Canonical(
+            CanonicalError::LimitExceeded {
+                kind: fs_blake3::identity::LimitKind::Fields,
+                requested: 9,
+                limit: 8,
+            }
+        ))
+    ));
+    assert!(matches!(
+        identify_certified_f64_decision_assessment_v1(
+            child.clone(),
+            0.0,
+            CanonicalLimits::new(16_384, 8_192, 13, 64, 0),
+            || false,
+        ),
+        Err(CertifiedF64DecisionAssessmentIdentityError::Canonical(
+            CanonicalError::InvalidLimits("cancellation_poll_bytes must be positive")
+        ))
+    ));
+    assert!(matches!(
+        identify_certified_f64_decision_assessment_v1(child.clone(), 0.0, LIMITS, || true,),
+        Err(CertifiedF64DecisionAssessmentIdentityError::Canonical(
+            CanonicalError::Cancelled { absorbed_bytes: 0 }
+        ))
+    ));
+
+    #[derive(Debug)]
+    struct CancelAfter {
+        successful_polls: usize,
+    }
+    impl CancellationProbe for CancelAfter {
+        fn is_cancelled(&mut self) -> bool {
+            if self.successful_polls == 0 {
+                true
+            } else {
+                self.successful_polls -= 1;
+                false
+            }
+        }
+    }
+    let polls = std::cell::Cell::new(0_usize);
+    identify_certified_f64_decision_assessment_v1(child.clone(), 0.0, LIMITS, || {
+        polls.set(polls.get() + 1);
+        false
+    })
+    .expect("baseline decision-assessment poll count");
+    assert!(matches!(
+        identify_certified_f64_decision_assessment_v1(
+            child,
+            0.0,
+            LIMITS,
+            CancelAfter {
+                successful_polls: polls.get() - 1,
+            },
+        ),
+        Err(CertifiedF64DecisionAssessmentIdentityError::Canonical(
             CanonicalError::Cancelled { absorbed_bytes }
         )) if absorbed_bytes > 0
     ));

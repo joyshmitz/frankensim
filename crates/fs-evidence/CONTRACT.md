@@ -148,6 +148,23 @@ telemetry/legacy correlation.
   remains inspectable only through the attached certified record. Low-level
   identity/receipt aliases remain schema-shaped framing and do not prove the
   opaque helper relationship.
+- `identity` module (sj31i.52.2 decision-assessment tranche) —
+  `CertifiedF64DecisionAssessmentIdV1` is a strong `SemanticId` for the current
+  local uncertainty assessment over one typed `CertifiedF64EvidenceIdV1`
+  child. The opaque `IdentifiedCertifiedF64DecisionAssessmentV1` consumes and
+  retains the existing opaque child plus a finite, non-negative threshold,
+  recomputes the numerical/statistical/model breakdown, first-order total,
+  status/dominant-source tie-break, and escalation advice, then binds their
+  exact bits/tags with `DECISION_ASSESSMENT_ALGORITHM_VERSION_V1`. Honest
+  positive-infinity derived bands remain explicit non-decision-grade state;
+  NaN/negative derived bands fail closed. The presentation-only
+  `DecisionStatus.detail` string is retained for callers but excluded from the
+  root. Any semantic change to breakdown, summation, threshold comparison,
+  dominant-source order, status, or advice must use a new algorithm/schema
+  version. Under algorithm v1, `StatisticalCertificate::None` and numeric
+  `EValue` currently contribute zero statistical width; this identity does not
+  bind or prove a null, stopping rule, or anytime-valid construction. The
+  receipt remains unanchored and is not decision-policy authority.
 - `identity` module (sj31i.52.2 model-card tranche) —
   `ModelCardIdV1` is a typed `ModelId` for one exact model declaration plus a
   required, dedicated `ModelCardCalibrationSourceIdV1` child. The opaque
@@ -385,13 +402,26 @@ telemetry/legacy correlation.
     stride, and entry, traversal, or late cancellation publish no opaque result.
     Raw aliases remain schema-shaped framing and cannot manufacture retained
     helper correspondence.
+20. Opaque helper-built certified-f64 decision assessments (sj31i.52.2,
+    G0/G3/G4) retain the exact typed child and threshold while agreeing with an
+    independently framed canonical encoding of every helper-recomputed
+    algorithm output. All four advice lanes, DecisionGrade, deterministic
+    model/statistical/numerical dominance, signed-zero threshold distinction,
+    and honest infinite-band refusal state are bound. Typed-child or threshold
+    changes move the root; legacy provenance changes excluded from the child
+    remain excluded here. Non-finite/negative thresholds, invalid derived
+    bands, exact field/frame overflow, zero cancellation stride, and entry or
+    late cancellation publish no opaque result. Raw alias receipts can carry
+    arbitrary schema-shaped fields and therefore do not prove helper
+    recomputation or retained-child correspondence.
 
 ## Error model
 Structured teaching errors throughout: `CertifyError`, `RegistryError`,
 `OutOfDomain`, `FitError`, `FalsifyError`, and typed identity refusals including
 `ModelEvidenceIdentityError`, `ModelCardIdentityError`,
 `NumericalCertificateIdentityError`, `StatisticalCertificateIdentityError`,
-`FidelityPairIdentityError`, and `DiscrepancyBandIdentityError` — all
+`FidelityPairIdentityError`, `DiscrepancyBandIdentityError`, and
+`CertifiedF64DecisionAssessmentIdentityError` — all
 `core::error::Error` with actionable Display text. Constructors are total
 (enclosure bounds normalize by swapping); no panics cross the boundary.
 
@@ -405,10 +435,11 @@ divergence.
 ## Cancellation behavior
 Core certificate/color algebra is bounded small synchronous work. Typed color,
 validity-domain, standalone-certificate, fidelity/discrepancy, model-evidence,
-certified-f64, and model-card identity helpers accept an explicit cancellation
-probe. Standalone certificate and discrepancy-band helpers poll at entry and
-through fixed-size canonical framing. Fidelity-pair helpers additionally poll
-while preflighting parameters and streaming exact name/value rows.
+certified-f64, decision-assessment, and model-card identity helpers accept an
+explicit cancellation probe. Standalone certificate, discrepancy-band, and
+decision-assessment helpers poll at entry before bounded recomputation and
+throughout fixed-size canonical framing. Fidelity-pair helpers additionally
+poll while preflighting parameters and streaming exact name/value rows.
 Color payload copies poll at the
 configured byte stride; validity and sensitivity rows poll at stream
 boundaries; set/row preflights poll while traversing caller data. Model-card
@@ -838,6 +869,19 @@ physical validation, process-standard conformance, or decision fitness.
   adjoint presence is bound. A raw
   `CertifiedF64EvidenceIdV1`/receipt is merely schema-shaped framing and can
   encode a frame that disagrees with any purported attached record.
+- `IdentifiedCertifiedF64DecisionAssessmentV1` proves only exact replay of the
+  current local first-order breakdown, declaration-order dominance rule,
+  threshold comparison, status, and advice over its retained typed child. It
+  adds no units or quantity kind, pending decision/loss/utility context,
+  consequence model, threshold-policy authority, organizational approval,
+  capability/resource availability, model-bracket lineage, governor command or
+  execution, scientific correctness, origin, signature, ledger admission, or
+  external trust. `DecisionGrade` means only that the bound local total is
+  finite and within the supplied threshold under algorithm v1; it is not a
+  safety, fitness, or deployment approval. Advice is descriptive and does not
+  authorize work or spending. Presentation detail is deliberately outside the
+  root. Because the child excludes raw legacy provenance and adjoint token
+  values, the assessment does too; it does not transitively restore them.
 - `IdentifiedModelCardV1` proves exact local declaration/source framing and the
   legacy-FNV consistency crosswalk only. It does not prove model source,
   binary, algorithm, or behavioral equivalence; model-name uniqueness;

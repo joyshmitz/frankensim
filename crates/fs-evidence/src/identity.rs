@@ -4,8 +4,9 @@
 //! domains, standalone numerical/statistical certificate declarations, exact
 //! two-fidelity observations and discrepancy-band declarations, model-form
 //! evidence slices, model-card declarations with exact calibration sources,
-//! and an opaque strong-identity projection of locally certified scalar
-//! evidence through separate schemas. It does not reinterpret
+//! an opaque strong-identity projection of locally certified scalar evidence,
+//! and its recomputed local decision assessment through separate schemas. It
+//! does not reinterpret
 //! [`crate::ProvenanceHash`], and it publishes only unanchored
 //! [`IdentityReceipt`] values. Origin verification, policy admission,
 //! structural [`crate::Certified`] consistency, and scientific color rank
@@ -25,9 +26,10 @@ use fs_blake3::identity::{
 };
 
 use crate::{
-    Ambition, COLOR_ALGEBRA_VERSION, Certified, Color, ColorPayloadError, DiscrepancyBand,
-    FidelityPair, IntervalOp, ModelCard, ModelEvidence, NumericalKind, ProvenanceHash,
-    StatisticalCertificate, ValidityDomain, color_identity_reason, compose, validate_color_payload,
+    Ambition, COLOR_ALGEBRA_VERSION, Certified, Color, ColorPayloadError, DecisionStatus,
+    DiscrepancyBand, EscalationAdvice, FidelityPair, IntervalOp, ModelCard, ModelEvidence,
+    NumericalKind, ProvenanceHash, StatisticalCertificate, UncertaintyBreakdown, UncertaintySource,
+    ValidityDomain, color_identity_reason, compose, validate_color_payload,
 };
 
 /// Identity schema version for exact retained color-evidence sources.
@@ -46,6 +48,10 @@ pub const STATISTICAL_CERTIFICATE_IDENTITY_VERSION_V1: u32 = 1;
 pub const FIDELITY_PAIR_IDENTITY_VERSION_V1: u32 = 1;
 /// Identity schema version for one standalone discrepancy-band declaration.
 pub const DISCREPANCY_BAND_IDENTITY_VERSION_V1: u32 = 1;
+/// Identity schema version for one certified-f64 decision assessment.
+pub const CERTIFIED_F64_DECISION_ASSESSMENT_IDENTITY_VERSION_V1: u32 = 1;
+/// Semantic version of the bound breakdown, tie-break, status, and advice law.
+pub const DECISION_ASSESSMENT_ALGORITHM_VERSION_V1: u32 = 1;
 /// Identity schema version for one locally certified scalar-evidence projection.
 pub const CERTIFIED_F64_EVIDENCE_IDENTITY_VERSION_V1: u32 = 1;
 /// Identity schema version for exact model-card calibration source bytes.
@@ -776,6 +782,134 @@ impl IdentifiedCertifiedF64EvidenceV1 {
     }
 }
 
+static DECISION_ASSESSMENT_CERTIFIED_CHILD_V1: ChildSpec =
+    ChildSpec::for_identity::<CertifiedF64EvidenceIdV1>();
+
+/// Canonical semantic schema for one decision assessment derived from an
+/// opaque certified-f64 identity under the current local uncertainty law.
+pub enum CertifiedF64DecisionAssessmentIdentitySchemaV1 {}
+
+impl CanonicalSchema for CertifiedF64DecisionAssessmentIdentitySchemaV1 {
+    const DOMAIN: &'static str = "org.frankensim.fs-evidence.certified-f64-decision-assessment.v1";
+    const NAME: &'static str = "certified-f64-decision-assessment";
+    const VERSION: u32 = CERTIFIED_F64_DECISION_ASSESSMENT_IDENTITY_VERSION_V1;
+    const CONTEXT: &'static str = "typed certified-f64 child, assessment-algorithm version, exact threshold and derived uncertainty bits, status, and advice; no units, loss or decision context, policy authority, governor execution, scientific authority, origin, or trust";
+    const FIELDS: &'static [FieldSpec] = &[
+        FieldSpec::child_of(
+            "certified-f64-evidence",
+            &DECISION_ASSESSMENT_CERTIFIED_CHILD_V1,
+        ),
+        FieldSpec::required("assessment-algorithm-version", WireType::U64),
+        FieldSpec::required("threshold-rel", WireType::FiniteF64),
+        FieldSpec::required("numerical-rel-ieee754-bits", WireType::U64),
+        FieldSpec::required("statistical-rel-ieee754-bits", WireType::U64),
+        FieldSpec::required("model-rel-ieee754-bits", WireType::U64),
+        FieldSpec::required("total-rel-ieee754-bits", WireType::U64),
+        FieldSpec::required("status", WireType::Variant),
+        FieldSpec::required("advice", WireType::Variant),
+    ];
+}
+
+/// Low-level schema-shaped identity for one certified-f64 decision assessment.
+///
+/// Only [`IdentifiedCertifiedF64DecisionAssessmentV1`] proves that all derived
+/// fields were recomputed from the retained opaque child and threshold.
+pub type CertifiedF64DecisionAssessmentIdV1 =
+    SemanticId<CertifiedF64DecisionAssessmentIdentitySchemaV1>;
+
+/// Low-level producer receipt for one certified-f64 decision assessment.
+pub type CertifiedF64DecisionAssessmentReceiptV1 =
+    IdentityReceipt<CertifiedF64DecisionAssessmentIdV1>;
+
+/// A certified-f64 child and threshold kept attached to their recomputed local
+/// uncertainty assessment and unanchored semantic identity.
+#[derive(Debug, Clone)]
+pub struct IdentifiedCertifiedF64DecisionAssessmentV1 {
+    certified_evidence: IdentifiedCertifiedF64EvidenceV1,
+    threshold_rel: f64,
+    breakdown: UncertaintyBreakdown,
+    total_rel: f64,
+    status: DecisionStatus,
+    advice: EscalationAdvice,
+    receipt: CertifiedF64DecisionAssessmentReceiptV1,
+}
+
+impl IdentifiedCertifiedF64DecisionAssessmentV1 {
+    /// Opaque certified evidence attachment used to recompute this assessment.
+    #[must_use]
+    pub const fn certified_evidence(&self) -> &IdentifiedCertifiedF64EvidenceV1 {
+        &self.certified_evidence
+    }
+
+    /// Typed child identity bound by the assessment frame.
+    #[must_use]
+    pub const fn certified_evidence_id(&self) -> CertifiedF64EvidenceIdV1 {
+        self.certified_evidence.id()
+    }
+
+    /// Exact caller-supplied relative decision threshold.
+    #[must_use]
+    pub const fn threshold_rel(&self) -> f64 {
+        self.threshold_rel
+    }
+
+    /// Recomputed per-source relative uncertainty bands.
+    #[must_use]
+    pub const fn breakdown(&self) -> UncertaintyBreakdown {
+        self.breakdown
+    }
+
+    /// Recomputed first-order total relative band.
+    #[must_use]
+    pub const fn total_rel(&self) -> f64 {
+        self.total_rel
+    }
+
+    /// Recomputed local decision status, including presentation detail.
+    ///
+    /// The detail string is derived presentation and is not framed separately.
+    #[must_use]
+    pub const fn status(&self) -> &DecisionStatus {
+        &self.status
+    }
+
+    /// Recomputed local escalation advice.
+    #[must_use]
+    pub const fn advice(&self) -> EscalationAdvice {
+        self.advice
+    }
+
+    /// Typed assessment identity.
+    #[must_use]
+    pub const fn id(&self) -> CertifiedF64DecisionAssessmentIdV1 {
+        self.receipt.id()
+    }
+
+    /// Complete unanchored producer receipt.
+    #[must_use]
+    pub const fn receipt(&self) -> CertifiedF64DecisionAssessmentReceiptV1 {
+        self.receipt
+    }
+
+    /// Fixed-size typed digest bytes.
+    #[must_use]
+    pub fn id_bytes(&self) -> [u8; 32] {
+        *self.id().as_bytes()
+    }
+
+    /// Identity state of a producer receipt. This is always unanchored.
+    #[must_use]
+    pub fn trust_state(&self) -> EvidenceIdentityTrustState {
+        self.receipt.audit_record().trust()
+    }
+
+    /// Surrender the assessment attachment and recover its semantic inputs.
+    #[must_use]
+    pub fn into_inputs(self) -> (IdentifiedCertifiedF64EvidenceV1, f64) {
+        (self.certified_evidence, self.threshold_rel)
+    }
+}
+
 static COLOR_EVIDENCE_SOURCE_CHILD_V1: ChildSpec =
     ChildSpec::for_identity::<ColorEvidenceSourceIdV1>();
 
@@ -1469,6 +1603,69 @@ impl From<ValidityDomainIdentityError> for CertifiedF64EvidenceIdentityError {
 }
 
 impl From<CanonicalError> for CertifiedF64EvidenceIdentityError {
+    fn from(error: CanonicalError) -> Self {
+        Self::Canonical(error)
+    }
+}
+
+/// Fail-closed refusal from certified-f64 decision-assessment identity
+/// construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CertifiedF64DecisionAssessmentIdentityError {
+    /// The caller-supplied decision threshold is NaN, infinite, or negative.
+    InvalidThreshold {
+        /// Exact refused IEEE-754 bits.
+        bits: u64,
+        /// Structural requirement that was violated.
+        reason: &'static str,
+    },
+    /// A recomputed relative band is NaN or negative, indicating algorithm or
+    /// invariant drift that must not receive an identity.
+    InvalidDerivedBand {
+        /// Stable derived-field name.
+        field: &'static str,
+        /// Exact refused IEEE-754 bits.
+        bits: u64,
+        /// Structural requirement that was violated.
+        reason: &'static str,
+    },
+    /// Canonical framing, resource admission, or cancellation refused.
+    Canonical(CanonicalError),
+}
+
+impl fmt::Display for CertifiedF64DecisionAssessmentIdentityError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidThreshold { bits, reason } => write!(
+                formatter,
+                "certified-f64 decision assessment refused threshold bits 0x{bits:016x}: {reason}"
+            ),
+            Self::InvalidDerivedBand {
+                field,
+                bits,
+                reason,
+            } => write!(
+                formatter,
+                "certified-f64 decision assessment refused derived {field} bits 0x{bits:016x}: {reason}"
+            ),
+            Self::Canonical(error) => write!(
+                formatter,
+                "certified-f64 decision assessment identity refused: {error}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CertifiedF64DecisionAssessmentIdentityError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Canonical(error) => Some(error),
+            Self::InvalidThreshold { .. } | Self::InvalidDerivedBand { .. } => None,
+        }
+    }
+}
+
+impl From<CanonicalError> for CertifiedF64DecisionAssessmentIdentityError {
     fn from(error: CanonicalError) -> Self {
         Self::Canonical(error)
     }
@@ -2750,6 +2947,167 @@ where
     Ok(IdentifiedCertifiedF64EvidenceV1 {
         certified,
         validity_receipt,
+        receipt,
+    })
+}
+
+const fn decision_assessment_uncertainty_source_tag_v1(source: UncertaintySource) -> u32 {
+    match source {
+        UncertaintySource::ModelForm => 1,
+        UncertaintySource::Statistical => 2,
+        UncertaintySource::Numerical => 3,
+    }
+}
+
+const fn decision_assessment_advice_tag_v1(advice: EscalationAdvice) -> u32 {
+    match advice {
+        EscalationAdvice::NoneNeeded => 1,
+        EscalationAdvice::RefineNumerics => 2,
+        EscalationAdvice::GatherMoreSamples => 3,
+        EscalationAdvice::EscalateModelFidelity => 4,
+    }
+}
+
+fn validate_decision_assessment_band_v1(
+    field: &'static str,
+    value: f64,
+) -> Result<(), CertifiedF64DecisionAssessmentIdentityError> {
+    if value.is_nan() {
+        return Err(
+            CertifiedF64DecisionAssessmentIdentityError::InvalidDerivedBand {
+                field,
+                bits: value.to_bits(),
+                reason: "derived relative band must not be NaN",
+            },
+        );
+    }
+    if value < 0.0 {
+        return Err(
+            CertifiedF64DecisionAssessmentIdentityError::InvalidDerivedBand {
+                field,
+                bits: value.to_bits(),
+                reason: "derived relative band must be non-negative",
+            },
+        );
+    }
+    Ok(())
+}
+
+/// Recompute and identify one local decision assessment over an opaque
+/// certified-f64 semantic child.
+///
+/// The frame binds the assessment-algorithm version, the complete typed child,
+/// exact threshold bits, all recomputed relative-band bits, the local status
+/// and deterministic dominant-source tag, and the resulting advice. The
+/// presentation-only status detail string is excluded. Positive infinity is an
+/// honest non-decision-grade band; accepted signed zero remains bit-distinct.
+///
+/// # Errors
+/// Refuses a non-finite or negative threshold, invalid derived-band state,
+/// invalid limits, resource overflow, or cancellation. No partial assessment
+/// identity is published.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one linear frame keeps recomputation, status payload, and field order auditable"
+)]
+pub fn identify_certified_f64_decision_assessment_v1<C>(
+    certified_evidence: IdentifiedCertifiedF64EvidenceV1,
+    threshold_rel: f64,
+    limits: EvidenceIdentityLimits,
+    mut cancellation: C,
+) -> Result<IdentifiedCertifiedF64DecisionAssessmentV1, CertifiedF64DecisionAssessmentIdentityError>
+where
+    C: EvidenceIdentityCancellationProbe,
+{
+    if limits.cancellation_poll_bytes() == 0 {
+        return Err(
+            CanonicalError::InvalidLimits("cancellation_poll_bytes must be positive").into(),
+        );
+    }
+    poll_identity_cancellation(&mut cancellation)?;
+    if !threshold_rel.is_finite() {
+        return Err(
+            CertifiedF64DecisionAssessmentIdentityError::InvalidThreshold {
+                bits: threshold_rel.to_bits(),
+                reason: "threshold must be finite",
+            },
+        );
+    }
+    if threshold_rel < 0.0 {
+        return Err(
+            CertifiedF64DecisionAssessmentIdentityError::InvalidThreshold {
+                bits: threshold_rel.to_bits(),
+                reason: "threshold must be non-negative",
+            },
+        );
+    }
+
+    let certified = certified_evidence.certified();
+    let breakdown = certified.breakdown();
+    let total_rel = breakdown.total_rel();
+    for (field, value) in [
+        ("numerical_rel", breakdown.numerical_rel),
+        ("statistical_rel", breakdown.statistical_rel),
+        ("model_rel", breakdown.model_rel),
+        ("total_rel", total_rel),
+    ] {
+        validate_decision_assessment_band_v1(field, value)?;
+    }
+    let status = certified.assess(threshold_rel);
+    let advice = certified.escalation_advice(threshold_rel);
+    let mut status_payload = [0_u8; 4];
+    let (status_tag, status_payload_len) = match &status {
+        DecisionStatus::DecisionGrade => (1, 0),
+        DecisionStatus::NotDecisionGrade { dominant, .. } => {
+            status_payload.copy_from_slice(
+                &decision_assessment_uncertainty_source_tag_v1(*dominant).to_le_bytes(),
+            );
+            (2, status_payload.len())
+        }
+    };
+
+    let receipt =
+        CanonicalEncoder::<CertifiedF64DecisionAssessmentIdV1, _>::new(limits, cancellation)?
+            .child(
+                Field::new(0, "certified-f64-evidence"),
+                certified_evidence.id(),
+            )?
+            .u64(
+                Field::new(1, "assessment-algorithm-version"),
+                u64::from(DECISION_ASSESSMENT_ALGORITHM_VERSION_V1),
+            )?
+            .finite_f64(Field::new(2, "threshold-rel"), threshold_rel)?
+            .u64(
+                Field::new(3, "numerical-rel-ieee754-bits"),
+                breakdown.numerical_rel.to_bits(),
+            )?
+            .u64(
+                Field::new(4, "statistical-rel-ieee754-bits"),
+                breakdown.statistical_rel.to_bits(),
+            )?
+            .u64(
+                Field::new(5, "model-rel-ieee754-bits"),
+                breakdown.model_rel.to_bits(),
+            )?
+            .u64(Field::new(6, "total-rel-ieee754-bits"), total_rel.to_bits())?
+            .variant(
+                Field::new(7, "status"),
+                status_tag,
+                &status_payload[..status_payload_len],
+            )?
+            .variant(
+                Field::new(8, "advice"),
+                decision_assessment_advice_tag_v1(advice),
+                &[],
+            )?
+            .finish()?;
+    Ok(IdentifiedCertifiedF64DecisionAssessmentV1 {
+        certified_evidence,
+        threshold_rel,
+        breakdown,
+        total_rel,
+        status,
+        advice,
         receipt,
     })
 }
