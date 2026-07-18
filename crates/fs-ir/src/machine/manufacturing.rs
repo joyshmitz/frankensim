@@ -32,6 +32,8 @@ use super::{
     AdmittedMachineGraph, BodyId, DependentBinding, DependentKind, MachineGraphIdV1, MachineIdError,
 };
 
+/// Bounded graph-bound datum features and ordered reference frames.
+pub mod datum_system;
 /// Exact positional binding from Machine-IR tolerance axes to an admitted
 /// `fs-toleralloc` correlated-stack receipt.
 pub mod tolerance_axis;

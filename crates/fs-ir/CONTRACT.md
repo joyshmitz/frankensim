@@ -589,6 +589,39 @@ admitted derived-geometry boundary.
   does not equate those 32-byte domains. It retains a separate nonzero,
   versioned `correlation-coordinate-link` artifact naming the caller's explicit
   mapping policy, and makes that policy identity-semantic.
+- `machine::manufacturing::datum_system` is the additive native datum seed.
+  `MachineDatumSystemDraftV1::admit_against` binds one exact admitted Machine
+  graph to at most 4,096 stable datum features and 2,048 named reference-frame
+  declarations. A feature selects one durable surface patch or contact feature
+  plus an explicit `declared_body`. Admission proves that the body and selected
+  feature both exist and share one unique subsystem owner; it does not infer a
+  physical feature-to-body containment relation that Machine graph v1 does not
+  encode. A durable target may have only one datum-feature identity in a
+  catalog, regardless of the declared body.
+- Each version-one frame has one primary reference, an optional secondary, and
+  an optional tertiary. Tertiary-without-secondary, repeated or missing datum
+  references, and mixed declared bodies refuse. Multi-body assembly frames are
+  unsupported by this schema rather than declared invalid in general. Caller
+  order of features and frames is non-semantic; admitted collections are sorted
+  by their checked IDs, while primary/secondary/tertiary roles remain
+  identity-semantic. Unused features, duplicate IDs/selectors, unknown graph
+  elements, cross-subsystem selectors, empty collections, and exact one-over
+  resource inputs refuse before identity publication.
+- `MachineDatumSystemIdV1` binds the datum schema and FrankenScript IR versions,
+  exact Machine graph identity, every canonical feature key, typed target role,
+  declared-body and target identity/key, and every frame key plus explicit tier
+  presence and reference. `tests/machine_manufacturing_datum.rs` supplies
+  G0/G3/G5 evidence for order-invariant replay, identity-field mutation,
+  precedence, alias/ownership/reference refusals, simultaneous exact caps and
+  one-over preflight, and complete receipt replay.
+- This structural seed does not construct a geometric datum reference frame,
+  prove feature containment or 3-2-1 constraint sufficiency, interpret datum or
+  material-condition modifiers, represent compound/common/movable datum
+  systems, or carry tolerance-zone values and units. It does not parse or emit
+  AP242/semantic PMI, establish ASME/ISO conformance, validate drawings,
+  authenticate presentation links, calibrate metrology, prove assembly
+  feasibility, or transport datum attachments across lineage. A successor graph
+  must readmit both body and feature attachments before reusing a declaration.
 - `query` (addendum Proposal 8 — declarative query language v0): a query is
   `(QoI, Target, budget_usd, deadline_s)` where `Qoi` is a fixed MENU —
   `MaxOverRegion`, `Integral` (linear), `Exceedance` (probabilistic, needs a
