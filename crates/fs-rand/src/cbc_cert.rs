@@ -119,6 +119,13 @@ pub enum CbcCertError {
     UnknownRule,
     /// The denominator exponent does not equal the prefix length.
     DenominatorMismatch,
+    /// A declared exact score uses a non-canonical little-endian limb
+    /// representation (one or more zero high limbs). Canonical zero has no
+    /// limbs; interior zero limbs remain significant positions and are valid.
+    NonCanonicalScoreLimbs {
+        /// Stable score-field label.
+        field: &'static str,
+    },
     /// The tie class is empty, unsorted, out of range, non-coprime, or its
     /// minimum is not the chosen candidate.
     MalformedTieClass,
@@ -240,6 +247,20 @@ fn structural<'a>(certificate: &'a CbcPrefixCertificate) -> Result<&'a [u32], Cb
         u32::try_from(certificate.prefix.len()).map_err(|_| CbcCertError::MalformedPrefix)?;
     if certificate.denominator_exponent != expected_exponent {
         return Err(CbcCertError::DenominatorMismatch);
+    }
+    if certificate.winning_score_limbs.last() == Some(&0) {
+        return Err(CbcCertError::NonCanonicalScoreLimbs {
+            field: "winning score",
+        });
+    }
+    if certificate
+        .runner_up
+        .as_ref()
+        .is_some_and(|(limbs, _)| limbs.last() == Some(&0))
+    {
+        return Err(CbcCertError::NonCanonicalScoreLimbs {
+            field: "runner-up score",
+        });
     }
     for &component in &certificate.prefix {
         if component == 0 || component >= n || gcd(component, n) != 1 {

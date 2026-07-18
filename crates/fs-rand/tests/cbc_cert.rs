@@ -265,6 +265,48 @@ fn crt_004_tampering_fails_closed_in_the_named_class() {
 }
 
 #[test]
+fn crt_004b_noncanonical_high_zero_limbs_fail_before_score_normalization() {
+    let good = baseline_certificate();
+    let admission = certified_admission(good.point_count, 4);
+
+    let mut noncanonical_winner = good.clone();
+    noncanonical_winner.winning_score_limbs.push(0);
+    let expected_winner = Err(CbcCertError::NonCanonicalScoreLimbs {
+        field: "winning score",
+    });
+    assert_eq!(verify_consistency(&noncanonical_winner), expected_winner);
+    assert_eq!(audit_minimality(&noncanonical_winner), expected_winner);
+    assert_eq!(
+        verify_consistency_admitted(admission, &noncanonical_winner),
+        expected_winner
+    );
+    assert_eq!(
+        audit_minimality_admitted(admission, &noncanonical_winner),
+        expected_winner
+    );
+
+    let mut noncanonical_runner = good;
+    let (runner_limbs, _) = noncanonical_runner
+        .runner_up
+        .as_mut()
+        .expect("the baseline fixture has a strict runner-up");
+    runner_limbs.push(0);
+    let expected_runner = Err(CbcCertError::NonCanonicalScoreLimbs {
+        field: "runner-up score",
+    });
+    assert_eq!(verify_consistency(&noncanonical_runner), expected_runner);
+    assert_eq!(audit_minimality(&noncanonical_runner), expected_runner);
+    assert_eq!(
+        verify_consistency_admitted(admission, &noncanonical_runner),
+        expected_runner
+    );
+    assert_eq!(
+        audit_minimality_admitted(admission, &noncanonical_runner),
+        expected_runner
+    );
+}
+
+#[test]
 fn crt_005_uncertified_runs_emit_nothing_and_late_enabling_refuses() {
     let problem = CbcProblem::new(8, 3).expect("structurally valid");
     let admission = problem

@@ -74,7 +74,9 @@ distributions (plan §6.7; P2's seed pillar). Layer: L1.
   reject hostile prefix/score/tie vector lengths against that receipt before
   checker allocation or exact arithmetic. This bounds the checker invocation's
   problem and input shape; it does not assert that checker work debits equal
-  the executor schedule.
+  the executor schedule. Both checker modes reject non-canonical exact-score
+  encodings before normalization: zero has no limbs, and a nonzero score has
+  no high zero limb.
   Certificate production requires a schema-v4 `Certified` admission; its
   retained owner/prefix/score/tie payloads, third live score, and deterministic
   emission debits are included from admission. NO-CLAIM: no compact
