@@ -46,11 +46,18 @@ L6. Consumers: the P4 frame flagship (AISC catalogs), fs-fab.
   f32 positions + u32 indices, chunk-accounted); legacy-ASCII VTK
   unstructured grid with optional scalar point field.
 - **Catalogs** (`catalog` module): CSV (RFC-4180 subset with quoted
-  fields and `""` escapes) and JSON (minimal array-of-flat-objects
-  reader) validated against a `Schema` of `ColumnSpec`s (Text /
-  bounded Number, required flags). Violations name the 1-based data
-  row, column, offending text, and the expectation; missing header
-  columns list what WAS found.
+  fields and `""` escapes) and strict RFC 8259 JSON restricted to one
+  array of flat objects with string/number values, validated against a
+  `Schema` of `ColumnSpec`s (Text / bounded Number, required flags).
+  JSON strings implement every simple escape plus exact UTF-16 surrogate-pair
+  decoding; raw controls, malformed/unknown escapes, duplicate decoded keys,
+  non-RFC numbers, delimiter elision/trailing commas, nested values, and
+  non-whitespace suffixes refuse at the first offending byte. `CatalogJsonLimits`
+  makes input, row, per-object/aggregate member, per-string, per-number, and
+  aggregate decoded-byte caps explicit; `parse_json` uses its documented
+  default while `parse_json_with_limits` admits a caller-selected envelope.
+  Violations name the 1-based data row, column, offending text, and the
+  expectation; missing header columns list what WAS found.
 - **STEP structure** (`step` module): bounded, ASCII-only parsing of the
   ISO-10303-21 clear-text envelope, mandatory `FILE_DESCRIPTION`,
   `FILE_NAME`, and `FILE_SCHEMA` header records, simple and complex DATA
@@ -123,63 +130,76 @@ L6. Consumers: the P4 frame flagship (AISC catalogs), fs-fab.
 4. **Deterministic exports**: identical soups produce identical bytes
    (fixed ZIP timestamps, fixed chunk layout).
 5. **Schema errors teach**: row + column + offender + expectation.
-6. **Part-21 graph integrity**: instance IDs are positive and unique;
+6. **Catalog JSON is strict, bounded, and non-overwriting**: only RFC 8259's
+   four ASCII whitespace bytes are skipped. Object/array commas and colons are
+   explicit; the exact JSON number production is retained lexically until
+   schema checking; decoded-key duplicates refuse rather than overwrite; all
+   string escapes, including paired UTF-16 surrogates, decode exactly; lone
+   surrogates and raw C0 bytes refuse. The default envelope is 64 MiB input,
+   250,000 rows, 4,096 members per object, 1,000,000 members total, 1 MiB per
+   decoded string, 256 bytes per number token, and 32 MiB aggregate decoded
+   payload. Logical caps are checked before owned payload growth and fallible
+   `try_reserve` is used where `Vec`/`String` expose it. `BTreeMap` has no
+   fallible node reservation; its insertions occur only after structural and
+   payload admission. Parsed maps move into `Catalog` without a second cloned
+   row set.
+7. **Part-21 graph integrity**: instance IDs are positive and unique;
    forward references are permitted but every reference must resolve by
    end of DATA; mandatory header records occur exactly once and in the
    supported order.
-7. **Part-21 resource bounds**: input/output bytes, tokens, instances,
+8. **Part-21 resource bounds**: input/output bytes, tokens, instances,
    values, nesting, encoded strings, number tokens, identifiers,
    complex-instance components, and schema-count each have an explicit
    nonzero cap. Recursive nesting also has an implementation hard ceiling
    independent of caller configuration. Cap violations are `ResourceBound`,
    not partial parses.
-8. **Canonical syntax, not canonical CAD**: Part-21 output has fixed
+9. **Canonical syntax, not canonical CAD**: Part-21 output has fixed
    whitespace/keyword casing and numeric-ID instance order. It never
    reorders parameters or complex components, whose schema meaning is
    unknown at this layer. Numeric lexical spelling remains identity-bearing:
    this is layout canonicalization, not schema-aware numeric normalization.
-9. **No topology laundering at the STEP handoff**: repair is always invoked
+10. **No topology laundering at the STEP handoff**: repair is always invoked
    with a zero hole-fill budget. Residual leaks, non-manifoldness, orientation
    conflicts, vertex-link failures, and non-outward aggregate orientation
    refuse publication; localized diagnostics are bounded to 256 records and
    state when truncated.
-10. **No deviation laundering**: declared deviation must be a finite, ordered,
+11. **No deviation laundering**: declared deviation must be a finite, ordered,
     non-negative `Exact`, `Enclosure`, or `Estimate` band. It remains separate
     in the receipt, and its upper bound is added with outward rounding to the
     mesh-to-SDF upper bound. The combined result is always `Estimate`, never a
     stronger authority grade.
-11. **Every semantic input moves provenance**: exact soup position bits and
+12. **Every semantic input moves provenance**: exact soup position bits and
     triangle indices are FNV-fingerprinted before and after repair. Output
     provenance also binds the Part-21 source/layout fingerprints, adapter
     identity, shared length-unit ID, target-spacing bits, complete deviation
     certificate, deterministic execution mode, repair result, and underlying
     mesh-to-SDF provenance. These 64-bit fingerprints are replay aids, not
     collision-resistant authority.
-12. **STEP tessellation preprocessing is separately bounded**: one million
+13. **STEP tessellation preprocessing is separately bounded**: one million
     vertices, one million triangles, a conservative 512 MiB auxiliary-memory
     admission estimate, and at most 256 retained localized defects. The
     receipt records these limits, crate versions, STEP-import semantics label,
     and tessellation-fingerprint domain.
-13. **Native faceted traversal is explicit and closed**: callers select a
+14. **Native faceted traversal is explicit and closed**: callers select a
     positive `FACETED_BREP` root. Only its fixed-depth pinned entity closure is
     interpreted; every reachable instance must be simple, exact-arity, and the
     expected entity type. `FACE_SURFACE` geometry is restricted to `PLANE` with
     `AXIS2_PLACEMENT_3D`, a 3-D `CARTESIAN_POINT` location, and omitted or 3-D
     finite nonzero `DIRECTION` values. Unknown unrelated instances remain
     outside the claim.
-14. **No implicit triangulation or welding**: every `POLY_LOOP` has exactly
+15. **No implicit triangulation or welding**: every `POLY_LOOP` has exactly
     three unique point references. Shared point IDs become shared soup vertices;
     distinct IDs with equal coordinates remain distinct. Holes, extra bounds,
     non-triangular loops, reused bounds/loops, and complex reachable instances
     refuse instead of being guessed or repaired by the decoder.
-15. **Canonical semantic materialization**: shell face references, point
+16. **Canonical semantic materialization**: shell face references, point
     positions, and triangles are emitted in numeric instance-ID order. Shell
     `SET` permutation therefore preserves the soup and semantic fingerprint;
     source spelling remains separately fingerprinted. `.T.` preserves the
     `POLY_LOOP` order and `.F.` reverses it. Plane, placement, location,
     direction, and `same_sense` semantics also move the semantic fingerprint
     even when two closures materialize the same soup.
-16. **Schema labels gate but do not certify**: the decoder admits one exact
+17. **Schema labels gate but do not certify**: the decoder admits one exact
     declaration, either `CONFIG_CONTROL_DESIGN` or `AUTOMOTIVE_DESIGN`. The
     declaration is recorded as provenance, never promoted into EXPRESS or
     application-protocol authority. Finite coordinate conversion and accepted
@@ -190,12 +210,12 @@ L6. Consumers: the P4 frame flagship (AISC catalogs), fs-fab.
     vertex-link, and aggregate-orientation admission; neither receipt claims
     global shell connectedness, component nesting, or self-intersection
     certification.
-17. **Decoder memory admission is portable and explicit**: the auxiliary cap
+18. **Decoder memory admission is portable and explicit**: the auxiliary cap
     covers checked logical element payloads for every simultaneously live
     decoder vector. Platform allocator rounding and container headers are not
     misrepresented as measured bytes; `try_reserve_exact` failure still returns
     a structured resource refusal.
-18. **Faceted re-emission is sealed and self-replaying**: version 1 accepts only
+19. **Faceted re-emission is sealed and self-replaying**: version 1 accepts only
     an existing native decoder result whose faces are all bare `FACE`; it
     refuses plane-backed inputs rather than discarding surface semantics.
     Dense point/loop/bound/face/shell/root IDs are checked for overflow, input
@@ -207,7 +227,9 @@ L6. Consumers: the P4 frame flagship (AISC catalogs), fs-fab.
 ## Error model
 
 `IoError`: `Malformed { at, what }`, `Unsupported`, `ResourceBound`,
-`Schema { row, column, what }`. `PromotionRefusal` carries blocking
+`Schema { row, column, what }`. Catalog-JSON syntax errors use byte offsets;
+catalog resource refusals name the cap, limit, and refusal offset in `what`.
+`PromotionRefusal` carries blocking
 defects + fixes + the refused receipt. The STEP syntax kernel uses
 `Malformed` for grammar/graph failures, `Unsupported` for staged encoded
 characters and binary literals, and `ResourceBound` for every declared
@@ -227,7 +249,10 @@ nested semantic replay, and first exact-geometry replay mismatch.
 ## Determinism class
 
 **D0**: fixed parse/emit orders, deterministic welds/topology sorts, no ambient
-state. Native faceted decoding sorts schema-defined `SET` members and materializes
+state. Catalog JSON preserves row order and retained number spelling while its
+`BTreeMap` rows canonicalize decoded key order; equivalent raw/escaped Unicode
+spellings and insignificant-whitespace rewrites therefore produce equal rows.
+Native faceted decoding sorts schema-defined `SET` members and materializes
 points/faces by numeric instance ID. The STEP tessellation handoff rejects
 `ExecMode::Fast`; its receipt and provenance explicitly bind deterministic mode.
 Strict faceted re-emission uses dense IDs and source decoder order, fixed header
@@ -237,7 +262,10 @@ and nested receipts on one target.
 
 ## Cancellation behavior
 
-Legacy mesh/catalog parsers are single-pass and element-capped. The STEP
+Legacy mesh parsers are single-pass and element-capped. The catalog-JSON syntax
+reader is a single-pass state machine under explicit input, row, member, token,
+string, and aggregate decoded-payload caps; schema validation then walks the
+admitted rows. It has no `Cx` and makes no cancellation-latency claim. The STEP
 kernel is deliberately multi-pass (parse, shape/graph validation,
 canonical-layout serialization) and cap-bounded, but it has no `Cx` and
 makes no cancellation-latency claim. Native faceted decoding polls at entry,
@@ -276,7 +304,9 @@ deterministic bytes + ASCII STL fixture; io-002 the defect zoo
 with receipts — and an over-budget hole REFUSED with actionable fixes
 and a refused receipt; io-003 13.5k mutants + truncations + junk with
 zero panics; io-004 PLY face-list integer validation; io-005 AISC-flavored
-CSV + JSON catalogs, quoting, and the teaching-error battery; io-006 3MF ZIP
+CSV plus strict/bounded JSON catalogs, quoting/Unicode-surrogate decoding,
+syntax-refusal offsets, a resource refusal, and the teaching-error battery;
+io-006 3MF ZIP
 structure (EOCD, entry count, model XML), GLB chunk accounting, VTK section
 counts. Reaching an aggregate outcome means its preceding checks passed;
 pre-verdict assertions and parser `expect` failures remain ordinary Rust test
@@ -286,7 +316,12 @@ five outcomes use deterministic seed zero. The suite has no concurrent
 aggregate case, so these records make no scheduler-replay claim. Existing
 promotion-receipt and fuzz-measurement data use validated fs-obs `Custom`
 companions, not canonical aggregate outcomes; the fuzz companion also retains
-the mutation-stream seed.
+the mutation-stream seed. Catalog module G0/G3 unit matrices additionally cover
+all raw C0 bytes, all one-byte unknown ASCII escapes, malformed/lone surrogate
+forms with exact offsets, valid and invalid number productions, comma/colon and
+decoded-duplicate-key cases, semantic-preserving whitespace/member/escape
+rewrites, every proper truncation prefix, exact accept/refuse boundaries for
+every limit dimension, and every ASCII document suffix.
 
 `tests/step.rs` (G0/G3): forward-reference and complex-entity parsing,
 canonical permutation-invariant DATA ordering, doubled-apostrophe string

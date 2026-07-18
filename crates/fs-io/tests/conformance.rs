@@ -8,6 +8,7 @@
 //! reached before those outcomes remain ordinary Rust test diagnostics.
 
 use fs_geom::Point3;
+use fs_io::catalog::CatalogJsonLimits;
 use fs_io::quarantine::import_mesh;
 use fs_io::{ColumnKind, ColumnSpec, Schema, export_3mf, export_glb, export_vtk, promote};
 use fs_rep_mesh::Soup;
@@ -381,14 +382,83 @@ fn io_005_catalog_schema_validation_teaches() {
     let utf8 = r#"[{"section": "café–90", "area_in2": 26.5, "ix_in4": 999}]"#;
     let ucat = schema.parse_json(utf8).expect("utf-8 json catalog");
     assert_eq!(ucat.rows[0]["section"], "café–90");
+
+    let escaped = r#"[{"section":"W\u0031\uD83D\uDE80","area_in2":2.65e1,"ix_in4":"999"}]"#;
+    let escaped_catalog = schema
+        .parse_json(escaped)
+        .expect("RFC escapes, surrogate pairs, and number exponents parse");
+    assert_eq!(escaped_catalog.rows[0]["section"], "W1🚀");
+    assert_eq!(escaped_catalog.numbers[0]["area_in2"], 26.5);
+
+    let strict_refusals = [
+        (
+            r#"[{"section":"W","section":"X","area_in2":1,"ix_in4":2}]"#,
+            "duplicate JSON object key",
+            "duplicate decoded key",
+        ),
+        (
+            r#"[{"section":"W\q","area_in2":1,"ix_in4":2}]"#,
+            "unknown JSON string escape",
+            "unknown escape",
+        ),
+        (
+            r#"[{"section":"W","area_in2":01,"ix_in4":2}]"#,
+            "leading zero",
+            "non-RFC number",
+        ),
+        (
+            r#"[{"section":"W","area_in2":1,"ix_in4":2,}]"#,
+            "trailing comma",
+            "trailing object comma",
+        ),
+        (
+            r#"[{"section":"W" "area_in2":1,"ix_in4":2}]"#,
+            "expected ',' or '}'",
+            "missing object comma",
+        ),
+        (
+            r#"[{"section":[],"area_in2":1,"ix_in4":2}]"#,
+            "expected a JSON string or number",
+            "nested value",
+        ),
+    ];
+    for (hostile, expected_detail, case) in strict_refusals {
+        match schema.parse_json(hostile) {
+            Err(fs_io::IoError::Malformed { at, what }) => assert!(
+                what.contains(expected_detail),
+                "{case}: malformed offset {at} had {what:?}, expected {expected_detail:?}"
+            ),
+            other => panic!("{case}: expected strict Malformed refusal, got {other:?}"),
+        }
+    }
+
+    let input_limited = CatalogJsonLimits {
+        max_input_bytes: json.len() - 1,
+        ..CatalogJsonLimits::DEFAULT
+    };
+    match schema.parse_json_with_limits(json, input_limited) {
+        Err(fs_io::IoError::ResourceBound { what }) => assert!(
+            what.contains("input-byte") && what.contains("byte offset"),
+            "input-cap refusal must name the cap and offset: {what}"
+        ),
+        other => panic!("expected input-cap refusal, got {other:?}"),
+    }
     assert!(
         schema.parse_json("[{\"section\": []}]").is_err(),
         "nested JSON refused"
     );
+    measurement(
+        "io-005/catalog-json-strict",
+        "catalog-json-strict-matrix",
+        format!(
+            "{{\"seed\":{DETERMINISTIC_SEED},\"strict_refusals\":{},\"resource_refusals\":1,\"surrogate_pair_cases\":1}}",
+            strict_refusals.len()
+        ),
+    );
     verdict(
         "io-005",
         true,
-        "CSV+JSON catalogs validate; errors name row/column/offender",
+        "CSV plus bounded strict-RFC JSON catalogs validate; syntax offsets and schema errors teach",
         DETERMINISTIC_SEED,
     );
 }
