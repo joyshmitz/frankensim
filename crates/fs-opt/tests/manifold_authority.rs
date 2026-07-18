@@ -3,14 +3,17 @@
 //! This fixture deliberately exercises only `fs_opt::Manifold`, the descriptor
 //! used by admitted problems and the public retraction boundary. It does not
 //! import the separate `fs-ascent` implementation. The tests certify descriptor
-//! dimensions, wire/admission preservation, and the currently public
+//! dimensions, wire/admission preservation, and the targeted SO(3)/Stiefel
 //! retractions. They make no claim yet about a unified projection/transport
 //! implementation, canonical quaternion-antipode identity, solver convergence,
 //! or `fs-ascent` consumer migration.
 
 #![deny(unsafe_code)]
 
-use fs_opt::{Manifold, OptError, ProblemBuilder, Sense, parse, problem_hash, serialize};
+use fs_opt::{
+    Manifold, OptError, ProblemBuilder, Sense, WireVersion, parse_with_version, problem_hash,
+    serialize, serialize_with_id,
+};
 use fs_qty::Dims;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +51,12 @@ fn rotate_vector(quaternion: &[f64], vector: [f64; 3]) -> [f64; 3] {
 }
 
 fn assert_close(left: f64, right: f64, tolerance: f64) {
+    assert!(left.is_finite(), "non-finite actual value: {left:?}");
+    assert!(right.is_finite(), "non-finite reference value: {right:?}");
+    assert!(
+        tolerance.is_finite() && tolerance >= 0.0,
+        "tolerance must be finite and nonnegative, got {tolerance:?}"
+    );
     assert!(
         (left - right).abs() <= tolerance,
         "{left:?} differs from {right:?} by more than {tolerance:?}"
@@ -128,16 +137,25 @@ fn g0_descriptor_admission_and_wire_paths_share_the_layout_table() {
         assert_dimensions(variable.manifold, expected);
     }
 
-    let canonical = serialize(&problem);
-    let decoded = parse(&canonical).expect("canonical authority fixture parses");
-    assert_eq!(serialize(&decoded), canonical);
-    assert_eq!(problem_hash(&decoded), problem_hash(&problem));
+    let (canonical, wire_identity) = serialize_with_id(&problem);
+    let parsed =
+        parse_with_version(&canonical).expect("canonical authority fixture parses with provenance");
+    assert_eq!(parsed.source_version(), WireVersion::V3);
+    assert_eq!(parsed.wire_content_id(), wire_identity);
+    let decoded = parsed.problem();
+    assert_eq!(serialize(decoded), canonical);
+    assert_eq!(problem_hash(decoded), problem_hash(&problem));
     assert_eq!(
         decoded
             .admit()
             .expect("decoded fixture admits")
             .semantic_id(),
         admission.semantic_id()
+    );
+    assert_eq!(
+        decoded.vars().len(),
+        cases.len(),
+        "canonical replay must not make the descriptor zip vacuous by dropping variables"
     );
     for (variable, (_, expected_manifold, expected)) in decoded.vars().iter().zip(cases) {
         assert_eq!(variable.manifold, expected_manifold);
@@ -199,6 +217,32 @@ fn g0_g3_so3_uses_quaternion_points_and_three_coordinate_increments() {
             }) if got == malformed.len() as u64
         ));
     }
+
+    for malformed in [&base[..3], &[base[0], base[1], base[2], base[3], 0.0][..]] {
+        assert!(matches!(
+            manifold.retract(malformed, &omega),
+            Err(OptError::RetractionLen {
+                input: "retraction point",
+                expected: 4,
+                got,
+            }) if got == malformed.len() as u64
+        ));
+    }
+
+    let quiet_nan = f64::from_bits(0x7ff8_0000_0000_0042);
+    for (malformed, component, bits) in [
+        ([quiet_nan, 0.0, 0.0], 0, quiet_nan.to_bits()),
+        ([0.0, f64::INFINITY, 0.0], 1, f64::INFINITY.to_bits()),
+    ] {
+        assert!(matches!(
+            manifold.retract(&base, &malformed),
+            Err(OptError::RetractionNonFinite {
+                input: "retraction step",
+                component: actual_component,
+                bits: actual_bits,
+            }) if actual_component == component && actual_bits == bits
+        ));
+    }
 }
 
 /// G0/G3: Stiefel points and QR-retraction parameters use column-major
@@ -222,7 +266,7 @@ fn g0_g3_stiefel_distinguishes_ambient_parameters_from_tangent_dimension() {
     ];
     let ambient_step = [
         0.0, 0.0, 0.5, 0.0, // tilt first column toward row 2
-        0.0, 0.0, 0.0, 0.25, // tilt second column toward row 3
+        0.25, 0.0, 0.0, 0.25, // couple second column to the first and row 3
     ];
     let landed = manifold
         .retract(&base, &ambient_step)
@@ -230,6 +274,7 @@ fn g0_g3_stiefel_distinguishes_ambient_parameters_from_tangent_dimension() {
     let replay = manifold
         .retract(&base, &ambient_step)
         .expect("deterministic QR replay");
+    assert_eq!(landed.len(), base.len());
     assert_eq!(
         landed
             .iter()
@@ -245,10 +290,10 @@ fn g0_g3_stiefel_distinguishes_ambient_parameters_from_tangent_dimension() {
         0.0,
         1.0 / 5.0_f64.sqrt(),
         0.0,
-        0.0,
-        4.0 / 17.0_f64.sqrt(),
-        0.0,
-        1.0 / 17.0_f64.sqrt(),
+        1.0 / 430.0_f64.sqrt(),
+        20.0 / 430.0_f64.sqrt(),
+        -2.0 / 430.0_f64.sqrt(),
+        5.0 / 430.0_f64.sqrt(),
     ];
     for (actual, expected) in landed.iter().zip(expected) {
         assert_close(*actual, expected, 2e-15);
@@ -282,8 +327,10 @@ fn g0_g3_stiefel_distinguishes_ambient_parameters_from_tangent_dimension() {
         manifold.retract(&base, &rank_deficient_step),
         Err(OptError::RetractionDomain {
             manifold: "Stiefel",
-            ..
-        })
+            what: "candidate column is rank-deficient",
+            location: Some((1, 1)),
+            measurement_bits,
+        }) if measurement_bits == 0.0_f64.to_bits()
     ));
 }
 
