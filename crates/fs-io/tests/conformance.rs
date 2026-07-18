@@ -302,25 +302,24 @@ fn io_004_ply_face_lists_reject_non_integer_values() {
 
 #[test]
 fn io_005_catalog_schema_validation_teaches() {
-    let schema = Schema {
-        columns: vec![
-            ColumnSpec {
-                name: "section",
-                kind: ColumnKind::Text,
-                required: true,
-            },
-            ColumnSpec {
-                name: "area_in2",
-                kind: ColumnKind::Number { min: 0.0, max: 1e4 },
-                required: true,
-            },
-            ColumnSpec {
-                name: "ix_in4",
-                kind: ColumnKind::Number { min: 0.0, max: 1e6 },
-                required: true,
-            },
-        ],
-    };
+    let schema = Schema::admit(vec![
+        ColumnSpec {
+            name: "section",
+            kind: ColumnKind::Text,
+            required: true,
+        },
+        ColumnSpec {
+            name: "area_in2",
+            kind: ColumnKind::Number { min: 0.0, max: 1e4 },
+            required: true,
+        },
+        ColumnSpec {
+            name: "ix_in4",
+            kind: ColumnKind::Number { min: 0.0, max: 1e6 },
+            required: true,
+        },
+    ])
+    .expect("valid AISC catalog schema must be admitted");
     // The AISC-flavored happy path (quoted field included).
     let csv = "section,area_in2,ix_in4\n\"W14x90\",26.5,999\nW12x65,19.1,533\n";
     let catalog = schema.parse_csv(csv).expect("valid catalog");

@@ -22,7 +22,10 @@ pub mod step_faceted_export;
 pub mod step_import;
 pub mod stl;
 
-pub use catalog::{Catalog, ColumnKind, ColumnSpec, Schema};
+pub use catalog::{
+    CATALOG_SCHEMA_VERSION, Catalog, CatalogSchemaLimits, CatalogSchemaReceipt, ColumnKind,
+    ColumnSpec, Schema, SchemaDefinitionRefusal,
+};
 pub use export::{export_3mf, export_glb, export_vtk};
 pub use quarantine::{ImportDefect, ImportReceipt, PromotionRefusal, Quarantined, promote};
 pub use step::{

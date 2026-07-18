@@ -7,6 +7,35 @@
 use crate::IoError;
 use std::collections::BTreeMap;
 
+/// Version of the sealed catalog-schema admission contract.
+pub const CATALOG_SCHEMA_VERSION: &str = "fs-io/catalog-schema/v1";
+
+/// Resource envelope for admitting a catalog schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CatalogSchemaLimits {
+    /// Maximum number of declared columns.
+    pub max_columns: usize,
+    /// Maximum UTF-8 bytes in one canonical column name.
+    pub max_name_bytes: usize,
+    /// Maximum UTF-8 bytes summed over all canonical column names.
+    pub max_total_name_bytes: usize,
+}
+
+impl CatalogSchemaLimits {
+    /// Default schema envelope for [`Schema::admit`].
+    pub const DEFAULT: Self = Self {
+        max_columns: 4_096,
+        max_name_bytes: 256,
+        max_total_name_bytes: 64 * 1024,
+    };
+}
+
+impl Default for CatalogSchemaLimits {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 /// What a column must contain.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ColumnKind {
@@ -22,9 +51,10 @@ pub enum ColumnKind {
 }
 
 /// One column's contract.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ColumnSpec {
-    /// Column name (must appear in the header).
+    /// Canonical column name. Required columns must appear in every document;
+    /// optional columns may be absent.
     pub name: &'static str,
     /// The value contract.
     pub kind: ColumnKind,
@@ -32,11 +62,139 @@ pub struct ColumnSpec {
     pub required: bool,
 }
 
-/// A catalog schema.
-#[derive(Debug, Clone)]
+/// Deterministic evidence retained by an admitted catalog schema.
+///
+/// `local_identity_fnv1a64` is a stable replay fingerprint over the version,
+/// limits, ordered column contracts, and lookup policies. It is not a
+/// collision-resistant content address; HELM must upgrade it before using it
+/// as ledger authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CatalogSchemaReceipt {
+    /// Versioned identity domain and admission semantics.
+    pub schema_version: &'static str,
+    /// Caller-selected schema limits used during admission.
+    pub limits: CatalogSchemaLimits,
+    /// Number of admitted columns.
+    pub column_count: usize,
+    /// UTF-8 bytes summed over all admitted column names.
+    pub total_name_bytes: usize,
+    /// Deterministic, non-cryptographic local replay identity.
+    pub local_identity_fnv1a64: u64,
+}
+
+/// Why an unchecked column declaration could not become a [`Schema`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaDefinitionRefusal {
+    /// At least one column is required.
+    EmptySchema,
+    /// The declaration exceeds the admitted column-count cap.
+    ColumnCount {
+        /// Supplied columns.
+        count: usize,
+        /// Admitted maximum.
+        limit: usize,
+    },
+    /// A name is empty after applying the CSV lookup normalization.
+    EmptyName {
+        /// One-based declaration position.
+        column: usize,
+    },
+    /// A name contains leading or trailing whitespace and would therefore
+    /// alias another spelling under CSV header lookup.
+    NonCanonicalName {
+        /// One-based declaration position.
+        column: usize,
+    },
+    /// One name exceeds the per-name byte cap.
+    NameBytes {
+        /// One-based declaration position.
+        column: usize,
+        /// Supplied UTF-8 bytes.
+        bytes: usize,
+        /// Admitted maximum.
+        limit: usize,
+    },
+    /// Aggregate name bytes exceed the schema envelope.
+    TotalNameBytes {
+        /// Bytes through the first refusing declaration.
+        bytes: usize,
+        /// Admitted maximum.
+        limit: usize,
+    },
+    /// Two declarations have the same canonical lookup name.
+    DuplicateName {
+        /// One-based position of the first declaration.
+        first_column: usize,
+        /// One-based position of the duplicate declaration.
+        duplicate_column: usize,
+    },
+    /// A numeric lower or upper bound is NaN or infinite.
+    NonFiniteNumberBound {
+        /// One-based declaration position.
+        column: usize,
+        /// `true` for the lower bound, `false` for the upper bound.
+        lower: bool,
+    },
+    /// A numeric lower bound is greater than its upper bound.
+    InvertedNumberBounds {
+        /// One-based declaration position.
+        column: usize,
+    },
+}
+
+impl core::fmt::Display for SchemaDefinitionRefusal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::EmptySchema => write!(f, "catalog schema must declare at least one column"),
+            Self::ColumnCount { count, limit } => {
+                write!(f, "catalog schema has {count} columns; limit is {limit}")
+            }
+            Self::EmptyName { column } => {
+                write!(f, "catalog schema column {column} has an empty name")
+            }
+            Self::NonCanonicalName { column } => write!(
+                f,
+                "catalog schema column {column} has leading or trailing whitespace"
+            ),
+            Self::NameBytes {
+                column,
+                bytes,
+                limit,
+            } => write!(
+                f,
+                "catalog schema column {column} name has {bytes} bytes; limit is {limit}"
+            ),
+            Self::TotalNameBytes { bytes, limit } => write!(
+                f,
+                "catalog schema names total {bytes} bytes; limit is {limit}"
+            ),
+            Self::DuplicateName {
+                first_column,
+                duplicate_column,
+            } => write!(
+                f,
+                "catalog schema columns {first_column} and {duplicate_column} have the same name"
+            ),
+            Self::NonFiniteNumberBound { column, lower } => write!(
+                f,
+                "catalog schema column {column} has a non-finite {} bound",
+                if *lower { "lower" } else { "upper" }
+            ),
+            Self::InvertedNumberBounds { column } => write!(
+                f,
+                "catalog schema column {column} has a lower bound greater than its upper bound"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SchemaDefinitionRefusal {}
+
+/// An admitted, immutable catalog schema.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Schema {
-    /// Column contracts (order-independent; matched by header name).
-    pub columns: Vec<ColumnSpec>,
+    columns: Vec<ColumnSpec>,
+    receipt: CatalogSchemaReceipt,
 }
 
 /// A validated catalog: rows of (column name → text) with numbers
@@ -128,7 +286,241 @@ fn split_csv(line: &str, row: usize) -> Result<Vec<String>, IoError> {
     Ok(fields)
 }
 
+const FNV1A64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV1A64_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn schema_hash_bytes(state: &mut u64, bytes: &[u8]) {
+    for byte in bytes {
+        *state ^= u64::from(*byte);
+        *state = state.wrapping_mul(FNV1A64_PRIME);
+    }
+}
+
+fn schema_hash_usize(state: &mut u64, mut value: usize) {
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        schema_hash_bytes(state, &[byte]);
+        if value == 0 {
+            return;
+        }
+    }
+}
+
+fn schema_identity(columns: &[ColumnSpec], limits: CatalogSchemaLimits) -> u64 {
+    let mut state = FNV1A64_OFFSET;
+    schema_hash_bytes(
+        &mut state,
+        b"fs-io/catalog-schema/v1\0csv-name=trim\0json-name=exact\0unknown=preserve\0optional=may-omit\0validation=declaration-order\0",
+    );
+    schema_hash_usize(&mut state, limits.max_columns);
+    schema_hash_usize(&mut state, limits.max_name_bytes);
+    schema_hash_usize(&mut state, limits.max_total_name_bytes);
+    schema_hash_usize(&mut state, columns.len());
+    for column in columns {
+        schema_hash_usize(&mut state, column.name.len());
+        schema_hash_bytes(&mut state, column.name.as_bytes());
+        match column.kind {
+            ColumnKind::Text => schema_hash_bytes(&mut state, &[0]),
+            ColumnKind::Number { min, max } => {
+                schema_hash_bytes(&mut state, &[1]);
+                schema_hash_bytes(&mut state, &min.to_bits().to_le_bytes());
+                schema_hash_bytes(&mut state, &max.to_bits().to_le_bytes());
+            }
+        }
+        schema_hash_bytes(&mut state, &[u8::from(column.required)]);
+    }
+    state
+}
+
+const MAX_DIAGNOSTIC_TEXT_BYTES: usize = 96;
+const MAX_DIAGNOSTIC_HEADER_NAMES: usize = 8;
+
+fn bounded_diagnostic_text(text: &str) -> String {
+    if text.len() <= MAX_DIAGNOSTIC_TEXT_BYTES {
+        return text.to_owned();
+    }
+    let mut end = MAX_DIAGNOSTIC_TEXT_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}… ({} UTF-8 bytes)", &text[..end], text.len())
+}
+
+fn header_witness(header: &[String]) -> String {
+    let mut witness = String::new();
+    for (index, name) in header.iter().take(MAX_DIAGNOSTIC_HEADER_NAMES).enumerate() {
+        if index != 0 {
+            witness.push_str(", ");
+        }
+        witness.push_str(&bounded_diagnostic_text(name));
+    }
+    if header.len() > MAX_DIAGNOSTIC_HEADER_NAMES {
+        witness.push_str(&format!(
+            ", … ({} more columns)",
+            header.len() - MAX_DIAGNOSTIC_HEADER_NAMES
+        ));
+    }
+    witness
+}
+
+fn fallible_copy(text: &str, payload: &str, at: usize) -> Result<String, IoError> {
+    let mut copy = String::new();
+    copy.try_reserve_exact(text.len())
+        .map_err(|_| allocation_refusal(payload, at))?;
+    copy.push_str(text);
+    Ok(copy)
+}
+
+fn normalize_csv_header(raw_header: Vec<String>) -> Result<Vec<String>, IoError> {
+    let mut header = Vec::new();
+    header
+        .try_reserve_exact(raw_header.len())
+        .map_err(|_| allocation_refusal("normalized CSV header", 0))?;
+    for (index, raw_name) in raw_header.into_iter().enumerate() {
+        let name = raw_name.trim();
+        if name.is_empty() {
+            return Err(IoError::Schema {
+                row: 0,
+                column: format!("header column {}", index + 1),
+                what: "CSV header name is empty after whitespace normalization".to_string(),
+            });
+        }
+        header.push(fallible_copy(name, "normalized CSV header name", 0)?);
+    }
+
+    let mut first_positions = BTreeMap::<&str, usize>::new();
+    for (index, name) in header.iter().enumerate() {
+        if let Some(first_index) = first_positions.insert(name, index) {
+            return Err(IoError::Schema {
+                row: 0,
+                column: bounded_diagnostic_text(name),
+                what: format!(
+                    "duplicate CSV header after whitespace normalization at columns {} and {}",
+                    first_index + 1,
+                    index + 1
+                ),
+            });
+        }
+    }
+    Ok(header)
+}
+
 impl Schema {
+    /// Admit a schema under [`CatalogSchemaLimits::DEFAULT`].
+    ///
+    /// Declaration order fixes deterministic validation-error priority and is
+    /// therefore identity-bearing. Document column/member order is not.
+    ///
+    /// # Errors
+    /// Returns [`SchemaDefinitionRefusal`] before any schema can be used when
+    /// the declaration is empty, ambiguous, out of bounds, or has invalid
+    /// numeric bounds.
+    pub fn admit(columns: Vec<ColumnSpec>) -> Result<Self, SchemaDefinitionRefusal> {
+        Self::admit_with_limits(columns, CatalogSchemaLimits::DEFAULT)
+    }
+
+    /// Admit a schema under caller-explicit definition limits.
+    ///
+    /// # Errors
+    /// Returns the first refusal in declaration order. Names must already be
+    /// in their `str::trim` canonical form so CSV and JSON lookup cannot
+    /// disagree about aliases.
+    pub fn admit_with_limits(
+        columns: Vec<ColumnSpec>,
+        limits: CatalogSchemaLimits,
+    ) -> Result<Self, SchemaDefinitionRefusal> {
+        if columns.is_empty() {
+            return Err(SchemaDefinitionRefusal::EmptySchema);
+        }
+        if columns.len() > limits.max_columns {
+            return Err(SchemaDefinitionRefusal::ColumnCount {
+                count: columns.len(),
+                limit: limits.max_columns,
+            });
+        }
+
+        let mut total_name_bytes = 0usize;
+        let mut names = BTreeMap::<&str, usize>::new();
+        for (index, column) in columns.iter().enumerate() {
+            let ordinal = index + 1;
+            let canonical = column.name.trim();
+            if canonical.is_empty() {
+                return Err(SchemaDefinitionRefusal::EmptyName { column: ordinal });
+            }
+            if canonical != column.name {
+                return Err(SchemaDefinitionRefusal::NonCanonicalName { column: ordinal });
+            }
+            if column.name.len() > limits.max_name_bytes {
+                return Err(SchemaDefinitionRefusal::NameBytes {
+                    column: ordinal,
+                    bytes: column.name.len(),
+                    limit: limits.max_name_bytes,
+                });
+            }
+            let next_total = total_name_bytes.checked_add(column.name.len()).ok_or(
+                SchemaDefinitionRefusal::TotalNameBytes {
+                    bytes: usize::MAX,
+                    limit: limits.max_total_name_bytes,
+                },
+            )?;
+            if next_total > limits.max_total_name_bytes {
+                return Err(SchemaDefinitionRefusal::TotalNameBytes {
+                    bytes: next_total,
+                    limit: limits.max_total_name_bytes,
+                });
+            }
+            total_name_bytes = next_total;
+            if let Some(first_index) = names.insert(column.name, index) {
+                return Err(SchemaDefinitionRefusal::DuplicateName {
+                    first_column: first_index + 1,
+                    duplicate_column: ordinal,
+                });
+            }
+            if let ColumnKind::Number { min, max } = column.kind {
+                if !min.is_finite() {
+                    return Err(SchemaDefinitionRefusal::NonFiniteNumberBound {
+                        column: ordinal,
+                        lower: true,
+                    });
+                }
+                if !max.is_finite() {
+                    return Err(SchemaDefinitionRefusal::NonFiniteNumberBound {
+                        column: ordinal,
+                        lower: false,
+                    });
+                }
+                if min > max {
+                    return Err(SchemaDefinitionRefusal::InvertedNumberBounds { column: ordinal });
+                }
+            }
+        }
+
+        let receipt = CatalogSchemaReceipt {
+            schema_version: CATALOG_SCHEMA_VERSION,
+            limits,
+            column_count: columns.len(),
+            total_name_bytes,
+            local_identity_fnv1a64: schema_identity(&columns, limits),
+        };
+        Ok(Self { columns, receipt })
+    }
+
+    /// Admitted column contracts in deterministic validation order.
+    #[must_use]
+    pub fn columns(&self) -> &[ColumnSpec] {
+        &self.columns
+    }
+
+    /// Versioned deterministic schema-admission evidence.
+    #[must_use]
+    pub const fn receipt(&self) -> &CatalogSchemaReceipt {
+        &self.receipt
+    }
+
     /// Validate one cell against its spec.
     fn check_cell(spec: &ColumnSpec, text: &str, row: usize) -> Result<Option<f64>, IoError> {
         let trimmed = text.trim();
@@ -148,7 +540,7 @@ impl Schema {
                 let v: f64 = trimmed.parse().map_err(|_| IoError::Schema {
                     row,
                     column: spec.name.to_string(),
-                    what: format!("{trimmed:?} is not a number"),
+                    what: format!("{:?} is not a number", bounded_diagnostic_text(trimmed)),
                 })?;
                 if !v.is_finite() || v < min || v > max {
                     return Err(IoError::Schema {
@@ -177,15 +569,15 @@ impl Schema {
             at: 0,
             what: "empty catalog".to_string(),
         })?;
-        let header = split_csv(header_line, 0)?;
+        let header = normalize_csv_header(split_csv(header_line, 0)?)?;
         for spec in &self.columns {
-            if !header.iter().any(|h| h.trim() == spec.name) {
+            if spec.required && !header.iter().any(|name| name == spec.name) {
                 return Err(IoError::Schema {
                     row: 0,
                     column: spec.name.to_string(),
                     what: format!(
                         "column missing from the header (found: {})",
-                        header.join(", ")
+                        header_witness(&header)
                     ),
                 });
             }
@@ -207,15 +599,23 @@ impl Schema {
             }
             let mut row = BTreeMap::new();
             let mut nums = BTreeMap::new();
-            for (h, cell) in header.iter().zip(&fields) {
-                row.insert(h.trim().to_string(), cell.clone());
+            for (name, cell) in header.iter().zip(fields) {
+                row.insert(fallible_copy(name, "CSV output column key", row_no)?, cell);
             }
             for spec in &self.columns {
-                let cell = row.get(spec.name).cloned().unwrap_or_default();
-                if let Some(v) = Self::check_cell(spec, &cell, row_no)? {
-                    nums.insert(spec.name.to_string(), v);
+                let cell = row.get(spec.name).map(String::as_str).unwrap_or_default();
+                if let Some(v) = Self::check_cell(spec, cell, row_no)? {
+                    nums.insert(
+                        fallible_copy(spec.name, "CSV numeric projection key", row_no)?,
+                        v,
+                    );
                 }
             }
+            rows.try_reserve(1)
+                .map_err(|_| allocation_refusal("CSV output row index", row_no))?;
+            numbers
+                .try_reserve(1)
+                .map_err(|_| allocation_refusal("CSV numeric-row index", row_no))?;
             rows.push(row);
             numbers.push(nums);
         }
@@ -255,7 +655,10 @@ impl Schema {
             for spec in &self.columns {
                 let cell = obj.get(spec.name).map(String::as_str).unwrap_or_default();
                 if let Some(v) = Self::check_cell(spec, cell, i + 1)? {
-                    nums.insert(spec.name.to_string(), v);
+                    nums.insert(
+                        fallible_copy(spec.name, "JSON numeric projection key", i + 1)?,
+                        v,
+                    );
                 }
             }
             numbers.push(nums);
@@ -780,6 +1183,22 @@ impl JsonCatalogParser<'_> {
 mod tests {
     use super::*;
 
+    fn text_column(name: &'static str, required: bool) -> ColumnSpec {
+        ColumnSpec {
+            name,
+            kind: ColumnKind::Text,
+            required,
+        }
+    }
+
+    fn number_column(name: &'static str, min: f64, max: f64) -> ColumnSpec {
+        ColumnSpec {
+            name,
+            kind: ColumnKind::Number { min, max },
+            required: true,
+        }
+    }
+
     fn parse_rows(input: &str) -> Result<Vec<BTreeMap<String, String>>, IoError> {
         mini_json_array_of_objects(input, CatalogJsonLimits::DEFAULT)
     }
@@ -804,6 +1223,209 @@ mod tests {
                 "{case}: expected cap {expected_cap:?} with offset, got {what:?}"
             ),
             other => panic!("{case}: expected ResourceBound, got {other:?}"),
+        }
+    }
+
+    /// G0: unchecked declarations cannot become authority across every schema
+    /// definition boundary; equal and extreme finite numeric bounds remain
+    /// legal inclusive ranges.
+    #[test]
+    fn g0_schema_admission_refuses_ambiguous_or_invalid_definitions() {
+        assert!(matches!(
+            Schema::admit(Vec::new()),
+            Err(SchemaDefinitionRefusal::EmptySchema)
+        ));
+
+        let one_column = CatalogSchemaLimits {
+            max_columns: 1,
+            max_name_bytes: 8,
+            max_total_name_bytes: 8,
+        };
+        Schema::admit_with_limits(vec![text_column("a", true)], one_column)
+            .expect("exact column-count boundary must admit");
+        assert!(matches!(
+            Schema::admit_with_limits(
+                vec![text_column("a", true), text_column("b", true)],
+                one_column
+            ),
+            Err(SchemaDefinitionRefusal::ColumnCount { count: 2, limit: 1 })
+        ));
+
+        for (column, expected) in [
+            (
+                text_column("", true),
+                SchemaDefinitionRefusal::EmptyName { column: 1 },
+            ),
+            (
+                text_column(" a", true),
+                SchemaDefinitionRefusal::NonCanonicalName { column: 1 },
+            ),
+            (
+                text_column("a ", true),
+                SchemaDefinitionRefusal::NonCanonicalName { column: 1 },
+            ),
+        ] {
+            assert_eq!(Schema::admit(vec![column]), Err(expected));
+        }
+
+        assert!(matches!(
+            Schema::admit_with_limits(
+                vec![text_column("abc", true)],
+                CatalogSchemaLimits {
+                    max_columns: 1,
+                    max_name_bytes: 2,
+                    max_total_name_bytes: 8,
+                }
+            ),
+            Err(SchemaDefinitionRefusal::NameBytes {
+                column: 1,
+                bytes: 3,
+                limit: 2
+            })
+        ));
+        assert!(matches!(
+            Schema::admit_with_limits(
+                vec![text_column("ab", true), text_column("cd", true)],
+                CatalogSchemaLimits {
+                    max_columns: 2,
+                    max_name_bytes: 2,
+                    max_total_name_bytes: 3,
+                }
+            ),
+            Err(SchemaDefinitionRefusal::TotalNameBytes { bytes: 4, limit: 3 })
+        ));
+        assert!(matches!(
+            Schema::admit(vec![text_column("a", true), text_column("a", false)]),
+            Err(SchemaDefinitionRefusal::DuplicateName {
+                first_column: 1,
+                duplicate_column: 2
+            })
+        ));
+
+        assert!(matches!(
+            Schema::admit(vec![number_column("n", f64::NAN, 1.0)]),
+            Err(SchemaDefinitionRefusal::NonFiniteNumberBound {
+                column: 1,
+                lower: true
+            })
+        ));
+        assert!(matches!(
+            Schema::admit(vec![number_column("n", 0.0, f64::INFINITY)]),
+            Err(SchemaDefinitionRefusal::NonFiniteNumberBound {
+                column: 1,
+                lower: false
+            })
+        ));
+        assert!(matches!(
+            Schema::admit(vec![number_column("n", 2.0, 1.0)]),
+            Err(SchemaDefinitionRefusal::InvertedNumberBounds { column: 1 })
+        ));
+
+        Schema::admit(vec![number_column("equal", 1.0, 1.0)])
+            .expect("equal inclusive bounds are valid");
+        Schema::admit(vec![number_column("finite", f64::MIN, f64::MAX)])
+            .expect("extreme finite bounds are valid");
+    }
+
+    /// G3/G5: admission is byte-stable and every policy-bearing declaration
+    /// input moves the local replay identity.
+    #[test]
+    fn g3_schema_identity_is_stable_and_policy_sensitive() {
+        let columns = vec![text_column("id", true), number_column("value", -1.0, 1.0)];
+        let first = Schema::admit(columns.clone()).expect("baseline schema");
+        let retry = Schema::admit(columns).expect("identical retry");
+        assert_eq!(first.receipt(), retry.receipt());
+        assert_eq!(first.receipt().schema_version, CATALOG_SCHEMA_VERSION);
+
+        let variants = [
+            Schema::admit(vec![
+                text_column("id", false),
+                number_column("value", -1.0, 1.0),
+            ])
+            .expect("required-policy variant"),
+            Schema::admit(vec![
+                text_column("id", true),
+                number_column("value", -2.0, 1.0),
+            ])
+            .expect("bounds variant"),
+            Schema::admit(vec![
+                number_column("value", -1.0, 1.0),
+                text_column("id", true),
+            ])
+            .expect("validation-order variant"),
+            Schema::admit_with_limits(
+                vec![text_column("id", true), number_column("value", -1.0, 1.0)],
+                CatalogSchemaLimits {
+                    max_columns: 8,
+                    ..CatalogSchemaLimits::DEFAULT
+                },
+            )
+            .expect("limit variant"),
+        ];
+        for variant in variants {
+            assert_ne!(
+                variant.receipt().local_identity_fnv1a64,
+                first.receipt().local_identity_fnv1a64,
+                "each authority-bearing schema or limit change must move identity"
+            );
+        }
+    }
+
+    /// G0/G3: CSV header aliases refuse before row-map insertion. Optional
+    /// schema columns may be absent and unknown canonical-name columns are
+    /// preserved identically by CSV and JSON; document order is immaterial.
+    #[test]
+    fn g0_g3_csv_header_admission_and_cross_format_projection_policy() {
+        let schema = Schema::admit(vec![text_column("id", true), text_column("note", false)])
+            .expect("valid projection schema");
+
+        for csv in ["id,id\nA,B\n", "id, id \nA,B\n"] {
+            match schema.parse_csv(csv) {
+                Err(IoError::Schema {
+                    row: 0,
+                    column,
+                    what,
+                }) => {
+                    assert_eq!(column, "id");
+                    assert!(what.contains("duplicate CSV header"));
+                }
+                other => panic!("normalized duplicate header must refuse, got {other:?}"),
+            }
+        }
+
+        let csv = schema
+            .parse_csv("extra,id\nkeep,A\n")
+            .expect("optional column may be absent and extra column is preserved");
+        let permuted_csv = schema
+            .parse_csv("id,extra\nA,keep\n")
+            .expect("document column permutation must be immaterial");
+        let json = schema
+            .parse_json(r#"[{"id":"A","extra":"keep"}]"#)
+            .expect("JSON follows the same optional/unknown-column policy");
+        assert_eq!(csv, permuted_csv);
+        assert_eq!(csv, json);
+        assert!(!csv.rows[0].contains_key("note"));
+        assert_eq!(csv.rows[0]["extra"], "keep");
+    }
+
+    /// G0: attacker-sized cell text cannot become an attacker-sized teaching
+    /// error even before the shared CSV operation envelope lands.
+    #[test]
+    fn g0_schema_error_witness_is_bounded() {
+        let schema =
+            Schema::admit(vec![number_column("n", 0.0, 1.0)]).expect("valid numeric schema");
+        let offender = "x".repeat(16 * 1024);
+        let csv = format!("n\n{offender}\n");
+        match schema.parse_csv(&csv) {
+            Err(IoError::Schema { what, .. }) => {
+                assert!(
+                    what.len() < 192,
+                    "diagnostic must stay bounded: {}",
+                    what.len()
+                );
+                assert!(what.contains("UTF-8 bytes"));
+            }
+            other => panic!("non-number must produce a schema error, got {other:?}"),
         }
     }
 

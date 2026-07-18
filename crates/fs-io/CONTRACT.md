@@ -48,7 +48,19 @@ L6. Consumers: the P4 frame flagship (AISC catalogs), fs-fab.
 - **Catalogs** (`catalog` module): CSV (RFC-4180 subset with quoted
   fields and `""` escapes) and strict RFC 8259 JSON restricted to one
   array of flat objects with string/number values, validated against a
-  `Schema` of `ColumnSpec`s (Text / bounded Number, required flags).
+  sealed `Schema` admitted fallibly from `ColumnSpec`s (Text / bounded
+  Number, required flags). Admission requires 1..=4096 columns by default,
+  at most 256 UTF-8 bytes per canonical name and 64 KiB of aggregate name
+  bytes, exact uniqueness, no leading/trailing `str::trim` whitespace, and
+  finite ordered inclusive numeric bounds. Its versioned local FNV identity
+  binds exact admission limits, declaration/validation order, column
+  contracts, and lookup policies; it is replay evidence, not ledger authority.
+  Required columns must be present, optional columns may be absent, and unknown
+  document columns are preserved. CSV retains unknown names after header-trim
+  normalization; JSON retains exact decoded key spelling. Document
+  column/member order is immaterial for the common canonical-name subset.
+  Duplicate or empty CSV headers after normalization refuse before row-map
+  insertion.
   JSON strings implement every simple escape plus exact UTF-16 surrogate-pair
   decoding; raw controls, malformed/unknown escapes, duplicate decoded keys,
   non-RFC numbers, delimiter elision/trailing commas, nested values, and
@@ -129,7 +141,14 @@ L6. Consumers: the P4 frame flagship (AISC catalogs), fs-fab.
    results (CI-checked fuzz lane).
 4. **Deterministic exports**: identical soups produce identical bytes
    (fixed ZIP timestamps, fixed chunk layout).
-5. **Schema errors teach**: row + column + offender + expectation.
+5. **Catalog schemas are admitted before use and errors teach**: raw column
+   vectors cannot construct `Schema`. Admission deterministically refuses the
+   first empty, non-canonical, over-limit, duplicate, non-finite, or inverted
+   declaration. Equal finite numeric bounds are legal. Declaration order fixes
+   validation-error priority and moves schema identity; document order does
+   not. Value errors retain row + column + expectation and at most 96 UTF-8
+   bytes of attacker-controlled cell text. CSV header aliases refuse before
+   any row map can silently overwrite them.
 6. **Catalog JSON is strict, bounded, and non-overwriting**: only RFC 8259's
    four ASCII whitespace bytes are skipped. Object/array commas and colons are
    explicit; the exact JSON number production is retained lexically until
@@ -226,8 +245,10 @@ L6. Consumers: the P4 frame flagship (AISC catalogs), fs-fab.
 
 ## Error model
 
-`IoError`: `Malformed { at, what }`, `Unsupported`, `ResourceBound`,
-`Schema { row, column, what }`. Catalog-JSON syntax errors use byte offsets;
+`SchemaDefinitionRefusal` is the separate typed pre-document refusal for empty,
+ambiguous, over-limit, or numerically invalid schema declarations. `IoError`:
+`Malformed { at, what }`, `Unsupported`, `ResourceBound`, `Schema { row,
+column, what }`. Catalog-JSON syntax errors use byte offsets;
 catalog resource refusals name the cap, limit, and refusal offset in `what`.
 `PromotionRefusal` carries blocking
 defects + fixes + the refused receipt. The STEP syntax kernel uses
@@ -252,6 +273,10 @@ nested semantic replay, and first exact-geometry replay mismatch.
 state. Catalog JSON preserves row order and retained number spelling while its
 `BTreeMap` rows canonicalize decoded key order; equivalent raw/escaped Unicode
 spellings and insignificant-whitespace rewrites therefore produce equal rows.
+Catalog schema identity uses a versioned canonical FNV-1a byte stream over
+limits, policies, ordered names, required flags, kind tags, and exact f64 bound
+bits. Identical admission retries are stable; this local fingerprint is not a
+collision-resistant authority identifier.
 Native faceted decoding sorts schema-defined `SET` members and materializes
 points/faces by numeric instance ID. The STEP tessellation handoff rejects
 `ExecMode::Fast`; its receipt and provenance explicitly bind deterministic mode.
@@ -316,9 +341,14 @@ five outcomes use deterministic seed zero. The suite has no concurrent
 aggregate case, so these records make no scheduler-replay claim. Existing
 promotion-receipt and fuzz-measurement data use validated fs-obs `Custom`
 companions, not canonical aggregate outcomes; the fuzz companion also retains
-the mutation-stream seed. Catalog module G0/G3 unit matrices additionally cover
-all raw C0 bytes, all one-byte unknown ASCII escapes, malformed/lone surrogate
-forms with exact offsets, valid and invalid number productions, comma/colon and
+the mutation-stream seed. Catalog module G0/G3/G5 unit matrices additionally cover
+schema count/name/aggregate-name boundaries; empty, trim-alias, and duplicate
+names; NaN, infinite, equal, inverted, and extreme finite bounds; stable and
+policy-sensitive schema identity; normalized duplicate CSV headers; optional
+and unknown-column parity across CSV/JSON; document-column permutation; bounded
+value-error witnesses; all raw C0 bytes; all one-byte unknown ASCII escapes;
+malformed/lone surrogate forms with exact offsets; valid and invalid number
+productions; comma/colon and
 decoded-duplicate-key cases, semantic-preserving whitespace/member/escape
 rewrites, every proper truncation prefix, exact accept/refuse boundaries for
 every limit dimension, and every ASCII document suffix.
@@ -412,3 +442,11 @@ import identically in both ASCII and binary (conformance-tested).
 - **Receipts hash with FNV-1a**; HELM upgrades to the BLAKE3-class
   content address when writing the `imports` row (same field, stated in
   the receipt schema).
+- **Catalog operation admission is still incomplete**: the sealed schema and
+  duplicate-header gate remove unchecked schema authority and ambiguous CSV
+  overwrite, but `CatalogJsonLimits` still covers syntax/payload rather than
+  the complete schema-validation/projection/output lifetime, and CSV still
+  lacks the shared input/row/field/decoded/output envelope and complete
+  operation receipt. Allocator metadata and `BTreeMap` node allocation remain
+  unmeasured. No whole-operation catalog resource or ledger-promotion claim is
+  made until those proof-pending portions of `frankensim-svlo8` land.
