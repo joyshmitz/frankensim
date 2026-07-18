@@ -1,23 +1,29 @@
 //! FrankenScipy optimizer-oracle evidence for the shared Rosenbrock fixture.
 //!
 //! An exact analytic KAT checks a test-local Rosenbrock implementation against
-//! pinned FrankenScipy values and proves `LbfgsState` is stationary at the exact
-//! minimizer. A bounded case then compares fs-ascent L-BFGS with FrankenScipy
+//! constellation-declared FrankenScipy values and proves `LbfgsState` is
+//! stationary at the exact minimizer. A bounded case then compares fs-ascent
+//! L-BFGS with FrankenScipy
 //! BFGS and L-BFGS-B from one disclosed global-basin start after independently
 //! admitting the analytic gradient through `check_grad`.
 //!
-//! This is finite-fixture G0 and same-build replay evidence. FrankenScipy is a
+//! The declared oracle version and pin are checked against `constellation.lock`;
+//! proving that the sibling path checkout is actually clean and at that pin
+//! remains the external `xtask check-constellation`/DSR admission precondition.
+//! This is finite-fixture G0 and same-process replay evidence. FrankenScipy is a
 //! pinned comparison implementation, not ground truth. Basin choice is fixed by
 //! the input frame; this tranche makes no claim for arbitrary starts, global or
 //! constrained optimization, stochastic methods, general tolerance
-//! calibration, performance, cancellation, or fresh cross-ISA/full-G5 proof.
+//! calibration, production evaluation-budget enforcement, performance,
+//! cancellation, or fresh cross-ISA/full-G5 proof.
 
 use core::fmt::Write as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use fs_ascent::{LbfgsReport, LbfgsState, StopReason, StopRule, VERSION as FS_ASCENT_VERSION};
 use fs_casebook::{
-    CASEBOOK_RECORD_VERSION, CaseOutcome, ReplaySpec, Suite, SuiteReport, ToleranceSpec, fnv1a64,
+    CASEBOOK_RECORD_VERSION, CaseOutcome, DisagreementRecord, ReplaySpec, Suite, SuiteReport,
+    ToleranceSpec, fnv1a64,
 };
 use fsci_opt::{
     ConvergenceStatus, MinimizeOptions, OptimizeMethod, OptimizeResult, check_grad, minimize,
@@ -26,13 +32,18 @@ use fsci_opt::{
 
 const SUITE: &str = "bedrock/fs-ascent-frankenscipy-optimizer-oracle-v1";
 const ORACLE_VERSION: &str = "fsci-opt/0.1.0";
+const ORACLE_LOCK_VERSION: &str = "0.1.0";
 const ORACLE_PIN: &str = "9e271fd734465e2b2ff755aa73ea66a7217d619b";
+const CONSTELLATION_SCHEMA: &str = "frankensim-constellation-lock-v2";
+const CONSTELLATION_LOCK: &str = include_str!("../../../constellation.lock");
 const PRODUCTION_API: &str = "fs_ascent::LbfgsState:new+run;strong-wolfe;infinity-gradient-stop:v1";
 const ORACLE_API: &str = "fsci_opt::{rosen,rosen_der,check_grad,minimize};Bfgs+LBfgsB;strict:v1";
 const FRAME_ENCODING: &str =
     "field=(tag_len:u64le,tag,payload_len:u64le,payload);numbers=le;f64=bits:v1";
+const UNIT_POLICY: &str =
+    "decision-components=dimensionless;objective=dimensionless;gradient=objective/decision:v1";
 const ERROR_POLICY: &str = "signed=implementation-reference;aggregate=max-absolute:v1";
-const NO_CLAIM_POLICY: &str = "no-arbitrary-starts;no-basin-equivalence;no-global-or-constrained-optimization;no-stochastic-methods;no-general-tolerance-calibration;no-performance;no-cancellation;no-fresh-cross-isa:v1";
+const NO_CLAIM_POLICY: &str = "no-arbitrary-starts;no-basin-equivalence;no-global-or-constrained-optimization;no-stochastic-methods;no-general-tolerance-calibration;no-in-test-sibling-checkout-pin-proof;no-production-evaluation-budget;no-performance;no-cancellation;no-fresh-cross-isa:v1";
 
 const DIMENSION: usize = 4;
 const MEMORY: usize = 10;
@@ -40,6 +51,7 @@ const PRODUCTION_GRADIENT_TOLERANCE: f64 = 1.0e-9;
 const PRODUCTION_MAX_ITERATIONS: usize = 4_000;
 const ORACLE_TOLERANCE: f64 = 1.0e-12;
 const ORACLE_MAX_ITERATIONS: usize = 5_000;
+const ORACLE_DERIVED_MAX_EVALUATIONS: usize = 8_000;
 const ORACLE_GRADIENT_EPSILON: f64 = 1.0e-8;
 const ORACLE_FIXTURE_ID: &str = "bedrock-rosenbrock-global-basin-v1";
 const GREEN_REPLAY_COMMAND: &str = "cargo test --locked -p fs-ascent --test frankenscipy_optimizer_oracle_casebook frankenscipy_optimizer_oracle_casebook_emits_complete_green_records -- --exact --nocapture";
@@ -65,12 +77,12 @@ const CORRUPTION_SEED: u64 = 0xF5A5_0024_0000_0101;
 
 // Filled after independent reconstruction of the framing functions without
 // executing either numerical implementation.
-const KAT_FRAME_LEN: usize = 1_616;
-const KAT_FRAME_FNV1A64: u64 = 0x9c2f_b48a_772e_b0fa;
-const ORACLE_FRAME_LEN: usize = 3_458;
-const ORACLE_FRAME_FNV1A64: u64 = 0x2273_eec7_2003_e072;
-const CORRUPTION_FRAME_LEN: usize = 2_902;
-const CORRUPTION_FRAME_FNV1A64: u64 = 0xb809_77f8_b595_cbc2;
+const KAT_FRAME_LEN: usize = 1_953;
+const KAT_FRAME_FNV1A64: u64 = 0x593e_ead7_0b8e_9deb;
+const ORACLE_FRAME_LEN: usize = 4_101;
+const ORACLE_FRAME_FNV1A64: u64 = 0x57fa_69ee_4260_88bd;
+const CORRUPTION_FRAME_LEN: usize = 3_424;
+const CORRUPTION_FRAME_FNV1A64: u64 = 0x527f_3c74_f357_d6f4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProductionBits {
@@ -177,6 +189,21 @@ fn local_rosen_gradient(x: &[f64]) -> Vec<f64> {
     gradient
 }
 
+fn local_central_gradient(x: &[f64], epsilon: f64) -> Vec<f64> {
+    let mut gradient = vec![0.0; x.len()];
+    let mut perturbed = x.to_vec();
+    for (index, &component) in x.iter().enumerate() {
+        let step = epsilon * (1.0 + component.abs());
+        perturbed[index] = component + step;
+        let plus = local_rosen(&perturbed);
+        perturbed[index] = component - step;
+        let minus = local_rosen(&perturbed);
+        perturbed[index] = component;
+        gradient[index] = (plus - minus) / (2.0 * step);
+    }
+    gradient
+}
+
 fn bits(values: &[f64]) -> Vec<u64> {
     values.iter().map(|value| value.to_bits()).collect()
 }
@@ -200,6 +227,51 @@ fn signed_delta(left: &[u64], right: &[u64]) -> Vec<f64> {
         .zip(right)
         .map(|(&left, &right)| f64::from_bits(left) - f64::from_bits(right))
         .collect()
+}
+
+fn json_string_field<'a>(object: &'a str, field: &str) -> Option<&'a str> {
+    let field = format!("\"{field}\"");
+    let (_, tail) = object.split_once(field.as_str())?;
+    let (_, value) = tail.split_once(':')?;
+    let value = value.trim_start().strip_prefix('"')?;
+    value.split_once('"').map(|(value, _)| value)
+}
+
+fn constellation_library_objects<'a>(library: &str, lock: &'a str) -> Vec<&'a str> {
+    lock.split('}')
+        .filter_map(|prefix| {
+            let object = prefix.rsplit_once('{').map_or(prefix, |(_, object)| object);
+            (json_string_field(object, "lib") == Some(library)).then_some(object)
+        })
+        .collect()
+}
+
+fn admit_oracle_declaration_from(lock: &str) -> Result<(), String> {
+    let schema = json_string_field(lock, "schema");
+    let objects = constellation_library_objects("frankenscipy", lock);
+    let [object] = objects.as_slice() else {
+        return Err(format!(
+            "stage=oracle-pin-declaration; expected_one_frankenscipy_object=true; found={}; schema={schema:?}",
+            objects.len(),
+        ));
+    };
+    let framed_version = ORACLE_VERSION.strip_prefix("fsci-opt/");
+    let declared_version = json_string_field(object, "version");
+    let declared_pin = json_string_field(object, "git_head");
+    if schema != Some(CONSTELLATION_SCHEMA)
+        || framed_version != Some(ORACLE_LOCK_VERSION)
+        || declared_version != Some(ORACLE_LOCK_VERSION)
+        || declared_pin != Some(ORACLE_PIN)
+    {
+        return Err(format!(
+            "stage=oracle-pin-declaration; expected_schema={CONSTELLATION_SCHEMA}; declared_schema={schema:?}; expected_version={ORACLE_LOCK_VERSION}; framed_version={framed_version:?}; declared_version={declared_version:?}; expected_pin={ORACLE_PIN}; declared_pin={declared_pin:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn admit_oracle_declaration() -> Result<(), String> {
+    admit_oracle_declaration_from(CONSTELLATION_LOCK)
 }
 
 fn stop_reason_name(reason: &StopReason) -> &'static str {
@@ -457,6 +529,7 @@ fn common_frame(domain: &str) -> Vec<u8> {
     push_text_field(&mut bytes, "oracle-version", ORACLE_VERSION);
     push_text_field(&mut bytes, "oracle-pin", ORACLE_PIN);
     push_text_field(&mut bytes, "oracle-api", ORACLE_API);
+    push_text_field(&mut bytes, "unit-policy", UNIT_POLICY);
     push_text_field(&mut bytes, "error-policy", ERROR_POLICY);
     push_text_field(&mut bytes, "no-claim-policy", NO_CLAIM_POLICY);
     bytes
@@ -471,10 +544,16 @@ fn push_production_options(bytes: &mut Vec<u8>) {
         PRODUCTION_GRADIENT_TOLERANCE,
     );
     push_usize_field(bytes, "production-iteration-cap", PRODUCTION_MAX_ITERATIONS);
+    push_bool_field(bytes, "production-evaluation-budget-present", false);
     push_text_field(
         bytes,
         "production-line-search",
         "strong-wolfe:c1=1e-4:c2=0.9:alpha0=1:v1",
+    );
+    push_text_field(
+        bytes,
+        "production-terminal-policy",
+        "GradNorm-or-line-search-Stall;iteration-cap-refused:v1",
     );
 }
 
@@ -485,7 +564,17 @@ fn push_oracle_options(bytes: &mut Vec<u8>, method: OptimizeMethod) {
     push_bool_field(bytes, "oracle-max-iterations-present", true);
     push_usize_field(bytes, "oracle-max-iterations", ORACLE_MAX_ITERATIONS);
     push_bool_field(bytes, "oracle-max-evaluations-present", false);
+    push_usize_field(
+        bytes,
+        "oracle-derived-default-max-evaluations",
+        ORACLE_DERIVED_MAX_EVALUATIONS,
+    );
     push_f64_field(bytes, "oracle-gradient-epsilon", ORACLE_GRADIENT_EPSILON);
+    push_text_field(
+        bytes,
+        "oracle-gradient-policy",
+        "central-difference:step=epsilon*(1+abs(component)):v1",
+    );
     push_bool_field(bytes, "oracle-callback-present", false);
     push_bool_field(bytes, "oracle-gradient-callback-present", false);
     push_bool_field(bytes, "oracle-hessian-product-present", false);
@@ -834,6 +923,22 @@ fn admit_oracle_result(oracle: &OracleBits) -> Result<f64, String> {
         "LBfgsB" => oracle.hess_inv.is_none(),
         _ => false,
     };
+    let minimum_function_evaluations = DIMENSION
+        .checked_mul(2)
+        .and_then(|per_gradient| oracle.njev.checked_mul(per_gradient))
+        .and_then(|gradient_evaluations| gradient_evaluations.checked_add(1))
+        .ok_or_else(|| {
+            format!(
+                "stage=oracle-accounting-overflow; method={}; nfev={}; njev={}; nit={}",
+                oracle.method, oracle.nfev, oracle.njev, oracle.nit,
+            )
+        })?;
+    let maximum_gradient_evaluations = oracle.nit.checked_add(1).ok_or_else(|| {
+        format!(
+            "stage=oracle-accounting-overflow; method={}; nit={}",
+            oracle.method, oracle.nit,
+        )
+    })?;
     if oracle.x.len() != DIMENSION
         || !finite_oracle(oracle)
         || !terminal_state_is_admitted
@@ -845,21 +950,65 @@ fn admit_oracle_result(oracle: &OracleBits) -> Result<f64, String> {
         || oracle.nhev != 0
         || oracle.maxcv.is_some()
         || oracle.nit > ORACLE_MAX_ITERATIONS
+        || oracle.nfev < minimum_function_evaluations
+        || oracle.nfev > ORACLE_DERIVED_MAX_EVALUATIONS
+        || oracle.njev > maximum_gradient_evaluations
     {
         return Err(format!(
-            "stage=oracle-admission; method={}; output={oracle:?}",
-            oracle.method
+            "stage=oracle-admission; method={}; minimum_nfev={minimum_function_evaluations}; maximum_nfev={ORACLE_DERIVED_MAX_EVALUATIONS}; maximum_njev={maximum_gradient_evaluations}; output={oracle:?}",
+            oracle.method,
         ));
     }
-    oracle_objective(oracle)
+    let point = oracle
+        .x
+        .iter()
+        .map(|&value| f64::from_bits(value))
+        .collect::<Vec<_>>();
+    let objective = oracle_objective(oracle)?;
+    let recomputed_objective = local_rosen(&point);
+    if objective.to_bits() != recomputed_objective.to_bits() {
+        return Err(format!(
+            "stage=oracle-objective-linkage; method={}; reported_bits=0x{:016x}; recomputed_bits=0x{:016x}; point={:016x?}",
+            oracle.method,
+            objective.to_bits(),
+            recomputed_objective.to_bits(),
+            oracle.x,
+        ));
+    }
+    let reported_jacobian = oracle
+        .jac
+        .as_ref()
+        .expect("oracle Jacobian shape admitted before semantic linkage");
+    let recomputed_jacobian = bits(&local_central_gradient(&point, ORACLE_GRADIENT_EPSILON));
+    if reported_jacobian != &recomputed_jacobian {
+        return Err(format!(
+            "stage=oracle-jacobian-linkage; method={}; reported={reported_jacobian:016x?}; recomputed={recomputed_jacobian:016x?}; point={:016x?}",
+            oracle.method, oracle.x,
+        ));
+    }
+    Ok(objective)
 }
 
 #[allow(clippy::too_many_lines)] // Ordered admission keeps every public field fail-closed.
 fn admit_oracle(measurement: &OracleMeasurement) -> Result<AgreementEvidence, String> {
     let production = &measurement.production;
+    let expected_history_len = production.iters.checked_add(1).ok_or_else(|| {
+        format!(
+            "stage=production-accounting-overflow; iters={}",
+            production.iters,
+        )
+    })?;
+    let terminal_state_is_admitted = match production.report_reason.as_str() {
+        "grad-norm" => f64::from_bits(production.report_grad_norm) <= PRODUCTION_GRADIENT_TOLERANCE,
+        // A bounded comparison endpoint may still be useful after a disclosed
+        // line-search stall. The endpoint gates below remain authoritative.
+        "stall" => true,
+        _ => false,
+    };
     if production.x.len() != DIMENSION
         || production.g.len() != DIMENSION
-        || production.history.len() != production.iters + 1
+        || production.iters > PRODUCTION_MAX_ITERATIONS
+        || production.history.len() != expected_history_len
         || !finite_bits(&production.x)
         || !finite_bits(&production.g)
         || !finite_bits(&production.history)
@@ -870,14 +1019,40 @@ fn admit_oracle(measurement: &OracleMeasurement) -> Result<AgreementEvidence, St
         ])
         || production.memory != MEMORY
         || production.evals == 0
-        || production.iters > PRODUCTION_MAX_ITERATIONS
-        || production.report_reason == "iteration-cap"
+        || production.evals < expected_history_len
+        || !terminal_state_is_admitted
         || production.f != production.report_f
         || production.iters != production.report_iters
         || production.evals != production.report_evals
     {
         return Err(format!(
             "stage=production-admission; production={production:?}"
+        ));
+    }
+    let point = production
+        .x
+        .iter()
+        .map(|&value| f64::from_bits(value))
+        .collect::<Vec<_>>();
+    let recomputed_objective = local_rosen(&point).to_bits();
+    let recomputed_gradient = bits(&local_rosen_gradient(&point));
+    if production.f != recomputed_objective || production.g != recomputed_gradient {
+        return Err(format!(
+            "stage=production-objective-gradient-linkage; reported_f=0x{:016x}; recomputed_f=0x{recomputed_objective:016x}; reported_g={:016x?}; recomputed_g={recomputed_gradient:016x?}; point={:016x?}",
+            production.f, production.g, production.x,
+        ));
+    }
+    let expected_initial_objective = local_rosen(&GLOBAL_BASIN_START).to_bits();
+    if production.history.first() != Some(&expected_initial_objective)
+        || production.history.last() != Some(&production.f)
+        || production
+            .history
+            .windows(2)
+            .any(|pair| f64::from_bits(pair[1]) > f64::from_bits(pair[0]))
+    {
+        return Err(format!(
+            "stage=production-history-linkage; expected_initial=0x{expected_initial_objective:016x}; final_f=0x{:016x}; history={:016x?}",
+            production.f, production.history,
         ));
     }
     let observed_grad_norm = max_abs(
@@ -956,15 +1131,92 @@ fn admit_oracle(measurement: &OracleMeasurement) -> Result<AgreementEvidence, St
             PAIR_OBJECTIVE_CEILING,
         ),
     ];
-    if let Some((name, value, ceiling)) = gates
-        .into_iter()
-        .find(|(_, value, ceiling)| !value.is_finite() || value > ceiling)
-    {
+    if let Some((name, value, ceiling)) = gates.into_iter().find(|(_, value, ceiling)| {
+        !value.is_finite() || value.is_sign_negative() || value > ceiling
+    }) {
         return Err(format!(
             "stage=bounded-oracle-agreement; failed={name}; value={value}; ceiling={ceiling}; gates={gates:?}; measurement={measurement:?}"
         ));
     }
     Ok(evidence)
+}
+
+fn expect_oracle_refusal(
+    control: &str,
+    measurement: &OracleMeasurement,
+    expected_stage: &str,
+) -> Result<(), String> {
+    match admit_oracle(measurement) {
+        Err(error) if error.starts_with(expected_stage) => Ok(()),
+        Err(error) => Err(format!(
+            "stage=mutation-control-unexpected-refusal; control={control}; expected={expected_stage}; refusal={error}"
+        )),
+        Ok(_) => Err(format!(
+            "stage=mutation-control-not-refused; control={control}; expected={expected_stage}"
+        )),
+    }
+}
+
+fn admit_oracle_mutation_controls(baseline: &OracleMeasurement) -> Result<(), String> {
+    let mut production_objective = baseline.clone();
+    production_objective.production.f ^= 1;
+    let corrupted_objective = production_objective.production.f;
+    production_objective.production.report_f = corrupted_objective;
+    *production_objective
+        .production
+        .history
+        .last_mut()
+        .expect("admitted production history is non-empty") = corrupted_objective;
+    expect_oracle_refusal(
+        "production-objective-linkage",
+        &production_objective,
+        "stage=production-objective-gradient-linkage;",
+    )?;
+
+    let mut production_terminal = baseline.clone();
+    production_terminal.production.report_reason = "budget".to_owned();
+    expect_oracle_refusal(
+        "production-terminal-semantics",
+        &production_terminal,
+        "stage=production-admission;",
+    )?;
+
+    let mut oracle_objective = baseline.clone();
+    oracle_objective.bfgs.fun = oracle_objective.bfgs.fun.map(|value| value ^ 1);
+    expect_oracle_refusal(
+        "oracle-objective-linkage",
+        &oracle_objective,
+        "stage=oracle-objective-linkage;",
+    )?;
+
+    let mut oracle_jacobian = baseline.clone();
+    oracle_jacobian
+        .bfgs
+        .jac
+        .as_mut()
+        .expect("admitted BFGS Jacobian is present")[0] ^= 1;
+    expect_oracle_refusal(
+        "oracle-jacobian-linkage",
+        &oracle_jacobian,
+        "stage=oracle-jacobian-linkage;",
+    )?;
+
+    let mut oracle_accounting = baseline.clone();
+    oracle_accounting.bfgs.nfev = 1;
+    expect_oracle_refusal(
+        "oracle-evaluation-accounting",
+        &oracle_accounting,
+        "stage=oracle-admission;",
+    )?;
+
+    let mut negative_magnitude = baseline.clone();
+    negative_magnitude.gradient_check ^= 1_u64 << 63;
+    expect_oracle_refusal(
+        "negative-gradient-check-magnitude",
+        &negative_magnitude,
+        "stage=bounded-oracle-agreement;",
+    )?;
+    Ok(())
 }
 
 fn panic_message(payload: &(dyn core::any::Any + Send)) -> String {
@@ -1003,6 +1255,9 @@ fn hex_bytes(bytes: &[u8]) -> String {
 }
 
 fn kat_outcome() -> CaseOutcome {
+    if let Err(error) = admit_oracle_declaration() {
+        return CaseOutcome::fail(error).with_evidence("constellation.lock:frankenscipy-0.1.0");
+    }
     let inputs = kat_inputs();
     let first = match capture_kat("first-kat-measurement") {
         Ok(measurement) => measurement,
@@ -1042,6 +1297,9 @@ fn kat_outcome() -> CaseOutcome {
 }
 
 fn oracle_outcome() -> CaseOutcome {
+    if let Err(error) = admit_oracle_declaration() {
+        return CaseOutcome::fail(error).with_evidence("constellation.lock:frankenscipy-0.1.0");
+    }
     let inputs = oracle_inputs();
     let first = match capture_oracle("first-oracle-measurement") {
         Ok(measurement) => measurement,
@@ -1059,6 +1317,11 @@ fn oracle_outcome() -> CaseOutcome {
         Ok(evidence) => evidence,
         Err(error) => return CaseOutcome::fail(format!("stage=replay-admission; {error}")),
     };
+    if let Err(error) = admit_oracle_mutation_controls(&first) {
+        return CaseOutcome::fail(error).with_evidence(
+            "crates/fs-ascent/tests/frankenscipy_optimizer_oracle_casebook.rs#mutation-controls",
+        );
+    }
     let first_receipt = oracle_receipt(&inputs, &first, &first_evidence);
     let replay_receipt = oracle_receipt(&inputs, &replay, &replay_evidence);
     if first_receipt != replay_receipt {
@@ -1129,6 +1392,9 @@ fn reconstruct_corruption() -> Corruption {
 }
 
 fn corruption_outcome(corruption: Corruption) -> CaseOutcome {
+    if let Err(error) = admit_oracle_declaration() {
+        return CaseOutcome::fail(error).with_evidence("constellation.lock:frankenscipy-0.1.0");
+    }
     let measurement = match capture_kat("red-baseline-measurement") {
         Ok(measurement) => measurement,
         Err(error) => return CaseOutcome::fail(error),
@@ -1137,25 +1403,54 @@ fn corruption_outcome(corruption: Corruption) -> CaseOutcome {
         return CaseOutcome::fail(format!("stage=red-baseline-admission; {error}"));
     }
     let computed = measurement.production.x[corruption.component];
-    if computed == corruption.corrupted {
-        CaseOutcome::pass("disclosed exact-minimizer corruption was not detected")
-    } else if computed != corruption.canonical {
-        CaseOutcome::fail(format!(
+    if computed != corruption.canonical {
+        return CaseOutcome::fail(format!(
             "stage=seeded-corruption-baseline-drift; seed=0x{CORRUPTION_SEED:016x}; component={}; computed_bits=0x{computed:016x}; canonical_bits=0x{:016x}",
             corruption.component, corruption.canonical,
-        ))
-    } else {
-        CaseOutcome::fail(format!(
-            "stage=seeded-exact-minimizer-reference-corruption; seed=0x{CORRUPTION_SEED:016x}; component={}; bit={}; computed_bits=0x{computed:016x}; canonical_bits=0x{:016x}; corrupted_bits=0x{:016x}; input_frame_len={}; input_frame_fnv1a64=0x{:016x}; input_frame={}",
-            corruption.component,
-            corruption.bit,
-            corruption.canonical,
-            corruption.corrupted,
-            corruption.frame.len(),
-            fnv1a64(&corruption.frame),
-            hex_bytes(&corruption.frame),
-        ))
-        .with_evidence("crates/fs-ascent/tests/frankenscipy_optimizer_oracle_casebook.rs#seeded-corruption")
+        ));
+    }
+
+    let inputs = kat_inputs();
+    let canonical_receipt = kat_receipt(&inputs, &measurement);
+    let mut corrupted_measurement = measurement;
+    corrupted_measurement.production.x[corruption.component] = corruption.corrupted;
+    let corrupted_receipt = kat_receipt(&inputs, &corrupted_measurement);
+    let disagreement = DisagreementRecord::first(
+        SUITE,
+        "seeded-exact-minimizer-reference-bit-corruption",
+        "corrupted-production-output",
+        "canonical-exact-minimizer-output",
+        &corrupted_receipt,
+        &canonical_receipt,
+    )
+    .expect("one disclosed output bit must move the exact receipt");
+    match admit_kat(&corrupted_measurement) {
+        Ok(()) => CaseOutcome::pass(format!(
+            "stage=seeded-corruption-not-detected; seed=0x{CORRUPTION_SEED:016x}; component={}; bit={}; canonical_bits=0x{:016x}; corrupted_bits=0x{:016x}",
+            corruption.component, corruption.bit, corruption.canonical, corruption.corrupted,
+        )),
+        Err(refusal) if refusal.starts_with("stage=production-stationary-known-answer;") => {
+            CaseOutcome::fail(format!(
+                "stage=seeded-exact-minimizer-reference-corruption; seed=0x{CORRUPTION_SEED:016x}; component={}; bit={}; computed_bits=0x{computed:016x}; canonical_bits=0x{:016x}; corrupted_bits=0x{:016x}; refusal={refusal}; canonical_receipt_fnv1a64=0x{:016x}; corrupted_receipt_fnv1a64=0x{:016x}; input_frame_len={}; input_frame_fnv1a64=0x{:016x}; input_frame={}",
+                corruption.component,
+                corruption.bit,
+                corruption.canonical,
+                corruption.corrupted,
+                fnv1a64(&canonical_receipt),
+                fnv1a64(&corrupted_receipt),
+                corruption.frame.len(),
+                fnv1a64(&corruption.frame),
+                hex_bytes(&corruption.frame),
+            ))
+            .with_evidence(
+                "crates/fs-ascent/tests/frankenscipy_optimizer_oracle_casebook.rs#seeded-corruption",
+            )
+            .with_disagreement(disagreement)
+        }
+        Err(refusal) => CaseOutcome::fail(format!(
+            "stage=seeded-corruption-unexpected-refusal; seed=0x{CORRUPTION_SEED:016x}; component={}; bit={}; refusal={refusal}",
+            corruption.component, corruption.bit,
+        )),
     }
 }
 
@@ -1177,6 +1472,15 @@ fn run_red_report() -> SuiteReport {
 #[test]
 fn frankenscipy_optimizer_oracle_casebook_emits_complete_green_records() {
     assert_eq!(CASEBOOK_RECORD_VERSION, 1);
+    admit_oracle_declaration().expect("declared FrankenScipy oracle pin is authoritative");
+    assert_eq!(ORACLE_DERIVED_MAX_EVALUATIONS, (2_000 * DIMENSION).max(400),);
+    let wrong_pin =
+        CONSTELLATION_LOCK.replacen(ORACLE_PIN, "0000000000000000000000000000000000000000", 1);
+    assert!(
+        admit_oracle_declaration_from(&wrong_pin)
+            .expect_err("a changed lock pin must be refused")
+            .starts_with("stage=oracle-pin-declaration;")
+    );
     let kat = kat_inputs();
     let oracle = oracle_inputs();
     assert_eq!(kat, kat_inputs());
@@ -1260,6 +1564,8 @@ fn seeded_exact_minimizer_reference_corruption_is_stable_and_refused() {
     assert!(!replay.all_passed());
     assert_eq!(first.replay_records.len(), 1);
     assert_eq!(replay.replay_records.len(), 1);
+    assert_eq!(first.disagreements.len(), 1);
+    assert_eq!(replay.disagreements.len(), 1);
     assert_eq!(
         first.replay_records[0]
             .verify_and_decode()
@@ -1279,6 +1585,18 @@ fn seeded_exact_minimizer_reference_corruption_is_stable_and_refused() {
         panic!("replayed corruption must produce exactly one red record");
     };
     assert_eq!(first_failure.json_line(), replay_failure.json_line());
+    assert_eq!(
+        first.disagreements[0].json_line(),
+        replay.disagreements[0].json_line(),
+    );
+    assert_eq!(
+        first.disagreements[0].implementation(),
+        "corrupted-production-output",
+    );
+    assert_eq!(
+        first.disagreements[0].reference(),
+        "canonical-exact-minimizer-output",
+    );
     assert!(
         first_failure
             .details
@@ -1302,4 +1620,5 @@ fn seeded_exact_minimizer_reference_corruption_is_stable_and_refused() {
         .expect("Casebook refusal carries text");
     assert!(message.contains("seeded-exact-minimizer-reference-bit-corruption"));
     assert!(message.contains(&format!("seed=0x{CORRUPTION_SEED:016x}")));
+    assert!(message.contains("\"casebook_disagreement\":"));
 }
