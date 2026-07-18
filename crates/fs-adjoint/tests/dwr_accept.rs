@@ -618,6 +618,14 @@ fn typed_functional_binding_rejects_invalid_and_cross_semantic_replay() {
             "does not match the sealed estimate dimensions",
         ),
         (
+            "superseded ambiguous schema",
+            DwrQuery {
+                schema_version: 1,
+                ..base.clone()
+            },
+            "functional schema version 1 is unsupported",
+        ),
+        (
             "unknown schema",
             DwrQuery {
                 schema_version: DWR_QUERY_SCHEMA_VERSION + 1,
@@ -1772,6 +1780,6 @@ fn g5_execution_identity_binds_mode_budget_stream_and_work_shape() {
     assert_eq!(DWR_WORK_PLAN_VERSION, 2);
     assert_eq!(DWR_POLL_POLICY_VERSION, 3);
     assert_eq!(DWR_EVIDENCE_IDENTITY_VERSION, 7);
-    assert_eq!(DWR_QUERY_SCHEMA_VERSION, 1);
+    assert_eq!(DWR_QUERY_SCHEMA_VERSION, 2);
     assert_eq!(DWR_POLL_STRIDE_ITEMS, 256);
 }

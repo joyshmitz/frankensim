@@ -135,9 +135,11 @@ solver without a passing gradient check cannot merge.
   binary64 bits are nevertheless retained, identity-bound, and compared
   bitwise, so equal clipped intersections (including two empty intersections
   or `-0.0` versus `+0.0`) are not interchangeable replay claims.
-  `DwrQuery` schema 1 names this meaning as
-  `DomainClippedWindowedIntegral`, binds homogeneous canonical `+0.0`
-  Dirichlet endpoints, and carries six dimension exponents in fs-qty order.
+  `DwrQuery` schema 2 is the first unambiguous schema to name this meaning as
+  `DomainClippedWindowedIntegral`; schema 1's ambiguous windowed-integral
+  meaning is superseded and is not accepted or reinterpreted. Schema 2 binds
+  homogeneous canonical `+0.0` Dirichlet endpoints and carries six dimension
+  exponents in fs-qty order.
   The reference scalar API seals `[0; 6]`; callers cannot relabel its output as
   dimensional. DWR admission validates
   2..=1,000,000 coarse mesh nodes through fs-verify's shared node cap,
@@ -316,7 +318,7 @@ the stride cannot be reissued across a seam. Cancellation returns typed phase
 and exact completed/planned work and publishes no partial authoritative
 object. The retained DWR execution identity binds work-plan version 2,
 poll-policy version 3, evidence identity version 7, typed-functional schema
-version 1, the canonical domain-clipped-windowed-integral semantics tag, and
+version 2, the canonical domain-clipped-windowed-integral semantics tag, and
 the unmodified window endpoint bits.
 
 ## Unsafe boundary
@@ -461,8 +463,9 @@ between the two policy passes.
 - The Cauchy–Schwarz bracket is sharp only up to the product's
   pessimism; sharper goal-oriented equilibrated bounds are the
   verifier's growth path, not this module's claim.
-- No current DWR path emits `Verified`. The schema-1 query now binds the exact
-  domain-clipped functional requested, but promotion additionally requires a
+- No current DWR path emits `Verified`. Schema 1 is superseded and refused;
+  schema 2 is the first query schema that binds the exact domain-clipped
+  functional requested. Promotion additionally requires a
   re-verifiable relation proving that the supplied dual problem is that
   functional's mathematical dual—not two reports (even two genuine reports
   for unrelated problems) and not a caller-authored guarantee bit.

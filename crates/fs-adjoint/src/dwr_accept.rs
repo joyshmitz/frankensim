@@ -493,7 +493,12 @@ fn hash_bracket_execution_header(
 /// Schema version of the typed QoI functional specification carried by
 /// [`DwrQuery`] (bead sj31i.1: the label-only query is replaced by a typed
 /// functional; bump on ANY field addition or semantic change).
-pub const DWR_QUERY_SCHEMA_VERSION: u32 = 1;
+///
+/// Schema 1's windowed-integral label did not state that evaluation clips the
+/// raw window to the canonical `[0, 1]` problem domain. It is superseded and is
+/// never admitted by the current acceptance path. Schema 2 is the first
+/// unambiguous [`QoiSemantics::DomainClippedWindowedIntegral`] meaning.
+pub const DWR_QUERY_SCHEMA_VERSION: u32 = 2;
 /// Canonical retained tag for
 /// [`QoiSemantics::DomainClippedWindowedIntegral`]. This tag is part of the
 /// v7 output/accept identity preimage and must change if that variant's
@@ -2853,8 +2858,11 @@ pub fn dwr_integral_qoi(
     // Enriched dual on the refined mesh.
     let fine = refine(mesh, validated.refined_nodes, &mut progress, cx)?;
     let z = dual_solve(&fine, w_lo, w_hi, &mut progress, cx)?;
-    // Coarse-node interpolant of z, subtracted (Galerkin orthogonality
-    // makes the coarse part vanish; the fine remainder drives η).
+    // Subtract the coarse-node interpolant of z to localize the fine-remainder
+    // term. Galerkin orthogonality makes the coarse term vanish only for an
+    // exact coarse Galerkin solution; an arbitrary admitted candidate can have
+    // a nonzero coarse algebraic contribution, which is assembled below and
+    // added back into η.
     let mut eta = 0.0f64;
     let mut indicators = zeroed_vec(mesh.len() - 1, DWR_RESIDUAL_PHASE, &mut progress, cx)?;
     // Coarse-space Galerkin residuals r_i = ∫f·φ_i − ∫u_h′·φ_i′, assembled
