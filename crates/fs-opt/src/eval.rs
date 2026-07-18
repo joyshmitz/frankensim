@@ -68,6 +68,26 @@ where
     Ok(())
 }
 
+/// Select the lexicographically positive representative of an SO(3) antipodal
+/// pair and give every exact-zero lane one deterministic bit spelling.
+fn canonicalize_so3_representative(quaternion: &mut [f64; 4]) {
+    let negate = quaternion
+        .iter()
+        .copied()
+        .find(|component| *component != 0.0)
+        .is_some_and(f64::is_sign_negative);
+    if negate {
+        for component in quaternion.iter_mut() {
+            *component = -*component;
+        }
+    }
+    for component in quaternion.iter_mut() {
+        if *component == 0.0 {
+            *component = 0.0;
+        }
+    }
+}
+
 /// An evaluated node value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -1079,12 +1099,13 @@ impl Manifold {
 
     /// Retract: move from `x` along parameter vector `t`, landing ON
     /// the manifold. Rn: translation. Sphere: normalize(x+t). SO(3):
-    /// right-multiply by `exp(ω/2)` (unit quaternion). Stiefel:
-    /// Gram-Schmidt of `X+T` (QR retraction). Raw point and parameter
-    /// storage must exactly match this manifold and contain finite
-    /// components. The base point must already belong to the manifold;
-    /// zero-norm and rank-deficient candidates are refused rather than
-    /// normalized into fabricated points.
+    /// right-multiply by `exp(ω/2)` (unit quaternion), then choose the sign
+    /// whose first exact nonzero `(w, x, y, z)` component is positive and
+    /// spell every zero lane as `+0.0`. Stiefel: Gram-Schmidt of `X+T` (QR
+    /// retraction). Raw point and parameter storage must exactly match this
+    /// manifold and contain finite components. The base point must already
+    /// belong to the manifold; zero-norm and rank-deficient candidates are
+    /// refused rather than normalized into fabricated points.
     ///
     /// # Errors
     /// [`OptError::ManifoldInvalid`], [`OptError::RetractionLen`],
@@ -1239,6 +1260,7 @@ impl Manifold {
                     checkpoint_retraction_work(component, checkpoint)?;
                     *v /= norm;
                 }
+                canonicalize_so3_representative(&mut out);
                 let mut output = try_vec_capacity("retract/so3-output", None, None, out.len())?;
                 output.extend_from_slice(&out);
                 self.validate_retraction_output_with_checkpoint(output, checkpoint)
