@@ -14,29 +14,132 @@
 //! types, lane-width resolution (once, via fs-substrate dispatch —
 //! never in hot loops), and deterministic/fast reduction combiners.
 
-use core::fmt::Write as _;
+use core::fmt::{self, Write as _};
 pub use fs_tilelang_macros::kernel;
 
-fn escape_json_string(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
+/// Maximum admitted UTF-8 bytes in a public kernel name.
+pub const MAX_KERNEL_NAME_BYTES: usize = 256;
+/// Maximum admitted UTF-8 bytes in a case or verdict log label.
+pub const MAX_LOG_LABEL_BYTES: usize = 128;
+/// Maximum bytes emitted by one admitted metadata JSON object.
+pub const MAX_METADATA_JSON_BYTES: usize = 2048;
+/// Maximum bytes emitted by one admitted structured log record.
+pub const MAX_LOG_RECORD_BYTES: usize = 4096;
+
+const METADATA_JSON_FIXED_CAPACITY: usize = 256;
+const LOG_RECORD_FIXED_CAPACITY: usize = 128;
+
+fn write_json_string(out: &mut String, value: &str) {
     for ch in value.chars() {
         match ch {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\u{0008}' => escaped.push_str("\\b"),
-            '\u{000c}' => escaped.push_str("\\f"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            '\u{0000}'..='\u{001f}' => {
-                write!(&mut escaped, "\\u{:04x}", u32::from(ch))
-                    .expect("writing to a String cannot fail");
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{0008}' => out.push_str("\\b"),
+            '\u{000c}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{0000}'..='\u{001f}' | '\u{007f}'..='\u{009f}' | '\u{2028}' | '\u{2029}' => {
+                write!(out, "\\u{:04x}", u32::from(ch)).expect("writing to a String cannot fail");
             }
-            _ => escaped.push(ch),
+            _ => out.push(ch),
         }
     }
-    escaped
 }
+
+fn escaped_json_len(value: &str) -> Result<usize, MetadataRenderError> {
+    let mut bytes = 0_usize;
+    for ch in value.chars() {
+        let encoded = match ch {
+            '"' | '\\' | '\u{0008}' | '\u{000c}' | '\n' | '\r' | '\t' => 2,
+            '\u{0000}'..='\u{001f}' | '\u{007f}'..='\u{009f}' | '\u{2028}' | '\u{2029}' => 6,
+            _ => ch.len_utf8(),
+        };
+        bytes = bytes
+            .checked_add(encoded)
+            .ok_or(MetadataRenderError::ProjectedSizeOverflow)?;
+    }
+    Ok(bytes)
+}
+
+fn validate_text(
+    field: &'static str,
+    value: &str,
+    limit: usize,
+) -> Result<usize, MetadataRenderError> {
+    if value.is_empty() {
+        return Err(MetadataRenderError::EmptyText { field });
+    }
+    if value.len() > limit {
+        return Err(MetadataRenderError::TextTooLong {
+            field,
+            actual: value.len(),
+            limit,
+        });
+    }
+    escaped_json_len(value)
+}
+
+/// Typed refusal from bounded kernel-metadata or structured-log rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MetadataRenderError {
+    /// A semantic text field was empty.
+    EmptyText {
+        /// Stable field identity.
+        field: &'static str,
+    },
+    /// A semantic text field exceeded its byte budget.
+    TextTooLong {
+        /// Stable field identity.
+        field: &'static str,
+        /// Observed UTF-8 byte count.
+        actual: usize,
+        /// Maximum admitted UTF-8 byte count.
+        limit: usize,
+    },
+    /// Checked projected-size arithmetic overflowed.
+    ProjectedSizeOverflow,
+}
+
+impl MetadataRenderError {
+    fn refusal_json(self) -> String {
+        match self {
+            Self::EmptyText { field } => format!(
+                "{{\"kernel_metadata\":\"refused\",\"rule\":\"empty-text\",\"field\":\"{field}\"}}"
+            ),
+            Self::TextTooLong {
+                field,
+                actual,
+                limit,
+            } => format!(
+                "{{\"kernel_metadata\":\"refused\",\"rule\":\"text-too-long\",\"field\":\"{field}\",\"actual_bytes\":{actual},\"limit_bytes\":{limit}}}"
+            ),
+            Self::ProjectedSizeOverflow => {
+                "{\"kernel_metadata\":\"refused\",\"rule\":\"projected-size-overflow\"}".to_owned()
+            }
+        }
+    }
+}
+
+impl fmt::Display for MetadataRenderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyText { field } => write!(f, "{field} must not be empty"),
+            Self::TextTooLong {
+                field,
+                actual,
+                limit,
+            } => write!(
+                f,
+                "{field} is {actual} UTF-8 bytes, exceeding the {limit}-byte limit"
+            ),
+            Self::ProjectedSizeOverflow => f.write_str("projected JSON size overflowed"),
+        }
+    }
+}
+
+impl std::error::Error for MetadataRenderError {}
 
 /// Determinism class a kernel declares (part of its metadata).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +169,9 @@ pub enum ReductionKind {
 /// Static per-kernel metadata emitted by the macro.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct KernelMeta {
-    /// Kernel name (the `kernel!` declaration name).
+    /// Kernel name (the `kernel!` declaration name). Public literals are
+    /// admitted by serializers as nonempty and at most
+    /// [`MAX_KERNEL_NAME_BYTES`] UTF-8 bytes.
     pub name: &'static str,
     /// Floating-point operations per processed element (macro-time
     /// count of arithmetic operators and mul_add calls in the body;
@@ -90,20 +195,88 @@ impl KernelMeta {
         f64::from(self.flops_per_elem) / f64::from(self.bytes_per_elem.max(1))
     }
 
-    /// One JSON metadata line (roofline/autotuner food, ledger-ready).
-    #[must_use]
-    pub fn descr(&self) -> String {
-        format!(
-            "{{\"kernel\":\"{}\",\"flops_per_elem\":{},\"bytes_per_elem\":{},\
-             \"intensity\":{:.4},\"halo\":{},\"reduction\":\"{:?}\",\"determinism\":\"{:?}\"}}",
-            escape_json_string(self.name),
+    fn validated_name_escaped_len(&self) -> Result<usize, MetadataRenderError> {
+        validate_text("kernel", self.name, MAX_KERNEL_NAME_BYTES)
+    }
+
+    fn write_descr(&self, out: &mut String) {
+        out.push_str("{\"kernel\":\"");
+        write_json_string(out, self.name);
+        write!(
+            out,
+            "\",\"flops_per_elem\":{},\"bytes_per_elem\":{},\"intensity\":{:.4},\"halo\":{},\"reduction\":\"{:?}\",\"determinism\":\"{:?}\"}}",
             self.flops_per_elem,
             self.bytes_per_elem,
             self.intensity(),
             self.halo,
             self.reduction,
-            self.determinism
+            self.determinism,
         )
+        .expect("writing to a String cannot fail");
+    }
+
+    /// Fallibly render one bounded JSON metadata object
+    /// (roofline/autotuner food, ledger-ready).
+    #[must_use]
+    pub fn try_descr(&self) -> Result<String, MetadataRenderError> {
+        let escaped_name_len = self.validated_name_escaped_len()?;
+        let capacity = METADATA_JSON_FIXED_CAPACITY
+            .checked_add(escaped_name_len)
+            .ok_or(MetadataRenderError::ProjectedSizeOverflow)?;
+        if capacity > MAX_METADATA_JSON_BYTES {
+            return Err(MetadataRenderError::ProjectedSizeOverflow);
+        }
+        let mut out = String::with_capacity(capacity);
+        self.write_descr(&mut out);
+        if out.len() > MAX_METADATA_JSON_BYTES {
+            return Err(MetadataRenderError::ProjectedSizeOverflow);
+        }
+        Ok(out)
+    }
+
+    /// One bounded JSON metadata object. Admitted metadata retains the
+    /// historical exact bytes. Invalid public struct literals produce a
+    /// bounded, structured refusal object that never repeats attacker text;
+    /// callers needing typed refusal should use [`Self::try_descr`].
+    #[must_use]
+    pub fn descr(&self) -> String {
+        self.try_descr()
+            .unwrap_or_else(MetadataRenderError::refusal_json)
+    }
+
+    /// Render the authoritative bounded outer log record with metadata as a
+    /// nested JSON OBJECT, never as an interpolated quoted JSON string.
+    #[must_use]
+    pub fn render_log_record(
+        &self,
+        case: &str,
+        verdict: &str,
+    ) -> Result<String, MetadataRenderError> {
+        let escaped_name_len = self.validated_name_escaped_len()?;
+        let escaped_case_len = validate_text("case", case, MAX_LOG_LABEL_BYTES)?;
+        let escaped_verdict_len = validate_text("verdict", verdict, MAX_LOG_LABEL_BYTES)?;
+        let capacity = LOG_RECORD_FIXED_CAPACITY
+            .checked_add(METADATA_JSON_FIXED_CAPACITY)
+            .and_then(|bytes| bytes.checked_add(escaped_name_len))
+            .and_then(|bytes| bytes.checked_add(escaped_case_len))
+            .and_then(|bytes| bytes.checked_add(escaped_verdict_len))
+            .ok_or(MetadataRenderError::ProjectedSizeOverflow)?;
+        if capacity > MAX_LOG_RECORD_BYTES {
+            return Err(MetadataRenderError::ProjectedSizeOverflow);
+        }
+
+        let mut out = String::with_capacity(capacity);
+        out.push_str("{\"suite\":\"fs-tilelang\",\"case\":\"");
+        write_json_string(&mut out, case);
+        out.push_str("\",\"verdict\":\"");
+        write_json_string(&mut out, verdict);
+        out.push_str("\",\"detail\":");
+        self.write_descr(&mut out);
+        out.push('}');
+        if out.len() > MAX_LOG_RECORD_BYTES {
+            return Err(MetadataRenderError::ProjectedSizeOverflow);
+        }
+        Ok(out)
     }
 }
 

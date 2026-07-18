@@ -8,12 +8,329 @@
 //! alongside (visible as `__twin_tests` in the test list).
 
 use fs_rand::StreamKey;
-use fs_tilelang::{DeterminismClass, KernelMeta, ReductionKind, kernel};
+use fs_tilelang::{
+    DeterminismClass, KernelMeta, MAX_KERNEL_NAME_BYTES, MAX_LOG_LABEL_BYTES, MAX_LOG_RECORD_BYTES,
+    MAX_METADATA_JSON_BYTES, MetadataRenderError, ReductionKind, kernel,
+};
+use std::collections::BTreeMap;
 
-fn log(case: &str, verdict: &str, detail: &str) {
-    println!(
-        "{{\"suite\":\"fs-tilelang\",\"case\":\"{case}\",\"verdict\":\"{verdict}\",\"detail\":\"{detail}\"}}"
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum JsonValue {
+    Object(BTreeMap<String, JsonValue>),
+    String(String),
+    Number(String),
+}
+
+struct StrictJsonParser<'a> {
+    source: &'a str,
+    position: usize,
+}
+
+impl<'a> StrictJsonParser<'a> {
+    fn new(source: &'a str) -> Self {
+        Self {
+            source,
+            position: 0,
+        }
+    }
+
+    fn parse(mut self) -> Result<JsonValue, String> {
+        self.skip_whitespace();
+        let value = self.parse_value()?;
+        self.skip_whitespace();
+        if self.position != self.source.len() {
+            let position = self.position;
+            return Err(format!("trailing JSON bytes at {position}"));
+        }
+        Ok(value)
+    }
+
+    fn bytes(&self) -> &[u8] {
+        self.source.as_bytes()
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.bytes().get(self.position).copied()
+    }
+
+    fn take(&mut self, expected: u8) -> bool {
+        if self.peek() == Some(expected) {
+            self.position += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn expect(&mut self, expected: u8) -> Result<(), String> {
+        if self.take(expected) {
+            Ok(())
+        } else {
+            let expected = char::from(expected);
+            let position = self.position;
+            let found = self.peek().map(char::from);
+            Err(format!(
+                "expected byte {expected:?} at {position}, found {found:?}"
+            ))
+        }
+    }
+
+    fn skip_whitespace(&mut self) {
+        while matches!(self.peek(), Some(b' ' | b'\n' | b'\r' | b'\t')) {
+            self.position += 1;
+        }
+    }
+
+    fn parse_value(&mut self) -> Result<JsonValue, String> {
+        self.skip_whitespace();
+        match self.peek() {
+            Some(b'{') => self.parse_object(),
+            Some(b'"') => self.parse_string().map(JsonValue::String),
+            Some(b'-' | b'0'..=b'9') => self.parse_number().map(JsonValue::Number),
+            other => {
+                let position = self.position;
+                Err(format!("unsupported JSON value at {position}: {other:?}"))
+            }
+        }
+    }
+
+    fn parse_object(&mut self) -> Result<JsonValue, String> {
+        self.expect(b'{')?;
+        self.skip_whitespace();
+        let mut fields = BTreeMap::new();
+        if self.take(b'}') {
+            return Ok(JsonValue::Object(fields));
+        }
+        loop {
+            self.skip_whitespace();
+            let key = self.parse_string()?;
+            self.skip_whitespace();
+            self.expect(b':')?;
+            let value = self.parse_value()?;
+            if fields.insert(key.clone(), value).is_some() {
+                return Err(format!("duplicate JSON key {key:?}"));
+            }
+            self.skip_whitespace();
+            if self.take(b'}') {
+                break;
+            }
+            self.expect(b',')?;
+        }
+        Ok(JsonValue::Object(fields))
+    }
+
+    fn parse_string(&mut self) -> Result<String, String> {
+        self.expect(b'"')?;
+        let mut value = String::new();
+        loop {
+            let byte = self
+                .peek()
+                .ok_or_else(|| "unterminated JSON string".to_owned())?;
+            match byte {
+                b'"' => {
+                    self.position += 1;
+                    return Ok(value);
+                }
+                b'\\' => {
+                    self.position += 1;
+                    let escape = self
+                        .peek()
+                        .ok_or_else(|| "unterminated JSON escape".to_owned())?;
+                    self.position += 1;
+                    match escape {
+                        b'"' => value.push('"'),
+                        b'\\' => value.push('\\'),
+                        b'/' => value.push('/'),
+                        b'b' => value.push('\u{0008}'),
+                        b'f' => value.push('\u{000c}'),
+                        b'n' => value.push('\n'),
+                        b'r' => value.push('\r'),
+                        b't' => value.push('\t'),
+                        b'u' => value.push(self.parse_unicode_escape()?),
+                        _ => return Err(format!("invalid JSON escape byte {escape}")),
+                    }
+                }
+                0x00..=0x1f => {
+                    let position = self.position;
+                    return Err(format!(
+                        "literal control byte {byte} in JSON string at {position}"
+                    ));
+                }
+                _ => {
+                    let ch = self.source[self.position..]
+                        .chars()
+                        .next()
+                        .expect("position is within valid UTF-8");
+                    value.push(ch);
+                    self.position += ch.len_utf8();
+                }
+            }
+        }
+    }
+
+    fn parse_hex_quad(&mut self) -> Result<u16, String> {
+        let mut value = 0_u16;
+        for _ in 0..4 {
+            let byte = self
+                .peek()
+                .ok_or_else(|| "truncated JSON Unicode escape".to_owned())?;
+            self.position += 1;
+            let digit = match byte {
+                b'0'..=b'9' => u16::from(byte - b'0'),
+                b'a'..=b'f' => u16::from(byte - b'a' + 10),
+                b'A'..=b'F' => u16::from(byte - b'A' + 10),
+                _ => return Err(format!("non-hex byte {byte} in JSON Unicode escape")),
+            };
+            value = (value << 4) | digit;
+        }
+        Ok(value)
+    }
+
+    fn parse_unicode_escape(&mut self) -> Result<char, String> {
+        let high = self.parse_hex_quad()?;
+        let scalar = if (0xd800..=0xdbff).contains(&high) {
+            self.expect(b'\\')?;
+            self.expect(b'u')?;
+            let low = self.parse_hex_quad()?;
+            if !(0xdc00..=0xdfff).contains(&low) {
+                return Err(format!("invalid low surrogate {low:#06x}"));
+            }
+            0x1_0000 + ((u32::from(high) - 0xd800) << 10) + (u32::from(low) - 0xdc00)
+        } else if (0xdc00..=0xdfff).contains(&high) {
+            return Err(format!("unpaired low surrogate {high:#06x}"));
+        } else {
+            u32::from(high)
+        };
+        char::from_u32(scalar).ok_or_else(|| format!("invalid Unicode scalar {scalar:#x}"))
+    }
+
+    fn parse_number(&mut self) -> Result<String, String> {
+        let start = self.position;
+        self.take(b'-');
+        match self.peek() {
+            Some(b'0') => self.position += 1,
+            Some(b'1'..=b'9') => {
+                self.position += 1;
+                while matches!(self.peek(), Some(b'0'..=b'9')) {
+                    self.position += 1;
+                }
+            }
+            _ => return Err(format!("invalid JSON number at {start}")),
+        }
+        if self.take(b'.') {
+            if !matches!(self.peek(), Some(b'0'..=b'9')) {
+                let position = self.position;
+                return Err(format!("fraction has no digit at {position}"));
+            }
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.position += 1;
+            }
+        }
+        if matches!(self.peek(), Some(b'e' | b'E')) {
+            self.position += 1;
+            if matches!(self.peek(), Some(b'+' | b'-')) {
+                self.position += 1;
+            }
+            if !matches!(self.peek(), Some(b'0'..=b'9')) {
+                let position = self.position;
+                return Err(format!("exponent has no digit at {position}"));
+            }
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.position += 1;
+            }
+        }
+        Ok(self.source[start..self.position].to_owned())
+    }
+}
+
+fn object(value: &JsonValue) -> &BTreeMap<String, JsonValue> {
+    match value {
+        JsonValue::Object(fields) => fields,
+        other => panic!("expected JSON object, found {other:?}"),
+    }
+}
+
+fn string_field<'a>(fields: &'a BTreeMap<String, JsonValue>, key: &str) -> &'a str {
+    match fields.get(key) {
+        Some(JsonValue::String(value)) => value,
+        other => panic!("expected string field {key:?}, found {other:?}"),
+    }
+}
+
+fn number_field<'a>(fields: &'a BTreeMap<String, JsonValue>, key: &str) -> &'a str {
+    match fields.get(key) {
+        Some(JsonValue::Number(value)) => value,
+        other => panic!("expected number field {key:?}, found {other:?}"),
+    }
+}
+
+fn reduction_name(kind: ReductionKind) -> &'static str {
+    match kind {
+        ReductionKind::None => "None",
+        ReductionKind::DeterministicSum => "DeterministicSum",
+        ReductionKind::FastSum => "FastSum",
+    }
+}
+
+fn determinism_name(class: DeterminismClass) -> &'static str {
+    match class {
+        DeterminismClass::BitwiseAllTiers => "BitwiseAllTiers",
+        DeterminismClass::PerTier => "PerTier",
+    }
+}
+
+fn assert_log_record_round_trips(record: &str, case: &str, verdict: &str, meta: &KernelMeta) {
+    assert_eq!(record.lines().count(), 1, "one call must emit one record");
+    assert!(
+        !record
+            .chars()
+            .any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}')),
+        "record contains a physical-line control: {record:?}"
     );
+    let parsed = StrictJsonParser::new(record)
+        .parse()
+        .unwrap_or_else(|error| panic!("strict JSON refusal: {error}; record={record:?}"));
+    let root = object(&parsed);
+    assert_eq!(root.len(), 4, "outer schema drifted: {root:?}");
+    assert_eq!(string_field(root, "suite"), "fs-tilelang");
+    assert_eq!(string_field(root, "case"), case);
+    assert_eq!(string_field(root, "verdict"), verdict);
+    let detail = object(root.get("detail").expect("nested detail object"));
+    assert_eq!(detail.len(), 7, "metadata schema drifted: {detail:?}");
+    assert_eq!(string_field(detail, "kernel"), meta.name);
+    let expected_flops = meta.flops_per_elem.to_string();
+    assert_eq!(
+        number_field(detail, "flops_per_elem"),
+        expected_flops.as_str()
+    );
+    let expected_bytes = meta.bytes_per_elem.to_string();
+    assert_eq!(
+        number_field(detail, "bytes_per_elem"),
+        expected_bytes.as_str()
+    );
+    let expected_intensity = format!("{:.4}", meta.intensity());
+    assert_eq!(
+        number_field(detail, "intensity"),
+        expected_intensity.as_str()
+    );
+    let expected_halo = meta.halo.to_string();
+    assert_eq!(number_field(detail, "halo"), expected_halo.as_str());
+    assert_eq!(
+        string_field(detail, "reduction"),
+        reduction_name(meta.reduction)
+    );
+    assert_eq!(
+        string_field(detail, "determinism"),
+        determinism_name(meta.determinism)
+    );
+}
+
+fn log(case: &str, verdict: &str, meta: &KernelMeta) {
+    let record = meta
+        .render_log_record(case, verdict)
+        .expect("static battery metadata and labels must admit");
+    assert_log_record_round_trips(&record, case, verdict, meta);
+    println!("{record}");
 }
 
 fn rand_vec(n: usize, tile: u32) -> Vec<f64> {
@@ -118,7 +435,7 @@ fn axpy_matches_oracle_and_meta() {
     assert_eq!(axpy_k::META.bytes_per_elem, 24);
     assert_eq!(axpy_k::META.reduction, ReductionKind::None);
     assert_eq!(axpy_k::META.determinism, DeterminismClass::BitwiseAllTiers);
-    log("axpy", "pass", &axpy_k::META.descr());
+    log("axpy", "pass", &axpy_k::META);
 }
 
 #[test]
@@ -141,7 +458,7 @@ fn stencil3_matches_oracle_and_halo() {
         );
     }
     assert_eq!(stencil3_k::META.halo, 1);
-    log("stencil3", "pass", &stencil3_k::META.descr());
+    log("stencil3", "pass", &stencil3_k::META);
 }
 
 #[test]
@@ -182,7 +499,7 @@ fn stencil7_matches_oracle_and_tier_twins() {
             "stencil7 lane width {w} diverges from scalar"
         );
     }
-    log("stencil7", "pass", &stencil7_k::META.descr());
+    log("stencil7", "pass", &stencil7_k::META);
 }
 
 #[test]
@@ -240,7 +557,7 @@ fn trilinear_matches_oracle_and_tier_twins() {
             .all(|(a, b)| a.to_bits() == b.to_bits()),
         "trilinear lanes diverge from scalar"
     );
-    log("trilinear", "pass", &trilinear_k::META.descr());
+    log("trilinear", "pass", &trilinear_k::META);
 }
 
 #[test]
@@ -265,7 +582,7 @@ fn dot_reduction_deterministic_and_tier_equal() {
     let naive: f64 = prods.iter().sum();
     assert!((d2 - naive).abs() < 1e-9 * naive.abs().max(1.0));
     assert_eq!(dot_k::META.reduction, ReductionKind::DeterministicSum);
-    log("dot", "pass", &dot_k::META.descr());
+    log("dot", "pass", &dot_k::META);
 }
 
 #[test]
@@ -281,7 +598,7 @@ fn metadata_feeds_the_roofline_table() {
         assert!(meta.flops_per_elem > 0, "{}: zero flops counted", meta.name);
         assert!(meta.bytes_per_elem > 0);
         assert!(meta.intensity() > 0.0);
-        log("roofline-meta", "info", &meta.descr());
+        log("roofline-meta", "info", &meta);
     }
 }
 
@@ -315,4 +632,169 @@ fn metadata_json_escapes_kernel_names() {
     );
     assert_eq!(descr.lines().count(), 1, "{descr}");
     assert!(!descr.chars().any(|ch| ch < ' '), "{descr}");
+}
+
+#[test]
+fn outer_logger_uses_a_nested_metadata_object_with_exact_stable_bytes() {
+    let meta = KernelMeta {
+        name: "plain",
+        flops_per_elem: 2,
+        bytes_per_elem: 24,
+        halo: 0,
+        reduction: ReductionKind::None,
+        determinism: DeterminismClass::BitwiseAllTiers,
+    };
+    let record = meta
+        .render_log_record("roofline-meta", "info")
+        .expect("ordinary record admits");
+    assert_eq!(
+        record,
+        "{\"suite\":\"fs-tilelang\",\"case\":\"roofline-meta\",\"verdict\":\"info\",\"detail\":{\"kernel\":\"plain\",\"flops_per_elem\":2,\"bytes_per_elem\":24,\"intensity\":0.0833,\"halo\":0,\"reduction\":\"None\",\"determinism\":\"BitwiseAllTiers\"}}"
+    );
+    assert!(
+        !record.contains("\"detail\":\""),
+        "nested JSON must never be quoted as a detail string"
+    );
+    assert_log_record_round_trips(&record, "roofline-meta", "info", &meta);
+}
+
+#[test]
+fn exhaustive_hostile_metadata_and_labels_remain_valid_and_round_trip() {
+    let mut hostile = "prefix\"\\".to_owned();
+    hostile.extend((0_u32..=31).map(|value| char::from_u32(value).expect("C0 scalar")));
+    hostile.push('\u{007f}');
+    hostile.push('\u{0085}');
+    hostile.push('\u{009f}');
+    hostile.push('\u{2028}');
+    hostile.push('\u{2029}');
+    hostile.push('é');
+    hostile.push('🦀');
+    let static_name: &'static str = Box::leak(hostile.clone().into_boxed_str());
+    let meta = KernelMeta {
+        name: static_name,
+        flops_per_elem: u32::MAX,
+        bytes_per_elem: 1,
+        halo: u32::MAX,
+        reduction: ReductionKind::FastSum,
+        determinism: DeterminismClass::PerTier,
+    };
+
+    let inner = meta.try_descr().expect("bounded hostile metadata admits");
+    let parsed_inner = StrictJsonParser::new(&inner)
+        .parse()
+        .expect("inner metadata is strict JSON");
+    assert_eq!(
+        string_field(object(&parsed_inner), "kernel"),
+        hostile.as_str()
+    );
+    assert_eq!(inner.lines().count(), 1);
+
+    let record = meta
+        .render_log_record(&hostile, &hostile)
+        .expect("bounded hostile record admits");
+    assert_log_record_round_trips(&record, &hostile, &hostile, &meta);
+    assert_eq!(record.lines().count(), 1);
+    assert!(record.len() <= MAX_LOG_RECORD_BYTES);
+}
+
+#[test]
+fn metadata_and_log_admission_enforce_every_byte_boundary_before_rendering() {
+    let max_name: &'static str = Box::leak("\0".repeat(MAX_KERNEL_NAME_BYTES).into_boxed_str());
+    let meta = KernelMeta {
+        name: max_name,
+        flops_per_elem: u32::MAX,
+        bytes_per_elem: 1,
+        halo: u32::MAX,
+        reduction: ReductionKind::DeterministicSum,
+        determinism: DeterminismClass::BitwiseAllTiers,
+    };
+    let inner = meta.try_descr().expect("inclusive name limit admits");
+    assert!(inner.len() <= MAX_METADATA_JSON_BYTES);
+
+    let max_label = "\0".repeat(MAX_LOG_LABEL_BYTES);
+    let record = meta
+        .render_log_record(&max_label, &max_label)
+        .expect("inclusive label limits admit after worst-case escaping");
+    assert!(record.len() <= MAX_LOG_RECORD_BYTES);
+    assert_log_record_round_trips(&record, &max_label, &max_label, &meta);
+
+    let over_name: &'static str = Box::leak("x".repeat(MAX_KERNEL_NAME_BYTES + 1).into_boxed_str());
+    let over_meta = KernelMeta {
+        name: over_name,
+        ..meta
+    };
+    assert_eq!(
+        over_meta.try_descr(),
+        Err(MetadataRenderError::TextTooLong {
+            field: "kernel",
+            actual: MAX_KERNEL_NAME_BYTES + 1,
+            limit: MAX_KERNEL_NAME_BYTES,
+        })
+    );
+    assert_eq!(
+        over_meta.render_log_record("case", "pass"),
+        Err(MetadataRenderError::TextTooLong {
+            field: "kernel",
+            actual: MAX_KERNEL_NAME_BYTES + 1,
+            limit: MAX_KERNEL_NAME_BYTES,
+        })
+    );
+    let refusal = over_meta.descr();
+    assert!(refusal.len() <= MAX_METADATA_JSON_BYTES);
+    assert!(
+        !refusal.contains(over_name),
+        "bounded refusal must not echo rejected attacker text"
+    );
+    let refusal = StrictJsonParser::new(&refusal)
+        .parse()
+        .expect("compatibility refusal is strict bounded JSON");
+    let refusal = object(&refusal);
+    assert_eq!(string_field(refusal, "kernel_metadata"), "refused");
+    assert_eq!(string_field(refusal, "field"), "kernel");
+
+    let over_label = "x".repeat(MAX_LOG_LABEL_BYTES + 1);
+    assert_eq!(
+        meta.render_log_record(&over_label, "pass"),
+        Err(MetadataRenderError::TextTooLong {
+            field: "case",
+            actual: MAX_LOG_LABEL_BYTES + 1,
+            limit: MAX_LOG_LABEL_BYTES,
+        })
+    );
+    assert_eq!(
+        meta.render_log_record("case", &over_label),
+        Err(MetadataRenderError::TextTooLong {
+            field: "verdict",
+            actual: MAX_LOG_LABEL_BYTES + 1,
+            limit: MAX_LOG_LABEL_BYTES,
+        })
+    );
+    assert_eq!(
+        KernelMeta { name: "", ..meta }.try_descr(),
+        Err(MetadataRenderError::EmptyText { field: "kernel" })
+    );
+    assert_eq!(
+        meta.render_log_record("", "pass"),
+        Err(MetadataRenderError::EmptyText { field: "case" })
+    );
+    assert_eq!(
+        meta.render_log_record("case", ""),
+        Err(MetadataRenderError::EmptyText { field: "verdict" })
+    );
+}
+
+#[test]
+fn independent_strict_parser_rejects_duplicate_trailing_and_literal_control_attacks() {
+    for malformed in [
+        "{\"field\":1,\"field\":2}",
+        "{} trailing",
+        "{\"field\":\"literal\nnewline\"}",
+        "{\"field\":01}",
+        "{\"field\":\"\\uD800\"}",
+    ] {
+        assert!(
+            StrictJsonParser::new(malformed).parse().is_err(),
+            "strict parser admitted {malformed:?}"
+        );
+    }
 }
