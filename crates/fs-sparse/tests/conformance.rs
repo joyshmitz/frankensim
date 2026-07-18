@@ -292,6 +292,61 @@ fn wsbf_bitwise_twins() {
     );
 }
 
+/// G0 resource-admission regression: caller-controlled worker counts are
+/// bounded by useful row parallelism before allocating shard metadata or
+/// spawning workers. The cap must not change the serial bit pattern.
+#[test]
+fn oversized_worker_requests_are_capped_to_useful_rows() {
+    let empty_coo = Coo::new(0, 0);
+    let empty_serial = empty_coo.assemble();
+    assert_eq!(empty_coo.assemble_parallel(usize::MAX), empty_serial);
+    let empty_compact = fs_sparse::CsrCompact::from_csr(&empty_serial);
+    let mut empty_y: [f64; 0] = [];
+    empty_compact.spmv_sharded(&[], &mut empty_y, usize::MAX);
+    assert_eq!(empty_compact.numa_localized(usize::MAX), empty_compact);
+
+    let empty_rows_coo = Coo::new(128, 1);
+    let empty_rows = empty_rows_coo.assemble();
+    assert_eq!(empty_rows_coo.assemble_parallel(usize::MAX), empty_rows);
+    let empty_rows_compact = fs_sparse::CsrCompact::from_csr(&empty_rows);
+    let mut empty_rows_y = [f64::NAN; 128];
+    empty_rows_compact.spmv_sharded(&[1.0], &mut empty_rows_y, usize::MAX);
+    assert_eq!(empty_rows_y, [0.0; 128]);
+    assert_eq!(
+        empty_rows_compact.numa_localized(usize::MAX),
+        empty_rows_compact
+    );
+
+    let mut coo = Coo::new(1, 1);
+    coo.push(0, 0, 2.0);
+
+    let serial = coo.assemble();
+    assert_eq!(coo.assemble_parallel(usize::MAX), serial);
+
+    let compact = fs_sparse::CsrCompact::from_csr(&serial);
+    let mut y = [0.0];
+    compact.spmv_sharded(&[3.0], &mut y, usize::MAX);
+    assert_eq!(y[0].to_bits(), 6.0f64.to_bits());
+    assert_eq!(compact.numa_localized(usize::MAX), compact);
+
+    let mut ragged = Coo::new(7, 5);
+    ragged.push(0, 0, 1.0);
+    ragged.push(3, 2, 2.0);
+    ragged.push(3, 2, -0.5);
+    ragged.push(6, 4, -3.0);
+    let ragged_serial = ragged.assemble();
+    assert_eq!(ragged.assemble_parallel(usize::MAX), ragged_serial);
+
+    let ragged_compact = fs_sparse::CsrCompact::from_csr(&ragged_serial);
+    let x = [0.25, 0.5, 1.5, 2.0, -2.0];
+    let mut ragged_serial_y = [0.0; 7];
+    ragged_compact.spmv(&x, &mut ragged_serial_y);
+    let mut ragged_sharded_y = [0.0; 7];
+    ragged_compact.spmv_sharded(&x, &mut ragged_sharded_y, usize::MAX);
+    assert!(bitwise_equal(&ragged_serial_y, &ragged_sharded_y));
+    assert_eq!(ragged_compact.numa_localized(usize::MAX), ragged_compact);
+}
+
 /// wsbf segment 2: the chunk-major SELL kernels and the blocked SpMM
 /// are bitwise-equal to their reference twins (pads read, signed-zero
 /// argument inherited; every thread count; every rhs block width).

@@ -13,8 +13,9 @@
 //!   balanced by nnz prefix, scoped threads, each thread owning its
 //!   `y` slice via `split_at_mut` (write-side first-touch for NUMA).
 //!   Per-row accumulation is untouched, so the result is bitwise equal
-//!   to the serial kernel at EVERY thread count — the bead's item-2
-//!   determinism constraint holds by construction, no golden bump.
+//!   to the serial kernel at EVERY requested thread count; requests are
+//!   capped by nonempty rows and host parallel capacity. The bead's
+//!   item-2 determinism constraint holds by construction, no golden bump.
 //! - [`Coo::assemble_parallel`]: row-range tiles bucketed in one
 //!   serial pass (preserving GLOBAL insertion order within each tile),
 //!   per-tile stable sort + accumulation on scoped threads, tiles
@@ -30,6 +31,14 @@ struct TileOut {
     col_idx: Vec<usize>,
     vals: Vec<f64>,
     row_lo: usize,
+}
+
+fn bounded_worker_count(requested: usize, useful_rows: usize) -> usize {
+    let host_parallelism = std::thread::available_parallelism().map_or(1, |count| count.get());
+    requested
+        .max(1)
+        .min(useful_rows.max(1))
+        .min(host_parallelism)
 }
 
 /// CSR with compact u32 column indices (the SpMV bandwidth diet).
@@ -136,14 +145,23 @@ impl CsrCompact {
 
     /// nnz-balanced contiguous row shards for `threads` workers.
     fn shard_bounds(&self, threads: usize) -> Vec<usize> {
-        let t = threads.max(1);
+        // Empty rows do not justify independent workers, and more workers than
+        // the host can run only amplify allocation and spawn overhead.
+        let useful_rows = self
+            .row_ptr
+            .windows(2)
+            .filter(|window| window[0] != window[1])
+            .count();
+        let t = bounded_worker_count(threads, useful_rows);
         let total = self.nnz();
         let mut bounds = Vec::with_capacity(t + 1);
         bounds.push(0usize);
         let mut next_target = 1usize;
         for r in 0..self.nrows {
             let filled = self.row_ptr[r + 1];
-            while next_target < t && filled * t >= next_target * total {
+            while next_target < t
+                && (filled as u128) * (t as u128) >= (next_target as u128) * (total as u128)
+            {
                 bounds.push(r + 1);
                 next_target += 1;
             }
@@ -174,6 +192,9 @@ impl CsrCompact {
             for w in bounds.windows(2) {
                 let (lo, hi) = (self.row_ptr[w[0]], self.row_ptr[w[1]]);
                 let take = hi - off;
+                if take == 0 {
+                    continue;
+                }
                 let (mc, tc) = rest_c.split_at_mut(take);
                 let (mv, tv) = rest_v.split_at_mut(take);
                 rest_c = tc;
@@ -225,11 +246,11 @@ impl CsrCompact {
 
 impl Coo {
     /// Tiled PARALLEL assembly, bitwise equal to [`Coo::assemble`] for
-    /// any `threads` (rows never span tiles; each duplicate chain
-    /// accumulates in the global insertion order the serial path uses).
+    /// any requested `threads` (capped by nonempty rows and host parallel
+    /// capacity; rows never span tiles; each duplicate chain accumulates
+    /// in the global insertion order the serial path uses).
     #[must_use]
     pub fn assemble_parallel(&self, threads: usize) -> Csr {
-        let t = threads.max(1);
         let nrows = self.nrows;
         // Row-range tiles balanced by STAGED triplet count.
         let mut per_row = vec![0usize; nrows + 1];
@@ -239,12 +260,20 @@ impl Coo {
         for r in 0..nrows {
             per_row[r + 1] += per_row[r];
         }
+        let useful_rows = per_row
+            .windows(2)
+            .filter(|window| window[0] != window[1])
+            .count();
+        let t = bounded_worker_count(threads, useful_rows);
         let total = self.vals.len();
         let mut tile_of_row = vec![0usize; nrows];
         {
             let mut tile = 0usize;
             for (r, slot) in tile_of_row.iter_mut().enumerate() {
-                while tile + 1 < t && per_row[r + 1] * t > (tile + 1) * total {
+                while tile + 1 < t
+                    && (per_row[r + 1] as u128) * (t as u128)
+                        > ((tile + 1) as u128) * (total as u128)
+                {
                     tile += 1;
                 }
                 *slot = tile;
@@ -278,6 +307,9 @@ impl Coo {
         std::thread::scope(|scope| {
             let mut handles = Vec::new();
             for (tile, idxs) in buckets.iter().enumerate() {
+                if idxs.is_empty() {
+                    continue;
+                }
                 let (row_lo, row_hi) = ranges[tile];
                 handles.push((
                     tile,
