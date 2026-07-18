@@ -52,9 +52,8 @@ fn ev_001_known_root_count_all_found_and_certified() {
         // x(t) = cos t. Guard x = 0.5 ⇒ cos t = 0.5 at t = π/3 (falling)
         // and t = 5π/3 (rising): exactly two roots in the span.
         let params = rotor_fixture();
-        let (tube, rate) =
-            screw_tube_with_derivative(&params, Interval::new(0.0, 6.2), 10, 8)
-                .expect("tube builds");
+        let (tube, rate) = screw_tube_with_derivative(&params, Interval::new(0.0, 6.2), 10, 8)
+            .expect("tube builds");
         let family = plane_crossing_guard(
             &tube,
             &rate,
@@ -103,9 +102,8 @@ fn ev_001_known_root_count_all_found_and_certified() {
 fn ev_002_no_event_certificate_when_plane_out_of_reach() {
     with_cx(|cx| {
         let params = rotor_fixture();
-        let (tube, rate) =
-            screw_tube_with_derivative(&params, Interval::new(0.0, 6.2), 8, 6)
-                .expect("tube builds");
+        let (tube, rate) = screw_tube_with_derivative(&params, Interval::new(0.0, 6.2), 8, 6)
+            .expect("tube builds");
         // The orbit has radius 1; the plane x = 1.5 is unreachable.
         let family = plane_crossing_guard(
             &tube,
@@ -142,9 +140,8 @@ fn ev_003_grazing_yields_unknown_not_a_fake_certificate() {
         // the plane. A finite crossing certificate here would be the
         // Sev-0 failure; Unknown IS correct.
         let params = rotor_fixture();
-        let (tube, rate) =
-            screw_tube_with_derivative(&params, Interval::new(1.0, 7.0), 10, 8)
-                .expect("tube builds");
+        let (tube, rate) = screw_tube_with_derivative(&params, Interval::new(1.0, 7.0), 10, 8)
+            .expect("tube builds");
         let family = plane_crossing_guard(
             &tube,
             &rate,
@@ -201,9 +198,8 @@ fn ev_004_dense_scan_falsifier_all_estimated_events_inside_windows() {
             axial_velocity: 0.15,
             base_pose: Motor::rotor([1.0, 0.0, 0.0], 0.3),
         };
-        let (tube, rate) =
-            screw_tube_with_derivative(&params, Interval::new(0.0, 5.0), 10, 10)
-                .expect("tube builds");
+        let (tube, rate) = screw_tube_with_derivative(&params, Interval::new(0.0, 5.0), 10, 10)
+            .expect("tube builds");
         let family = plane_crossing_guard(
             &tube,
             &rate,
@@ -250,9 +246,8 @@ fn ev_005_simultaneous_events_enumerate_admissible_orders() {
         // overlapping windows: the order is genuinely undetermined at
         // window resolution, so both orders must be admissible.
         let params = rotor_fixture();
-        let (tube, rate) =
-            screw_tube_with_derivative(&params, Interval::new(0.0, 3.0), 10, 6)
-                .expect("tube builds");
+        let (tube, rate) = screw_tube_with_derivative(&params, Interval::new(0.0, 3.0), 10, 6)
+            .expect("tube builds");
         let g1 = plane_crossing_guard(
             &tube,
             &rate,
@@ -293,7 +288,11 @@ fn ev_005_simultaneous_events_enumerate_admissible_orders() {
             .admissible_orders
             .as_ref()
             .expect("small groups enumerate");
-        assert_eq!(orders.len(), 2, "both orders admissible — set-valued, not picked");
+        assert_eq!(
+            orders.len(),
+            2,
+            "both orders admissible — set-valued, not picked"
+        );
         // The disjoint y-crossings (t ≈ π/6, 5π/6) stay their own groups.
         assert!(groups.iter().filter(|g| g.members.len() == 1).count() >= 2);
     });
@@ -303,9 +302,8 @@ fn ev_005_simultaneous_events_enumerate_admissible_orders() {
 fn ev_006_budget_exhaustion_is_visible_never_silent() {
     with_cx(|cx| {
         let params = rotor_fixture();
-        let (tube, rate) =
-            screw_tube_with_derivative(&params, Interval::new(0.0, 6.2), 10, 8)
-                .expect("tube builds");
+        let (tube, rate) = screw_tube_with_derivative(&params, Interval::new(0.0, 6.2), 10, 8)
+            .expect("tube builds");
         let family = plane_crossing_guard(
             &tube,
             &rate,
@@ -350,9 +348,8 @@ fn ev_007_scan_is_bitwise_deterministic() {
             base_pose: Motor::translator(0.0, 0.3, 0.1),
         };
         let run = |cx: &Cx<'_>| {
-            let (tube, rate) =
-                screw_tube_with_derivative(&params, Interval::new(0.0, 4.0), 9, 7)
-                    .expect("tube builds");
+            let (tube, rate) = screw_tube_with_derivative(&params, Interval::new(0.0, 4.0), 9, 7)
+                .expect("tube builds");
             let family = plane_crossing_guard(
                 &tube,
                 &rate,
@@ -393,9 +390,8 @@ fn ev_008_certified_windows_localize_the_analytic_roots_tightly() {
         // 0.5 shrink to the resolution floor around the true roots and
         // the guard value at the true root is enclosed near zero.
         let params = rotor_fixture();
-        let (tube, rate) =
-            screw_tube_with_derivative(&params, Interval::new(0.0, 6.2), 10, 8)
-                .expect("tube builds");
+        let (tube, rate) = screw_tube_with_derivative(&params, Interval::new(0.0, 6.2), 10, 8)
+            .expect("tube builds");
         let family = plane_crossing_guard(
             &tube,
             &rate,
@@ -413,12 +409,10 @@ fn ev_008_certified_windows_localize_the_analytic_roots_tightly() {
         )
         .expect("scan completes");
         assert_eq!(scan.count.confirmed, 2);
-        for (window, truth) in scan
-            .certified
-            .iter()
-            .map(|c| c.window)
-            .zip([std::f64::consts::FRAC_PI_3, 5.0 * std::f64::consts::FRAC_PI_3])
-        {
+        for (window, truth) in scan.certified.iter().map(|c| c.window).zip([
+            std::f64::consts::FRAC_PI_3,
+            5.0 * std::f64::consts::FRAC_PI_3,
+        ]) {
             let width = window.width();
             println!("ev-008: window width {width:e} around root {truth}");
             assert!(width < 1e-3, "window failed to localize: width {width:e}");

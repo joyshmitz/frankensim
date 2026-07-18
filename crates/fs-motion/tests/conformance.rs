@@ -164,7 +164,11 @@ fn mt_001_constant_motor_sandwich_matches_transform_point() {
                     .expect("action encloses");
                 assert_eq!(enc.class, EnclosureClass::Certified);
                 let truth = base
-                    .transform_point(GaPoint { x: x.x, y: x.y, z: x.z })
+                    .transform_point(GaPoint {
+                        x: x.x,
+                        y: x.y,
+                        z: x.z,
+                    })
                     .expect("finite point transforms");
                 assert_contains(&enc.coords, truth, "mt-001 constant sandwich");
             }
@@ -192,12 +196,18 @@ fn mt_002_screw_tube_encloses_dense_pointwise_sampling() {
                 );
                 let lo = rng.range(-0.25, 0.7);
                 let span = Interval::new(lo, lo + 0.4);
-                let enc = tube.point_action_over(x, span, cx).expect("action encloses");
+                let enc = tube
+                    .point_action_over(x, span, cx)
+                    .expect("action encloses");
                 for k in 0..=32 {
                     cx.checkpoint().expect("not cancelled");
                     let t = span.lo() + (span.hi() - span.lo()) * (f64::from(k) / 32.0);
                     let truth = screw_pointwise(&params, t)
-                        .transform_point(GaPoint { x: x.x, y: x.y, z: x.z })
+                        .transform_point(GaPoint {
+                            x: x.x,
+                            y: x.y,
+                            z: x.z,
+                        })
                         .expect("finite point transforms");
                     assert_contains(&enc.coords, truth, "mt-002 screw sampling");
                 }
@@ -282,13 +292,8 @@ fn mt_003_double_cover_sign_is_deterministic_and_transitions_validate() {
 #[test]
 fn mt_004_versor_defect_detects_broken_construction() {
     // Exact unit axes: defect is rounding-plus-truncation noise.
-    let good = screw_tube(
-        &sample_screws()[0],
-        Interval::new(0.0, 1.0),
-        8,
-        2,
-    )
-    .expect("good tube builds");
+    let good =
+        screw_tube(&sample_screws()[0], Interval::new(0.0, 1.0), 8, 2).expect("good tube builds");
     assert!(good.defect() < 1e-8, "good defect: {}", good.defect());
     // A deliberately non-unit axis is a broken generator; the residual
     // machinery must REPORT it (cos² + |a|²·sin² − 1 ≈ sin²·(|a|²−1)),
@@ -391,7 +396,11 @@ fn mt_005_eval_over_encloses_dense_time_sampling() {
                 let m = screw_pointwise(&params, t);
                 let q = m
                     .reverse()
-                    .transform_point(GaPoint { x: x.x, y: x.y, z: x.z })
+                    .transform_point(GaPoint {
+                        x: x.x,
+                        y: x.y,
+                        z: x.z,
+                    })
                     .expect("pull-back transforms");
                 let truth = moving
                     .base()
@@ -416,14 +425,26 @@ fn mt_006_bit_replay_across_reconstruction() {
         let domain = Interval::new(-0.5, 0.75);
         let a = screw_tube(&params, domain, 9, 5).expect("tube a");
         let b = screw_tube(&params, domain, 9, 5).expect("tube b");
-        assert_eq!(a.defect().to_bits(), b.defect().to_bits(), "defect bits differ");
+        assert_eq!(
+            a.defect().to_bits(),
+            b.defect().to_bits(),
+            "defect bits differ"
+        );
         let x = Point3::new(0.7, -0.4, 1.1);
         let span = Interval::new(-0.2, 0.55);
         let ea = a.point_action_over(x, span, cx).expect("a acts");
         let eb = b.point_action_over(x, span, cx).expect("b acts");
         for (ia, ib) in ea.coords.iter().zip(eb.coords.iter()) {
-            assert_eq!(ia.lo().to_bits(), ib.lo().to_bits(), "mt-006 lo bits differ");
-            assert_eq!(ia.hi().to_bits(), ib.hi().to_bits(), "mt-006 hi bits differ");
+            assert_eq!(
+                ia.lo().to_bits(),
+                ib.lo().to_bits(),
+                "mt-006 lo bits differ"
+            );
+            assert_eq!(
+                ia.hi().to_bits(),
+                ib.hi().to_bits(),
+                "mt-006 hi bits differ"
+            );
         }
     });
 }
@@ -450,11 +471,17 @@ fn mt_007_wankel_pose_encloses_pointwise_composition() {
             );
             let lo = rng.range(0.0, 0.7);
             let span = Interval::new(lo, lo + 0.25);
-            let enc = tube.point_action_over(x, span, cx).expect("action encloses");
+            let enc = tube
+                .point_action_over(x, span, cx)
+                .expect("action encloses");
             for k in 0..=24 {
                 let t = span.lo() + (span.hi() - span.lo()) * (f64::from(k) / 24.0);
                 let truth = wankel_pointwise(&params, t)
-                    .transform_point(GaPoint { x: x.x, y: x.y, z: x.z })
+                    .transform_point(GaPoint {
+                        x: x.x,
+                        y: x.y,
+                        z: x.z,
+                    })
                     .expect("finite point transforms");
                 assert_contains(&enc.coords, truth, "mt-007 wankel sampling");
             }
@@ -520,7 +547,11 @@ fn mt_009_snapshot_agrees_with_pullback_and_transports_support() {
             let m = screw_pointwise(&params, t);
             let q = m
                 .reverse()
-                .transform_point(GaPoint { x: x.x, y: x.y, z: x.z })
+                .transform_point(GaPoint {
+                    x: x.x,
+                    y: x.y,
+                    z: x.z,
+                })
                 .expect("pull-back transforms");
             let truth = moving
                 .base()
@@ -545,7 +576,11 @@ fn mt_009_snapshot_agrees_with_pullback_and_transports_support() {
             (base_support.max.x, base_support.min.y, base_support.max.z),
         ] {
             let img = m
-                .transform_point(GaPoint { x: cx_, y: cy, z: cz })
+                .transform_point(GaPoint {
+                    x: cx_,
+                    y: cy,
+                    z: cz,
+                })
                 .expect("corner transforms");
             let s = snap.support();
             assert!(

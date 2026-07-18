@@ -499,7 +499,11 @@ pub fn plane_crossing_guard(
     let mut models = Vec::with_capacity(tube.segments().len());
     for (segment, rate_mv) in tube.segments().iter().zip(rate.segments()) {
         let mv = segment.components();
-        let p = TmMv::constant(&point_to_mv(point.x, point.y, point.z), mv.domain(), mv.order())?;
+        let p = TmMv::constant(
+            &point_to_mv(point.x, point.y, point.z),
+            mv.domain(),
+            mv.order(),
+        )?;
         let rev = mv.reverse()?;
         let sandwich = mv.gp(&p)?.gp(&rev)?;
         // Weight positivity makes numerator roots equal to the real

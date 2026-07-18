@@ -104,7 +104,6 @@ impl MotorTubeSegment {
     pub(crate) fn components(&self) -> &TmMv {
         &self.mv
     }
-
 }
 
 /// Honesty data returned alongside a pointwise motor evaluation.
@@ -170,7 +169,10 @@ impl CertifiedMotorTube {
             let mut dot = 0.0f64;
             for (l, r) in left.iter().zip(right.iter()) {
                 if l.lo() > r.hi() || r.lo() > l.hi() {
-                    return Err(MotionError::ChartTransition { at: t, dot: f64::NAN });
+                    return Err(MotionError::ChartTransition {
+                        at: t,
+                        dot: f64::NAN,
+                    });
                 }
                 dot += l.midpoint() * r.midpoint();
             }
@@ -271,7 +273,11 @@ impl CertifiedMotorTube {
             defect = defect.max(seg.defect());
             coords = Some(match coords {
                 None => pt,
-                Some(prev) => [prev[0].hull(pt[0]), prev[1].hull(pt[1]), prev[2].hull(pt[2])],
+                Some(prev) => [
+                    prev[0].hull(pt[0]),
+                    prev[1].hull(pt[1]),
+                    prev[2].hull(pt[2]),
+                ],
             });
         }
         let coords = coords.ok_or(MotionError::EmptyTimeDomain)?;

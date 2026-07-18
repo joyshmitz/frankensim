@@ -61,8 +61,14 @@ fn single_grade2_slot(m: &Motor, expected_negative_of: f64) -> AxisSlot {
 
 fn extract_axis_frame() -> AxisFrame {
     let axes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    let mut rot = [AxisSlot { blade: 0, sign: 1.0 }; 3];
-    let mut ideal = [AxisSlot { blade: 0, sign: 1.0 }; 3];
+    let mut rot = [AxisSlot {
+        blade: 0,
+        sign: 1.0,
+    }; 3];
+    let mut ideal = [AxisSlot {
+        blade: 0,
+        sign: 1.0,
+    }; 3];
     for (i, axis) in axes.iter().enumerate() {
         // rotor(a, φ) = cos(φ/2) − sin(φ/2)·B_a : coefficient at the
         // B_a blade is −sin(0.5)·sign for φ = 1.
@@ -131,10 +137,7 @@ fn segment_domains(domain: Interval, segments: usize) -> Vec<Interval> {
 /// the shared junction (a per-segment anchor rule would tear the
 /// cover whenever the scalar component crosses zero mid-path, e.g. a
 /// rotation through π).
-fn chained_flip(
-    sealed: &[MotorTubeSegment],
-    mv: &TmMv,
-) -> Result<bool, MotionError> {
+fn chained_flip(sealed: &[MotorTubeSegment], mv: &TmMv) -> Result<bool, MotionError> {
     let Some(prev) = sealed.last() else {
         return crate::tube::anchor_flip(mv);
     };
@@ -162,11 +165,7 @@ fn cos_model(u: &TaylorModel1) -> Result<TaylorModel1, MotionError> {
 }
 
 /// Accumulate `coeffs · basis(t)` into the multivector's components.
-fn accumulate(
-    out: &mut TmMv,
-    coeffs: &Pga,
-    basis: &TaylorModel1,
-) -> Result<(), MotionError> {
+fn accumulate(out: &mut TmMv, coeffs: &Pga, basis: &TaylorModel1) -> Result<(), MotionError> {
     for (k, &c) in coeffs.0.iter().enumerate() {
         if c == 0.0 {
             continue;
@@ -254,7 +253,9 @@ pub fn screw_tube_with_derivative(
         .chain([params.omega, params.axial_velocity].iter())
     {
         if !v.is_finite() {
-            return Err(MotionError::NonFiniteInput { what: "screw parameter" });
+            return Err(MotionError::NonFiniteInput {
+                what: "screw parameter",
+            });
         }
     }
     let b_axis = rotational_bivector(params.axis);
@@ -352,7 +353,9 @@ pub fn wankel_tube(
         params.rotor_phase,
     ] {
         if !v.is_finite() {
-            return Err(MotionError::NonFiniteInput { what: "wankel parameter" });
+            return Err(MotionError::NonFiniteInput {
+                what: "wankel parameter",
+            });
         }
     }
     let frame_x = ideal_bivector([1.0, 0.0, 0.0]);
@@ -362,8 +365,11 @@ pub fn wankel_tube(
     for sub in segment_domains(domain, segments) {
         let t = TaylorModel1::variable(sub, order)?;
         // α(t) = ω t + α0 ; β/2 = α/6 + β0/2.
-        let alpha = t.scale(params.omega)?
-            .try_add(&TaylorModel1::constant(params.crank_phase, sub, order)?)?;
+        let alpha = t.scale(params.omega)?.try_add(&TaylorModel1::constant(
+            params.crank_phase,
+            sub,
+            order,
+        )?)?;
         let cos_a = cos_model(&alpha)?;
         let sin_a = alpha.sin()?;
         let beta_half = alpha.scale(1.0 / 6.0)?.try_add(&TaylorModel1::constant(

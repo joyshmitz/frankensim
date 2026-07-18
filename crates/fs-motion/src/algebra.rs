@@ -317,9 +317,7 @@ pub fn point_to_mv(x: f64, y: f64, z: f64) -> Pga {
 /// enclosure contains zero. Uniform versor scaling cancels here, so
 /// the result is exact for the constructed component path even when
 /// its norm drifts from one.
-pub fn homogeneous_point(
-    enclosures: &[Interval; BLADES],
-) -> Result<[Interval; 3], MotionError> {
+pub fn homogeneous_point(enclosures: &[Interval; BLADES]) -> Result<[Interval; 3], MotionError> {
     let w = enclosures[POINT_BLADE_W];
     if w.lo() <= 0.0 && w.hi() >= 0.0 {
         return Err(MotionError::DegenerateWeight {
