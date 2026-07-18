@@ -2380,6 +2380,28 @@ pub mod snapshot_v2 {
         PolicyRelativeAdmission,
     }
 
+    /// Allocation-free compact rendering for identities whose enclosing field
+    /// name already carries the nominal role.
+    struct DebugDisplay<T>(T);
+
+    impl<T: fmt::Display> fmt::Debug for DebugDisplay<T> {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            fmt::Display::fmt(&self.0, formatter)
+        }
+    }
+
+    /// Fixed-width lowercase hexadecimal rendering for raw 32-byte bindings.
+    struct DebugHex32([u8; 32]);
+
+    impl fmt::Debug for DebugHex32 {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            for byte in self.0 {
+                write!(formatter, "{byte:02x}")?;
+            }
+            Ok(())
+        }
+    }
+
     /// Identity evidence discharged alongside owned canonical envelope bytes.
     ///
     /// This type deliberately has no whole-artifact clone or equality
@@ -2397,9 +2419,12 @@ pub mod snapshot_v2 {
         fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
             formatter
                 .debug_struct("SnapshotSealEvidenceV2")
-                .field("content_id", &self.content_id)
-                .field("resume_id", &self.resume.id())
-                .field("authority_subject_id", &self.authority_subject.id())
+                .field("content_id", &DebugDisplay(self.content_id))
+                .field("resume_id", &DebugDisplay(self.resume.id()))
+                .field(
+                    "authority_subject_id",
+                    &DebugDisplay(self.authority_subject.id()),
+                )
                 .finish_non_exhaustive()
         }
     }
@@ -2470,9 +2495,12 @@ pub mod snapshot_v2 {
             formatter
                 .debug_struct("SealedSnapshotV2")
                 .field("byte_len", &self.bytes.len())
-                .field("content_id", &self.content_id)
-                .field("resume_id", &self.resume.id())
-                .field("authority_subject_id", &self.authority_subject.id())
+                .field("content_id", &DebugDisplay(self.content_id))
+                .field("resume_id", &DebugDisplay(self.resume.id()))
+                .field(
+                    "authority_subject_id",
+                    &DebugDisplay(self.authority_subject.id()),
+                )
                 .finish_non_exhaustive()
         }
     }
@@ -2597,12 +2625,21 @@ pub mod snapshot_v2 {
             formatter
                 .debug_struct("SnapshotInspectionV2")
                 .field("payload_len", &self.payload.len())
-                .field("payload_content", &self.payload_content)
-                .field("content_id", &self.content_id)
-                .field("resume_id", &self.resume.id())
-                .field("authority_subject_id", &self.authority_subject.id())
+                .field(
+                    "payload_content_id",
+                    &DebugHex32(*self.payload_content.as_bytes()),
+                )
+                .field("content_id", &DebugDisplay(self.content_id))
+                .field("resume_id", &DebugDisplay(self.resume.id()))
+                .field(
+                    "authority_subject_id",
+                    &DebugDisplay(self.authority_subject.id()),
+                )
                 .field("admission", &self.admission)
-                .field("authority_evidence", &self.authority_evidence)
+                .field(
+                    "authority_evidence_present",
+                    &self.authority_evidence.is_some(),
+                )
                 .finish_non_exhaustive()
         }
     }
@@ -2691,11 +2728,17 @@ pub mod snapshot_v2 {
         fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
             formatter
                 .debug_struct("SnapshotOpenEvidenceV2")
-                .field("content_id", &self.content_id)
-                .field("resume_id", &self.resume.id())
-                .field("authority_subject_id", &self.authority_subject.id())
+                .field("content_id", &DebugDisplay(self.content_id))
+                .field("resume_id", &DebugDisplay(self.resume.id()))
+                .field(
+                    "authority_subject_id",
+                    &DebugDisplay(self.authority_subject.id()),
+                )
                 .field("admission", &self.admission)
-                .field("authority_evidence", &self.authority_evidence)
+                .field(
+                    "authority_evidence_present",
+                    &self.authority_evidence.is_some(),
+                )
                 .finish_non_exhaustive()
         }
     }
@@ -2776,14 +2819,21 @@ pub mod snapshot_v2 {
 
     impl<S> fmt::Debug for OpenedSnapshotV2<S> {
         fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            let state_type_id = self.expected_context.context().state_type();
             formatter
                 .debug_struct("OpenedSnapshotV2")
-                .field("state_type", &core::any::type_name::<S>())
-                .field("content_id", &self.content_id)
-                .field("resume_id", &self.resume.id())
-                .field("authority_subject_id", &self.authority_subject.id())
+                .field("state_type_id", &DebugHex32(*state_type_id.as_bytes()))
+                .field("content_id", &DebugDisplay(self.content_id))
+                .field("resume_id", &DebugDisplay(self.resume.id()))
+                .field(
+                    "authority_subject_id",
+                    &DebugDisplay(self.authority_subject.id()),
+                )
                 .field("admission", &self.admission)
-                .field("authority_evidence", &self.authority_evidence)
+                .field(
+                    "authority_evidence_present",
+                    &self.authority_evidence.is_some(),
+                )
                 .finish_non_exhaustive()
         }
     }
@@ -5209,6 +5259,21 @@ mod tests {
 
     #[test]
     fn v2_owned_artifact_debug_and_consumption_keep_evidence_bounded() {
+        struct DeliberatelyNoDebugState;
+        fn assert_debug<T: core::fmt::Debug>() {}
+        assert_debug::<snapshot_v2::OpenedSnapshotV2<DeliberatelyNoDebugState>>();
+
+        let assert_bounded_debug = |label: &str, rendered: &str| {
+            assert!(
+                rendered.len() < 512,
+                "{label} Debug output is {} bytes, expected fewer than 512: {rendered}",
+                rendered.len()
+            );
+            assert!(
+                !rendered.contains("x:"),
+                "{label} Debug output leaked decoded state fields: {rendered}"
+            );
+        };
         let (_, state) = jacobi();
         let context = base_v2_context::<JacobiState>();
         let limits = v2_limits(64, 64);
@@ -5216,11 +5281,11 @@ mod tests {
             .seal_v2(&context, limits, || false)
             .expect("state seals");
         let sealed_debug = format!("{sealed:?}");
-        assert!(sealed_debug.len() < 512);
-        assert!(!sealed_debug.contains("x:"));
+        assert_bounded_debug("sealed snapshot", &sealed_debug);
         let expected_content = sealed.content_id();
         let expected_resume = sealed.resume_id();
         let expected_subject = sealed.authority_subject_receipt().id();
+        let authority = admitted_snapshot_authority(&sealed);
 
         let (bytes, seal_evidence) = sealed.into_parts();
         assert_eq!(seal_evidence.content_id(), expected_content);
@@ -5232,15 +5297,41 @@ mod tests {
             expected_subject
         );
         assert_eq!(seal_evidence.expected_context(), &context);
+        let seal_evidence_debug = format!("{seal_evidence:?}");
+        assert_bounded_debug("discharged seal evidence", &seal_evidence_debug);
         let expectation = seal_evidence.expectation();
+        let inspection = snapshot_v2::inspect_expected(&bytes, &expectation, limits, || false)
+            .expect("retained seal evidence inspects exact bytes");
+        let inspection_debug = format!("{inspection:?}");
+        assert_bounded_debug("expected-root inspection", &inspection_debug);
+        assert!(inspection_debug.contains("authority_evidence_present: false"));
         let opened = JacobiState::unseal_v2_expected(&bytes, &expectation, limits, || false)
             .expect("retained seal evidence opens exact bytes");
         let opened_debug = format!("{opened:?}");
-        assert!(opened_debug.len() < 512);
-        assert!(!opened_debug.contains("x:"));
+        assert_bounded_debug("expected-root opened snapshot", &opened_debug);
+        assert!(opened_debug.contains("authority_evidence_present: false"));
+        assert!(!opened_debug.contains(core::any::type_name::<JacobiState>()));
+        let authorized =
+            JacobiState::unseal_v2_authorized(&bytes, &authority, &context, limits, || false)
+                .expect("policy-relative authority opens exact bytes");
+        let authorized_debug = format!("{authorized:?}");
+        assert_bounded_debug("policy-authorized opened snapshot", &authorized_debug);
+        assert!(authorized_debug.contains("authority_evidence_present: true"));
+        assert!(!authorized_debug.contains(authority.audit_record().context()));
+        let (authorized_state, authorized_evidence) = authorized.into_parts();
+        assert_eq!(authorized_state, state);
+        let authorized_evidence_debug = format!("{authorized_evidence:?}");
+        assert_bounded_debug(
+            "policy-authorized discharged evidence",
+            &authorized_evidence_debug,
+        );
+        assert!(authorized_evidence_debug.contains("authority_evidence_present: true"));
         let opened_expectation = opened.expectation();
         let (decoded, open_evidence) = opened.into_parts();
         assert_eq!(decoded, state);
+        let open_evidence_debug = format!("{open_evidence:?}");
+        assert_bounded_debug("expected-root discharged evidence", &open_evidence_debug);
+        assert!(open_evidence_debug.contains("authority_evidence_present: false"));
         assert_eq!(open_evidence.content_id(), expected_content);
         assert_eq!(open_evidence.resume_id(), expected_resume);
         assert_eq!(open_evidence.resume_receipt().id(), expected_resume);
