@@ -4,7 +4,8 @@ Scientific visualization: the verifiable topological-summary primitives.
 
 ## Purpose and layer
 
-Layer L5 (LUMEN). No dependencies — pure Rust.
+Layer L5 (LUMEN). Safe Rust; the scoped contour path consumes L0 `fs-exec::Cx`
+and the dependency-neutral `fs-blake3` content-identity owner.
 
 ## Public types and semantics
 
@@ -19,7 +20,18 @@ Layer L5 (LUMEN). No dependencies — pure Rust.
   grid; `at` and `point` expose its x-fastest nodes.
 - `Grid2::isocontour_crossings(iso, crossing_limit) -> Result<Vec<Vec2>,
   IsoContourError>` — bounded, deterministic unique point intersections of the
-  finite level with piecewise-linear grid edges.
+  finite level with piecewise-linear grid edges; this is the explicitly
+  no-cancellation compatibility entry point.
+- `IsoContourBudget` / `IsoContourPlan` — the complete caller envelope and its
+  checked conservative plan for cells, nodes, edge visits, exact ownership,
+  interpolation, output, scratch, diagnostics, live bytes, identity bytes,
+  polls, and deterministic work units.
+- `Grid2::isocontour_crossings_with_cx(cx, iso, budget) ->
+  Result<IsoContourOutput, IsoContourRunError>` — caller-owned cancellation,
+  ambient deadline/poll/cost enforcement, private staging, final-checkpoint
+  publication, a fixed `IsoContourReport` retaining the requested envelope,
+  checked plan, actual/peak counters, disposition, and a domain-separated
+  BLAKE3 artifact identity.
 - `Grid3::from_fn(dimensions, lower, upper, node_limit, field)` and
   `Grid3::from_values(...)` — owned finite scalar samples with x-fastest
   addressing, strict world bounds, and an explicit node budget.
@@ -65,6 +77,19 @@ Layer L5 (LUMEN). No dependencies — pure Rust.
   O(1) decision per edge endpoint, needs no search or marker scratch, and makes
   total extraction work O(nodes + crossings). A wholly exact edge is refused as
   a coincident segment that a point-only result cannot represent.
+- Scoped contour planning uses checked arithmetic for the exact node/cell/edge
+  geometry, conservative ownership/interpolation maxima, output payload,
+  streaming-hasher scratch, fixed diagnostics, simultaneous live bytes,
+  identity preimage, poll count, and work units. Every explicit limit is
+  admitted before the output allocation; allocator-reported capacity is then
+  checked again before edge work. The private vector cannot escape on any
+  refusal, cancellation, allocation fault, or unwind.
+- Cancellation is polled before allocation, at deterministic edge chunks, at
+  deterministic identity chunks, and immediately before publication. At most
+  `items_per_poll` edge/identity-point items occur between checkpoints. The
+  final artifact identity binds schema version, dimensions, world-bound bits,
+  iso bits, output count, and every point bit in traversal order under
+  `org.frankensim.fs-viz.isocontour-crossings.v1`.
 - A planar `Grid3` level set has exact area and increasing-field winding.
   Sphere area error decreases under refinement, and gyroid extraction is
   indexed, centrally symmetric, and exactly replay-deterministic.
@@ -85,15 +110,21 @@ a `Grid2Error`.
 `Grid2::at` and `Grid2::point` require admitted in-range node indices and panic
 on caller indexing errors; they cannot expose extrapolated coordinates.
 `IsoContourError` distinguishes non-finite levels, zero/exceeded crossing
-budgets, exact-level coincident edges, strict real intersections with no
-representably interior point produced by the binary64 interpolation, allocation
-refusal, and non-finite interpolation geometry. The representability refusal
+budgets, invalid poll strides, checked plan overflow, per-resource operation
+budget refusal, ambient Cx cancellation/deadline/poll/cost refusal, exact-level
+coincident edges, strict real intersections with no representably interior
+point produced by the binary64 interpolation, allocation refusal, and
+non-finite interpolation geometry. The representability refusal
 retains bounded endpoint
 indices; endpoint-coordinate, sample, and iso bits; scaled interpolation
 distances and parameter; computed point bits; and the first collapsed axis.
 Extraction is all-or-error: it never returns a partial crossing vector, and
 malformed evidence never becomes the successful empty result reserved for a
 finite absent level.
+`IsoContourRunError` retains the typed root error plus a terminal report. A
+pre-plan refusal has `plan: None`; every post-plan refusal retains the checked
+requirements and exact completed counters. Only `Completed` carries
+`published=true` and a nonempty artifact identity.
 `Grid3` construction is fallible and refuses degenerate/overflowing dimensions,
 invalid or non-finite bounds/samples, length mismatch, node-budget excess, and
 allocation refusal. Isosurface extraction refuses non-finite levels, a zero or
@@ -109,7 +140,9 @@ Fully deterministic: RK4, classification, and contouring are pure functions.
 Grid2 sampling is row-major/x-fastest; crossing traversal is row-major with the
 positive-x edge before positive-y, and shared exact nodes use the statically
 derived first-incident edge, retaining first-encounter order without mutable
-deduplication state.
+deduplication state. Scoped poll sites, reports, and artifact preimages are
+derived from logical traversal counts rather than scheduler timing; retry under
+a fresh Cx is byte-identical.
 Grid3 sampling is z/y/x with x-fastest storage; isosurface traversal is
 z/y/x/cube-tetrahedron order and uses an ordered edge cache.
 Scalar-field artifacts use fixed little-endian IEEE-754 f64 bits and fixed
@@ -117,10 +150,13 @@ length-prefixed UTF-8 semantics; their bytes are cross-ISA stable.
 
 ## Cancellation behavior
 
-The current synchronous compatibility entry point has no caller-owned `Cx`.
-Its work is bounded by the already admitted grid dimensions and crossing count,
-but a complete per-operation budget and cancellable tiled entry point remain
-staged.
+`isocontour_crossings_with_cx` observes the caller-owned `Cx` before allocation,
+at bounded edge/identity chunks, and at the final publication cutoff. It admits
+the checked worst-case work against the ambient `fs-exec::AdmittedBudget`,
+charges completed chunks, and never publishes on cancellation or any other
+budget refusal. The small `isocontour_crossings` compatibility entry point
+derives the same complete resource envelope but deliberately has no
+cancellation authority.
 
 ## Unsafe boundary
 
@@ -140,6 +176,12 @@ overflow, coordinate-collapse, and non-finite-value admission; non-finite-level
 and crossing-budget refusal; exact-node ownership and coincident-edge refusal;
 the adversarial exact/non-exact checkerboard under exact and one-short output
 budgets, both axis shapes, and byte-identical replay;
+complete scoped-plan accounting and artifact identity; exact and one-short
+refusal for every resource before polling/edge work; pre-requested and
+mid-traversal cancellation; ambient deadline-without-clock, cost-plan, and poll
+exhaustion refusals; injected allocation and
+checkpoint-panic faults; atomic retry equivalence; geometric endpoint reversal
+and affine-translation metamorphisms;
 extreme finite and subnormal interpolation; exact next-up/down strict-crossing
 collapse refusal before output budgeting with endpoint/value/iso/t/point-bit
 evidence; G3 axis, endpoint-sign, signed-zero, and power-of-two neighbor refusal
@@ -163,6 +205,14 @@ truncation, semantic validation, and non-finite payload rejection.
   with preintegrated transfer functions, LINE-INTEGRAL CONVOLUTION,
   tensor/stress-ellipsoid glyphs, and full MORSE–SMALE complexes / Reeb graphs
   with persistence thresholding are staged.
+- Contour byte budgets cover logical Rust payloads, the borrowed `Grid2`
+  representation and retained sample-vector capacity, fixed reports, and
+  allocator-reported output-vector capacity. They do not claim knowledge of
+  allocator bookkeeping, virtual-memory page
+  granularity, or the caller's unrelated live heap. Scoped contour extraction
+  is sequentially tiled; it does not yet claim parallel speedup or the
+  reference-hardware 200-microsecond wall-clock cancellation target without a
+  retained measurement.
 - `IsoMesh3` is the piecewise-linear isosurface of trilinearly sampled node
   data under a fixed tetrahedralization. It does not claim topology recovery
   below grid resolution, sharp-feature preservation, Hermite normals,

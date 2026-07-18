@@ -3,12 +3,15 @@
 //! streamlines conserve xy, Hessian classification recovers the known Morse
 //! type, and a circle-SDF isocontour lies on the circle.
 
+use fs_exec::{Budget, BudgetRefusal, CancelGate, Cx, ExecMode, StreamKey};
 use fs_viz::{
-    CriticalKind, Grid2, Grid2Error, Grid3, Grid3Error, IsoContourError, IsoSurfaceError,
+    CriticalKind, Grid2, Grid2Error, Grid3, Grid3Error, ISO_CONTOUR_ARTIFACT_IDENTITY_DOMAIN,
+    IsoContourDisposition, IsoContourError, IsoContourResource, IsoSurfaceError,
     SCALAR_FIELD3_ARTIFACT_KIND, SCALAR_FIELD3_SCHEMA_VERSION, ScalarField3, ScalarField3Error,
     ScalarFieldSemantics, ScalarLayout3, classify_hessian, streamline,
 };
 use std::cell::Cell;
+use std::mem::size_of;
 
 fn radius(p: [f64; 2]) -> f64 {
     (p[0] * p[0] + p[1] * p[1]).sqrt()
@@ -32,6 +35,25 @@ fn lower_left_collapse_error(
     .expect("adjacent finite endpoints form an admitted 2x2 grid");
     grid.isocontour_crossings(iso, crossing_limit)
         .expect_err("the strict real crossing must not collapse to a binary64 endpoint")
+}
+
+fn with_contour_cx<R>(gate: &CancelGate, budget: Budget, f: impl FnOnce(&Cx<'_>) -> R) -> R {
+    let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    pool.scope(|arena| {
+        let cx = Cx::new(
+            gate,
+            arena,
+            StreamKey {
+                seed: 0xF5_71_2,
+                kernel_id: 5,
+                tile: 0,
+                iteration: 0,
+            },
+            budget,
+            ExecMode::Deterministic,
+        );
+        f(&cx)
+    })
 }
 
 #[test]
@@ -342,12 +364,256 @@ fn g0_checkerboard_exact_node_ownership_is_static_and_budget_exact() {
             expected
         );
 
+        let scoped_budget = grid
+            .required_isocontour_budget(expected.len(), 128)
+            .expect("checkerboard work envelope is representable");
+        let scoped_gate = CancelGate::new();
+        let scoped = with_contour_cx(&scoped_gate, Budget::INFINITE, |cx| {
+            grid.isocontour_crossings_with_cx(cx, 0.0, scoped_budget)
+                .expect("the exact checkerboard envelope admits linear ownership")
+        });
+        let scoped_plan = scoped.report().plan.expect("scoped plan retained");
+        assert_eq!(scoped.crossings(), expected.as_slice());
+        assert_eq!(scoped.report().edge_visits, scoped_plan.edge_visits);
+        assert_eq!(
+            scoped.report().exact_ownership_checks,
+            scoped_plan.edge_visits,
+            "every checkerboard edge performs one constant-time ownership decision"
+        );
+        assert_eq!(scoped.report().interpolations, 0);
+        assert!(scoped.report().work_units <= scoped_plan.work_units);
+
         let one_short = expected.len() - 1;
         assert_eq!(
             grid.isocontour_crossings(0.0, one_short),
             Err(IsoContourError::CrossingBudgetExceeded { limit: one_short })
         );
+        let one_short_budget = grid
+            .required_isocontour_budget(one_short, 128)
+            .expect("one-short checkerboard envelope is representable");
+        let one_short_gate = CancelGate::new();
+        let one_short_refusal = with_contour_cx(&one_short_gate, Budget::INFINITE, |cx| {
+            grid.isocontour_crossings_with_cx(cx, 0.0, one_short_budget)
+                .expect_err("one extra canonical owner must refuse atomically")
+        });
+        assert_eq!(
+            one_short_refusal.error,
+            IsoContourError::CrossingBudgetExceeded { limit: one_short }
+        );
+        assert_eq!(one_short_refusal.report.crossings, one_short);
+        assert!(!one_short_refusal.report.published);
     }
+}
+
+#[test]
+fn g0_scoped_contour_plan_is_complete_and_reported() {
+    let grid = Grid2::from_fn(5, 4, [0.0; 2], [4.0, 3.0], 20, |point| point[0] - 1.3)
+        .expect("finite affine Grid2");
+    let budget = grid
+        .required_isocontour_budget(32, 3)
+        .expect("checked full-grid envelope");
+    let plan = grid
+        .isocontour_plan(budget)
+        .expect("the exact derived budget admits its plan");
+    assert_eq!(plan.dimensions, [5, 4]);
+    assert_eq!(plan.nodes, 20);
+    assert_eq!(plan.cells, 12);
+    assert_eq!(plan.edge_visits, 31);
+    assert_eq!(plan.exact_ownership_checks, 31);
+    assert_eq!(plan.interpolations, 31);
+    assert_eq!(plan.output_bytes, 32 * size_of::<[f64; 2]>());
+    assert_eq!(plan.polls, 2 + 31usize.div_ceil(3) + 32usize.div_ceil(3));
+
+    let gate = CancelGate::new();
+    let first = with_contour_cx(&gate, Budget::INFINITE, |cx| {
+        grid.isocontour_crossings_with_cx(cx, 0.0, budget)
+            .expect("scoped affine contour")
+    });
+    let report = *first.report();
+    assert_eq!(report.operation_budget, Some(budget));
+    assert_eq!(report.plan, Some(plan));
+    assert_eq!(report.node_visits, plan.nodes);
+    assert_eq!(report.cell_visits, plan.cells);
+    assert_eq!(report.edge_visits, plan.edge_visits);
+    assert_eq!(report.crossings, first.crossings().len());
+    assert!(report.polls <= plan.polls);
+    assert!(report.work_units <= plan.work_units);
+    assert!(report.identity_bytes_hashed <= plan.identity_bytes);
+    assert_eq!(report.diagnostic_records, 1);
+    assert!(report.terminal && report.published);
+    assert_eq!(report.disposition, IsoContourDisposition::Completed);
+    assert!(report.artifact_identity.is_some());
+    assert_eq!(first.crossings().len(), 4);
+
+    let replay_gate = CancelGate::new();
+    let replay = with_contour_cx(&replay_gate, Budget::INFINITE, |cx| {
+        grid.isocontour_crossings_with_cx(cx, 0.0, budget)
+            .expect("scoped replay")
+    });
+    assert_eq!(replay, first);
+    assert_eq!(
+        grid.isocontour_crossings(0.0, budget.crossing_limit)
+            .expect("compatibility result")
+            .as_slice(),
+        first.crossings()
+    );
+    assert!(!ISO_CONTOUR_ARTIFACT_IDENTITY_DOMAIN.is_empty());
+}
+
+#[test]
+fn g0_contour_resources_refuse_before_poll_or_edge_work() {
+    let grid = Grid2::from_fn(7, 6, [-1.0; 2], [1.0; 2], 42, |point| {
+        point[0] + 0.3 * point[1]
+    })
+    .expect("finite affine Grid2");
+    let budget = grid
+        .required_isocontour_budget(40, 5)
+        .expect("checked exact budget");
+    let mut cases = Vec::new();
+    macro_rules! one_short {
+        ($resource:expr, $field:ident) => {{
+            let mut limited = budget;
+            limited.$field -= 1;
+            cases.push(($resource, limited));
+        }};
+    }
+    one_short!(IsoContourResource::Cells, cell_limit);
+    one_short!(IsoContourResource::EdgeVisits, edge_visit_limit);
+    one_short!(
+        IsoContourResource::ExactOwnershipChecks,
+        exact_ownership_limit
+    );
+    one_short!(IsoContourResource::Interpolations, interpolation_limit);
+    one_short!(IsoContourResource::OutputBytes, output_byte_limit);
+    one_short!(IsoContourResource::ScratchBytes, scratch_byte_limit);
+    one_short!(
+        IsoContourResource::DiagnosticRecords,
+        diagnostic_record_limit
+    );
+    one_short!(IsoContourResource::DiagnosticBytes, diagnostic_byte_limit);
+    one_short!(IsoContourResource::LiveBytes, live_byte_limit);
+    one_short!(IsoContourResource::IdentityBytes, identity_byte_limit);
+    one_short!(IsoContourResource::Polls, poll_limit);
+    one_short!(IsoContourResource::WorkUnits, work_unit_limit);
+
+    for (resource, limited) in cases {
+        let gate = CancelGate::new();
+        let refusal = with_contour_cx(&gate, Budget::INFINITE, |cx| {
+            grid.isocontour_crossings_with_cx(cx, 0.0, limited)
+                .expect_err("one-short complete resource must refuse")
+        });
+        assert!(matches!(
+            refusal.error,
+            IsoContourError::OperationBudgetExceeded {
+                resource: rejected,
+                ..
+            } if rejected == resource
+        ));
+        assert_eq!(refusal.report.polls, 0, "{resource} refused after a poll");
+        assert_eq!(
+            refusal.report.edge_visits, 0,
+            "{resource} refused after edge work"
+        );
+        assert!(!refusal.report.published);
+        assert_eq!(refusal.report.diagnostic_records, 1);
+    }
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One transactional matrix shares an exact checked plan.
+fn g4_scoped_contour_cancellation_and_poll_refusal_are_transactional() {
+    let grid = Grid2::from_fn(17, 17, [-1.0; 2], [1.0; 2], 17 * 17, |point| {
+        point[0] + point[1] - 0.03
+    })
+    .expect("finite affine Grid2");
+    let budget = grid
+        .required_isocontour_budget(64, 2)
+        .expect("checked cancellable envelope");
+
+    let cancelled_gate = CancelGate::new();
+    cancelled_gate.request();
+    let cancelled = with_contour_cx(&cancelled_gate, Budget::INFINITE, |cx| {
+        grid.isocontour_crossings_with_cx(cx, 0.0, budget)
+            .expect_err("pre-requested cancellation must refuse before allocation")
+    });
+    assert!(matches!(
+        cancelled.error,
+        IsoContourError::ExecutionBudgetRefused {
+            refusal: BudgetRefusal::Cancelled { .. }
+        }
+    ));
+    assert_eq!(
+        cancelled.report.disposition,
+        IsoContourDisposition::Cancelled
+    );
+    assert_eq!(cancelled.report.polls, 1);
+    assert_eq!(cancelled.report.edge_visits, 0);
+    assert_eq!(cancelled.report.reserved_output_bytes, 0);
+    assert!(!cancelled.report.published);
+
+    let deadline_gate = CancelGate::new();
+    let missing_clock = with_contour_cx(&deadline_gate, Budget::with_deadline_at_ns(10), |cx| {
+        grid.isocontour_crossings_with_cx(cx, 0.0, budget)
+            .expect_err("an ambient deadline without a clock must fail closed")
+    });
+    assert_eq!(
+        missing_clock.error,
+        IsoContourError::ExecutionBudgetRefused {
+            refusal: BudgetRefusal::DeadlineWithoutClock { deadline_ns: 10 }
+        }
+    );
+    assert_eq!(missing_clock.report.polls, 0);
+    assert_eq!(missing_clock.report.reserved_output_bytes, 0);
+
+    let cost_quota = budget.work_unit_limit - 1;
+    let cost_gate = CancelGate::new();
+    let cost_refusal = with_contour_cx(
+        &cost_gate,
+        Budget::INFINITE.with_cost_quota(cost_quota),
+        |cx| {
+            grid.isocontour_crossings_with_cx(cx, 0.0, budget)
+                .expect_err("an ambient one-short work quota must refuse at admission")
+        },
+    );
+    assert_eq!(
+        cost_refusal.error,
+        IsoContourError::ExecutionBudgetRefused {
+            refusal: BudgetRefusal::CostPlanExceedsQuota {
+                planned: budget.work_unit_limit,
+                quota: cost_quota,
+            }
+        }
+    );
+    assert_eq!(cost_refusal.report.polls, 0);
+    assert_eq!(cost_refusal.report.edge_visits, 0);
+    assert_eq!(cost_refusal.report.reserved_output_bytes, 0);
+
+    let quota_gate = CancelGate::new();
+    let exhausted = with_contour_cx(&quota_gate, Budget::INFINITE.with_poll_quota(3), |cx| {
+        grid.isocontour_crossings_with_cx(cx, 0.0, budget)
+            .expect_err("the exact ambient poll quota must stop a later edge chunk")
+    });
+    assert!(matches!(
+        exhausted.error,
+        IsoContourError::ExecutionBudgetRefused {
+            refusal: BudgetRefusal::PollsExhausted { quota: 3, .. }
+        }
+    ));
+    assert_eq!(exhausted.report.edge_visits, 4);
+    assert!(!exhausted.report.published);
+    assert!(exhausted.report.artifact_identity.is_none());
+
+    let retry_gate = CancelGate::new();
+    let retry = with_contour_cx(&retry_gate, Budget::INFINITE, |cx| {
+        grid.isocontour_crossings_with_cx(cx, 0.0, budget)
+            .expect("retry under a fresh Cx")
+    });
+    let direct_gate = CancelGate::new();
+    let direct = with_contour_cx(&direct_gate, Budget::INFINITE, |cx| {
+        grid.isocontour_crossings_with_cx(cx, 0.0, budget)
+            .expect("direct reference under a fresh Cx")
+    });
+    assert_eq!(retry, direct, "retry must be byte-identical to direct work");
 }
 
 #[test]

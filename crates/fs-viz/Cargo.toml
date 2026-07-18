@@ -11,8 +11,11 @@ description = "Scientific visualization (fs-viz): the topological summaries that
 layer = "L5"
 
 [dependencies]
+fs-blake3 = { path = "../fs-blake3" }
+fs-exec = { path = "../fs-exec" }
 
 [dev-dependencies]
+fs-alloc = { path = "../fs-alloc" }
 
 [lints]
 workspace = true
