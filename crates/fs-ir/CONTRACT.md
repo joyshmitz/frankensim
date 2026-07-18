@@ -181,28 +181,37 @@ admitted derived-geometry boundary.
   matching-set, and complete-receipt identity collections use the
   transactional `fs-blake3` ordered-row stream. Each actual row family has an
   independent exact-length planner that does not serialize or retain payload.
-  The encoder admits that declaration before the indexed producer may allocate
-  and serialize the one active row through its exact-length sink; oversized
-  rows therefore refuse before payload allocation. The former collection-wide
-  `Vec<Vec<u8>>` batches no longer multiply retained canonical payload by row
-  cardinality. Canonical and length/row-producer failures remain distinct, and
-  graph/receipt refusals retain the ordered field, phase, row, completed prefix,
-  byte progress, and no-publication disposition instead of flattening that
-  evidence to a bare canonical error. G3 pins the streamed receipt, semantic
-  root, independent canonical-preimage root, canonical byte count, and
-  collection count to the eager canonical reference.
-- This streaming step is not yet a peak-memory certificate. One canonical row
-  is still materialized in an infallible `Vec`, and deterministic map/set/sort
-  workspaces are neither fallibly reserved nor charged to the active
-  operation-memory lease. The logical row-byte count also excludes allocator
-  capacity rounding, container/node metadata, `Arc` bookkeeping, allocator
-  arenas, and process RSS. A legal maximum-incidence graph can therefore still
-  exceed available process memory before returning a typed refusal. I02.1
-  remains blocked on the remaining lease-admitted causal workspace and
-  fallible row-storage work in
+  Every additive byte count uses checked arithmetic, and each native `usize`
+  plan is checked into the canonical `u64` declaration. The encoder admits
+  that declaration before the indexed producer receives one empty `Vec` with
+  an exact `try_reserve_exact` request for the admitted bytes. The producer
+  fills only that reserved row; an unexpected capacity increase refuses as a
+  producer defect, and an unavailable reservation is a distinct typed
+  allocation refusal rather than a canonical limit, producer, or cancellation
+  error. Oversized rows therefore refuse before payload allocation. The former
+  collection-wide `Vec<Vec<u8>>` batches no longer multiply retained canonical
+  payload by row cardinality. Graph/receipt refusals retain the ordered field,
+  origin, phase, row, declared/written bytes, completed prefix, and
+  no-publication disposition instead of flattening that evidence to a bare
+  canonical error. G3 pins the streamed receipt, semantic root, independent
+  canonical-preimage root, canonical byte count, and collection count to the
+  eager canonical reference.
+- The exact producer-retained peak for one ordered identity field is zero row
+  payload bytes before admission and at most one active row afterward: the
+  current row's admitted logical byte length. No prior or future row payload is
+  retained, lineage bytes are written directly into that same row, and the row
+  is absorbed before the next declaration. This is a logical-payload claim,
+  not a whole-operation or RSS certificate. `try_reserve_exact` may receive an
+  allocator-rounded capacity, and the count excludes `Vec` metadata, canonical
+  encoder/hash state, allocator metadata/arenas, container/node metadata,
+  `Arc` bookkeeping, and process RSS. Deterministic map/set/sort and other
+  causalization workspaces are still neither fallibly reserved nor charged to
+  the active operation-memory lease, so a legal maximum graph can still exceed
+  available process memory outside ordered-row production. I02.1 therefore
+  remains blocked on the remaining lease-admitted workspace work in
   `frankensim-leapfrog-2026-program-i94v.1.2.9`; neither this contract nor an
-  intermediate receipt claims allocator or RSS closure until that leaf is
-  green. The target public envelope is unchanged.
+  intermediate receipt claims allocator or RSS closure. The target public
+  envelope is unchanged.
 - Canonical graph and receipt ordering uses a deterministic stable index-map
   sort with cancellation checkpoints through index initialization, cumulative
   bottom-up merge work, inverse-permutation construction, fixed-point scans,
@@ -210,11 +219,13 @@ admitted derived-geometry boundary.
   internally as well. Identity row materialization is likewise polled at
   bounded aggregate strides. Maximum-size node support/activation rows,
   condition rows, derived-lineage rows, incidence rows, receipt domains, and
-  conditional-outcome rows precompute their payload capacity so a late legal
-  reallocation cannot evade a poll boundary. Within those canonical ordering
-  and identity stages, cancellation therefore returns a typed refusal before
-  structure, artifact, outcome, or evidence identity publication rather than
-  being deferred across one maximum-size legal row or collection.
+  conditional-outcome rows derive exact checked payload lengths. Ordered rows
+  fallibly reserve that admitted length once before serialization and refuse
+  any capacity growth; a late legal reallocation therefore cannot evade a poll
+  boundary. Within those canonical ordering and identity stages, cancellation
+  returns a typed refusal before structure, artifact, outcome, or evidence
+  identity publication rather than being deferred across one maximum-size
+  legal row or collection.
 - The four top-level causal identity families are runtime-typed and have
   independent candidate domains, versions, field layouts, and quotient-law
   tests, but their central identity-governance closure is **not yet certified**.
@@ -760,6 +771,53 @@ admitted derived-geometry boundary.
   authenticate semantic or presentation artifacts, prove assembly or
   manufacturability, integrate gear/backlash behavior, or transport controls
   across lineage.
+- `machine::manufacturing::assembly` is the additive native ordered-assembly
+  seed. `MachineAssemblyDraftV1::admit_against` binds one exact admitted Machine
+  graph, one explicit initially available body, and at most 4,096 operations
+  whose submitted ordinals must be exactly zero through N minus one. Caller
+  collection order is non-semantic; the checked ordinal is semantic. Every
+  operation has an already-available base body/contact feature, an incoming
+  body/contact feature, a closed join-family tag, and nominally distinct
+  procedure, approach-path, and execution-evidence artifact coordinates.
+- `AttachIncoming` requires the base body to be available and the incoming body
+  not yet present, then adds that body to the growing assembly.
+  `ContinueExisting` requires both bodies already present and permits another
+  distinct joint between them. Each durable contact feature is one-shot across
+  the sequence, so a second fastener, weld locus/pass, or hybrid joint needs its
+  own stable feature. Each endpoint body and contact feature must exist and
+  share one subsystem owner; this proves structural co-ownership, not physical
+  feature containment. Endpoint bodies/features must differ. Cross-subsystem
+  attachment is permitted and does not fabricate or imply an `InterfaceBinding`.
+- Version one admits preloaded-bolt, weld, adhesive-bond, key, spline, and
+  interference-fit family tags. `PreloadedBolt` requires one finite positive
+  target retaining submitted binary64 bits, explicit newton/kilonewton unit,
+  and deterministic coherent-SI newton bits; every other family forbids the
+  preload field. The numeric target is a retained declaration, not achieved
+  force, torque conversion, or joint authority. Required evidence coordinates
+  remain nominal and do not authenticate bytes or prove execution.
+- `MachineAssemblyIdV1` binds the assembly and FrankenScript IR schema versions,
+  exact graph identity, initial body identity/key, contiguous ordinal and
+  operation ID, availability mode, role-ordered body/feature identities and
+  keys, join kind, preload presence/source/unit/SI bits, and all three artifact
+  coordinates. Admission refuses empty/raw one-over input, unknown initial or
+  endpoint bodies/features, cross-owner selectors, duplicate IDs/ordinals,
+  ordinal gaps, same-body/feature endpoints, preload mismatch, unavailable or
+  already-attached bodies, feature reuse, and identity failure.
+  `tests/machine_manufacturing_assembly.rs` supplies G0/G3/G5 evidence for all
+  six families, attach/continue availability, explicit-unit retention,
+  order/field/graph identity movement, deterministic structured refusals,
+  exact-cap/N+1 preflight, and complete receipt replay.
+- This structural seed does not find or validate collision-free insertion
+  paths, tool access, order optimality, inventory, occurrence/configuration or
+  effectivity, mating/alignment, independent subassembly merging, or actual
+  process execution. It does not establish bolt torque/preload retention;
+  weld metallurgy, quality, or residual stress; adhesive cure, thickness, or
+  strength; key/spline load sharing, backlash, or wear; or interference-fit
+  pressure, insertion force, stress, thermal behavior, retention, or slip. It
+  does not cross-check the native fit/GD&T catalogs, parse PMI or standards,
+  authenticate artifacts, prove assembly/manufacturability, mutate the Machine
+  graph, or transport operations across lineage; successor graphs require
+  explicit readmission.
 - `query` (addendum Proposal 8 — declarative query language v0): a query is
   `(QoI, Target, budget_usd, deadline_s)` where `Qoi` is a fixed MENU —
   `MaxOverRegion`, `Integral` (linear), `Exceedance` (probabilistic, needs a
@@ -1324,9 +1382,12 @@ constructor-boundary assertions retain their exact typed error variants.
   byte counts, and collection counts. Actual equation, variable, condition,
   lineage, incidence, matching, derivative-variable, and unknown-axis fixtures
   also pin independent declared lengths to their payload serializers. G0/G4
-  adapter laws prove field and row admission precede length planning/payload
-  allocation and retain canonical-versus-producer origin, phase, row, completed
-  prefix, and canonical-byte progress on refusal.
+  adapter laws prove field and row admission precede payload allocation, admit
+  empty and exact reduced-limit rows, refuse one-over counts/rows before
+  production, inject a deterministic reserve failure, and detect declared/payload
+  disagreement. They retain canonical-versus-producer-versus-allocation origin,
+  phase, row, declared/written bytes, completed prefix, and canonical-byte
+  progress on refusal.
 
 `tests/machine_semantics.rs` (Machine-IR E0 PR-3, G0/G3): fully populated
 behavior-overlay admission; complete state/initial/boundary/body-motion closure;

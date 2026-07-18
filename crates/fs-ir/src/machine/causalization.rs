@@ -163,6 +163,52 @@ pub enum CausalIdentityStreamOrigin {
     Canonical,
     /// The independent length planner or the admitted row producer refused.
     Producer,
+    /// Exact row storage could not be reserved after row admission.
+    Allocation,
+}
+
+/// Deterministic evidence retained when fallible causal-row storage refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CausalIdentityAllocationRefusal {
+    requested_bytes: u64,
+}
+
+impl CausalIdentityAllocationRefusal {
+    /// Exact admitted logical row bytes passed to `Vec::try_reserve_exact`.
+    #[must_use]
+    pub const fn requested_bytes(self) -> u64 {
+        self.requested_bytes
+    }
+}
+
+impl fmt::Display for CausalIdentityAllocationRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "causal identity row allocation refused {} admitted bytes",
+            self.requested_bytes
+        )
+    }
+}
+
+impl std::error::Error for CausalIdentityAllocationRefusal {}
+
+/// Stable source of a causal identity publication refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CausalIdentityFailure {
+    /// Canonical framing, planning, production, or cancellation refused.
+    Canonical(CanonicalError),
+    /// Fallible storage reservation refused after exact row admission.
+    Allocation(CausalIdentityAllocationRefusal),
+}
+
+impl fmt::Display for CausalIdentityFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Canonical(error) => error.fmt(f),
+            Self::Allocation(refusal) => refusal.fmt(f),
+        }
+    }
 }
 
 /// Exact ordered-row progress retained by a causal identity refusal.
@@ -173,8 +219,8 @@ pub struct CausalIdentityStreamRefusal {
 }
 
 impl CausalIdentityStreamRefusal {
-    /// Whether the canonical encoder or caller-owned producer originated the
-    /// refusal.
+    /// Whether canonical work, caller production, or fallible row reservation
+    /// originated the refusal.
     #[must_use]
     pub const fn origin(self) -> CausalIdentityStreamOrigin {
         self.origin
@@ -187,23 +233,36 @@ impl CausalIdentityStreamRefusal {
     }
 }
 
-/// Canonical identity failure with optional ordered-row progress evidence.
+/// Causal identity failure with optional ordered-row progress evidence.
 ///
-/// `canonical_error` preserves the existing stable refusal source. When the
-/// failure occurred in an ordered byte collection, `stream_refusal` additionally
-/// proves its origin, exact phase, row, completed prefix, byte progress, and
-/// no-publication disposition.
+/// `canonical_error` preserves canonical sources while `allocation_refusal`
+/// preserves a distinct fallible-reservation source. When the failure occurred
+/// in an ordered byte collection, `stream_refusal` additionally proves its
+/// origin, exact phase, row, completed prefix, byte progress, and no-publication
+/// disposition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CausalIdentityError {
-    canonical_error: CanonicalError,
+    failure: CausalIdentityFailure,
     stream_refusal: Option<CausalIdentityStreamRefusal>,
 }
 
 impl CausalIdentityError {
-    /// Stable canonical source.
+    /// Stable canonical source, absent only for a distinct allocation refusal.
     #[must_use]
-    pub const fn canonical_error(self) -> CanonicalError {
-        self.canonical_error
+    pub const fn canonical_error(self) -> Option<CanonicalError> {
+        match self.failure {
+            CausalIdentityFailure::Canonical(error) => Some(error),
+            CausalIdentityFailure::Allocation(_) => None,
+        }
+    }
+
+    /// Exact fallible-reservation refusal, when row storage was unavailable.
+    #[must_use]
+    pub const fn allocation_refusal(self) -> Option<CausalIdentityAllocationRefusal> {
+        match self.failure {
+            CausalIdentityFailure::Canonical(_) => None,
+            CausalIdentityFailure::Allocation(refusal) => Some(refusal),
+        }
     }
 
     /// Ordered-row progress evidence, when the refusal came from that adapter.
@@ -213,35 +272,65 @@ impl CausalIdentityError {
     }
 
     const fn is_cancelled(self) -> bool {
-        matches!(self.canonical_error, CanonicalError::Cancelled { .. })
+        matches!(
+            self.failure,
+            CausalIdentityFailure::Canonical(CanonicalError::Cancelled { .. })
+        )
     }
 }
 
 impl From<CanonicalError> for CausalIdentityError {
     fn from(canonical_error: CanonicalError) -> Self {
         Self {
-            canonical_error,
+            failure: CausalIdentityFailure::Canonical(canonical_error),
             stream_refusal: None,
         }
     }
 }
 
-impl From<OrderedBytesStreamError<CanonicalError>> for CausalIdentityError {
-    fn from(error: OrderedBytesStreamError<CanonicalError>) -> Self {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CausalIdentityRowError {
+    Canonical(CanonicalError),
+    Allocation(CausalIdentityAllocationRefusal),
+}
+
+impl From<CanonicalError> for CausalIdentityRowError {
+    fn from(error: CanonicalError) -> Self {
+        Self::Canonical(error)
+    }
+}
+
+impl From<CausalIdentityAllocationRefusal> for CausalIdentityRowError {
+    fn from(refusal: CausalIdentityAllocationRefusal) -> Self {
+        Self::Allocation(refusal)
+    }
+}
+
+impl From<OrderedBytesStreamError<CausalIdentityRowError>> for CausalIdentityError {
+    fn from(error: OrderedBytesStreamError<CausalIdentityRowError>) -> Self {
         match error {
             OrderedBytesStreamError::Canonical { source, diagnostic } => Self {
-                canonical_error: source,
+                failure: CausalIdentityFailure::Canonical(source),
                 stream_refusal: Some(CausalIdentityStreamRefusal {
                     origin: CausalIdentityStreamOrigin::Canonical,
                     diagnostic,
                 }),
             },
-            OrderedBytesStreamError::Producer { source, diagnostic } => Self {
-                canonical_error: source,
-                stream_refusal: Some(CausalIdentityStreamRefusal {
-                    origin: CausalIdentityStreamOrigin::Producer,
-                    diagnostic,
-                }),
+            OrderedBytesStreamError::Producer { source, diagnostic } => match source {
+                CausalIdentityRowError::Canonical(source) => Self {
+                    failure: CausalIdentityFailure::Canonical(source),
+                    stream_refusal: Some(CausalIdentityStreamRefusal {
+                        origin: CausalIdentityStreamOrigin::Producer,
+                        diagnostic,
+                    }),
+                },
+                CausalIdentityRowError::Allocation(refusal) => Self {
+                    failure: CausalIdentityFailure::Allocation(refusal),
+                    stream_refusal: Some(CausalIdentityStreamRefusal {
+                        origin: CausalIdentityStreamOrigin::Allocation,
+                        diagnostic,
+                    }),
+                },
             },
         }
     }
@@ -254,7 +343,7 @@ impl fmt::Display for CausalIdentityError {
             write!(
                 f,
                 "{} (ordered field `{}`, {:?} origin, phase {:?}, row {:?}, {}/{} rows complete)",
-                self.canonical_error,
+                self.failure,
                 diagnostic.field_name(),
                 stream.origin(),
                 diagnostic.phase(),
@@ -263,14 +352,17 @@ impl fmt::Display for CausalIdentityError {
                 diagnostic.declared_rows(),
             )
         } else {
-            self.canonical_error.fmt(f)
+            self.failure.fmt(f)
         }
     }
 }
 
 impl std::error::Error for CausalIdentityError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.canonical_error)
+        match &self.failure {
+            CausalIdentityFailure::Canonical(error) => Some(error),
+            CausalIdentityFailure::Allocation(refusal) => Some(refusal),
+        }
     }
 }
 const CAUSAL_CANCELLATION_POLL_STRIDE: usize = 256;
@@ -743,25 +835,23 @@ impl NodeLineage {
         }
     }
 
-    fn canonical_row_cancellable(&self, cx: &Cx<'_>) -> Result<Vec<u8>, CanonicalError> {
-        let origin_bytes = node_origin_canonical_len_cancellable(&self.origin, cx)?;
-        let canonical_bytes = origin_bytes
-            .saturating_add(CAUSAL_OWNER_CANONICAL_BYTES)
-            .saturating_add(causal_ref_canonical_len(self.semantic.namespace()));
-        let mut out = Vec::with_capacity(canonical_bytes);
-        push_node_origin_cancellable(&mut out, &self.origin, cx)?;
-        debug_assert_eq!(out.len(), origin_bytes);
-        push_owner(&mut out, &self.instance);
-        self.semantic.append_canonical(&mut out);
-        debug_assert_eq!(out.len(), canonical_bytes);
-        identity_materialization_checkpoint(cx, out.len())?;
-        Ok(out)
+    fn append_canonical_row_cancellable(
+        &self,
+        out: &mut Vec<u8>,
+        cx: &Cx<'_>,
+    ) -> Result<(), CanonicalError> {
+        push_node_origin_cancellable(out, &self.origin, cx)?;
+        push_owner(out, &self.instance);
+        self.semantic.append_canonical(out);
+        identity_materialization_checkpoint(cx, out.len())
     }
 
     fn canonical_row_len_cancellable(&self, cx: &Cx<'_>) -> Result<usize, CanonicalError> {
-        Ok(node_origin_canonical_len_cancellable(&self.origin, cx)?
-            .saturating_add(CAUSAL_OWNER_CANONICAL_BYTES)
-            .saturating_add(causal_ref_canonical_len(self.semantic.namespace())))
+        checked_row_len_sum([
+            node_origin_canonical_len_cancellable(&self.origin, cx)?,
+            CAUSAL_OWNER_CANONICAL_BYTES,
+            causal_ref_canonical_len(self.semantic.namespace())?,
+        ])
     }
 
     fn normalized_row(&self) -> Vec<u8> {
@@ -2122,7 +2212,7 @@ fn identity_graph_refusal(error: CausalIdentityError) -> CausalGraphRefusal {
     };
     let mut refusal = graph_refusal(
         vec![CausalGraphFinding::new(rule, CausalGraphSubject::Graph)],
-        Some(error.canonical_error()),
+        error.canonical_error(),
     );
     refusal.identity_stream_refusal = error.stream_refusal();
     refusal
@@ -4350,10 +4440,9 @@ fn causal_structure_identity(
         &draft.incidences,
         cx,
         |_, _| Ok(IDENTITY_RECEIPT_ADJUDICATION_BYTES),
-        |incidence, _| {
-            let mut row = Vec::with_capacity(IDENTITY_RECEIPT_ADJUDICATION_BYTES);
-            push_identity_receipt_adjudication(&mut row, incidence.id.identity_receipt());
-            Ok(row)
+        |incidence, _, row| {
+            push_identity_receipt_adjudication(row, incidence.id.identity_receipt());
+            Ok(())
         },
     )?
     .finish()
@@ -4394,7 +4483,7 @@ fn causal_artifact_identity(
         &draft.equations,
         cx,
         |equation, cx| node_artifact_row_equation_len_cancellable(&equation.lineage, cx),
-        |equation, cx| node_artifact_row_equation(&equation.id, &equation.lineage, cx),
+        |equation, cx, row| node_artifact_row_equation(&equation.id, &equation.lineage, cx, row),
     )?;
     let encoder = stream_identity_rows(
         encoder,
@@ -4409,16 +4498,22 @@ fn causal_artifact_identity(
         Field::new(7, "activation-condition-provenance"),
         &draft.conditions,
         cx,
-        |condition, _| Ok(condition_artifact_row_len(condition)),
-        |condition, _| Ok(condition_artifact_row(condition)),
+        |condition, _| condition_artifact_row_len(condition),
+        |condition, _, row| {
+            condition_artifact_row(condition, row);
+            Ok(())
+        },
     )?;
     stream_identity_rows(
         encoder,
         Field::new(8, "incidence-provenance"),
         &draft.incidences,
         cx,
-        |incidence, _| Ok(incidence_artifact_row_len(incidence)),
-        |incidence, _| Ok(incidence_artifact_row(incidence)),
+        |incidence, _| incidence_artifact_row_len(incidence),
+        |incidence, _, row| {
+            incidence_artifact_row(incidence, row);
+            Ok(())
+        },
     )?
     .finish()
     .map_err(Into::into)
@@ -4444,35 +4539,138 @@ fn identity_materialization_poll(
     Ok(())
 }
 
-fn stream_identity_rows<I, C, T>(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CausalIdentityRowPlan {
+    row_index: u64,
+    native_bytes: usize,
+    canonical_bytes: u64,
+}
+
+impl CausalIdentityRowPlan {
+    fn new(row_index: usize, native_bytes: usize) -> Result<Self, CanonicalError> {
+        Ok(Self {
+            row_index: u64::try_from(row_index).map_err(|_| CanonicalError::LengthOverflow)?,
+            native_bytes,
+            canonical_bytes: u64::try_from(native_bytes)
+                .map_err(|_| CanonicalError::LengthOverflow)?,
+        })
+    }
+}
+
+fn checked_row_len_add(left: usize, right: usize) -> Result<usize, CanonicalError> {
+    left.checked_add(right)
+        .ok_or(CanonicalError::LengthOverflow)
+}
+
+fn checked_row_len_sum(parts: impl IntoIterator<Item = usize>) -> Result<usize, CanonicalError> {
+    parts.into_iter().try_fold(0usize, checked_row_len_add)
+}
+
+fn push_row_count(out: &mut Vec<u8>, count: usize) -> Result<(), CanonicalError> {
+    let count = u64::try_from(count).map_err(|_| CanonicalError::LengthOverflow)?;
+    out.extend_from_slice(&count.to_le_bytes());
+    Ok(())
+}
+
+fn reserve_identity_row(
+    row: &mut Vec<u8>,
+    plan: CausalIdentityRowPlan,
+) -> Result<(), CausalIdentityAllocationRefusal> {
+    row.try_reserve_exact(plan.native_bytes)
+        .map_err(|_| CausalIdentityAllocationRefusal {
+            requested_bytes: plan.canonical_bytes,
+        })
+}
+
+fn stream_identity_rows<I, C, T, L, W>(
     encoder: CanonicalEncoder<I, C>,
     field: Field,
     values: &[T],
     cx: &Cx<'_>,
-    mut row_len: impl FnMut(&T, &Cx<'_>) -> Result<usize, CanonicalError>,
-    mut row: impl FnMut(&T, &Cx<'_>) -> Result<Vec<u8>, CanonicalError>,
+    row_len: L,
+    write_row: W,
 ) -> Result<CanonicalEncoder<I, C>, CausalIdentityError>
 where
     C: CancellationProbe,
+    L: FnMut(&T, &Cx<'_>) -> Result<usize, CanonicalError>,
+    W: FnMut(&T, &Cx<'_>, &mut Vec<u8>) -> Result<(), CanonicalError>,
+{
+    stream_identity_rows_with_reserve(
+        encoder,
+        field,
+        values,
+        cx,
+        row_len,
+        write_row,
+        reserve_identity_row,
+    )
+}
+
+fn stream_identity_rows_with_reserve<I, C, T, L, W, R>(
+    encoder: CanonicalEncoder<I, C>,
+    field: Field,
+    values: &[T],
+    cx: &Cx<'_>,
+    mut row_len: L,
+    mut write_row: W,
+    mut reserve_row: R,
+) -> Result<CanonicalEncoder<I, C>, CausalIdentityError>
+where
+    C: CancellationProbe,
+    L: FnMut(&T, &Cx<'_>) -> Result<usize, CanonicalError>,
+    W: FnMut(&T, &Cx<'_>, &mut Vec<u8>) -> Result<(), CanonicalError>,
+    R: FnMut(&mut Vec<u8>, CausalIdentityRowPlan) -> Result<(), CausalIdentityAllocationRefusal>,
 {
     let declared_count = u64::try_from(values.len()).map_err(|_| CanonicalError::LengthOverflow)?;
     // Length planning is deliberately independent from row production. The
     // encoder admits each exact declaration before the producer is allowed to
     // allocate or serialize that row.
-    let row_lengths = values.iter().map(|value| {
+    let pending_plan = core::cell::Cell::new(None);
+    let row_lengths = values.iter().enumerate().map(|(row_index, value)| {
         row_len(value, cx)
-            .and_then(|bytes| u64::try_from(bytes).map_err(|_| CanonicalError::LengthOverflow))
+            .and_then(|native_bytes| CausalIdentityRowPlan::new(row_index, native_bytes))
+            .map(|plan| {
+                pending_plan.set(Some(plan));
+                plan.canonical_bytes
+            })
+            .map_err(CausalIdentityRowError::from)
     });
     encoder
         .ordered_bytes_stream(field, declared_count, row_lengths, |row_index, mut sink| {
-            let index = usize::try_from(row_index).map_err(|_| CanonicalError::LengthOverflow)?;
-            let value = values
-                .get(index)
-                .ok_or(CanonicalError::InvalidSchemaDescriptor(
-                    "ordered row adapter received an out-of-range row index",
+            let plan = pending_plan
+                .take()
+                .ok_or(CausalIdentityRowError::Canonical(
+                    CanonicalError::InvalidSchemaDescriptor(
+                        "ordered row adapter lost its admitted length plan",
+                    ),
                 ))?;
-            let bytes = row(value, cx)?;
+            if plan.row_index != row_index {
+                return Err(CausalIdentityRowError::Canonical(
+                    CanonicalError::InvalidSchemaDescriptor(
+                        "ordered row adapter plan index disagrees with producer index",
+                    ),
+                ));
+            }
+            let index = usize::try_from(row_index)
+                .map_err(|_| CausalIdentityRowError::Canonical(CanonicalError::LengthOverflow))?;
+            let value = values.get(index).ok_or(CausalIdentityRowError::Canonical(
+                CanonicalError::InvalidSchemaDescriptor(
+                    "ordered row adapter received an out-of-range row index",
+                ),
+            ))?;
+            let mut bytes = Vec::new();
+            reserve_row(&mut bytes, plan).map_err(CausalIdentityRowError::Allocation)?;
+            let admitted_capacity = bytes.capacity();
+            write_row(value, cx, &mut bytes).map_err(CausalIdentityRowError::Canonical)?;
+            if bytes.capacity() != admitted_capacity {
+                return Err(CausalIdentityRowError::Canonical(
+                    CanonicalError::InvalidSchemaDescriptor(
+                        "ordered row producer exceeded its fallibly reserved plan",
+                    ),
+                ));
+            }
             sink.write(&bytes)
+                .map_err(CausalIdentityRowError::Canonical)
         })
         .map_err(Into::into)
 }
@@ -4515,52 +4713,58 @@ const fn terminal_shape_canonical_len(shape: TerminalShape) -> usize {
     }
 }
 
-fn signal_canonical_len(signal: &SignalContract) -> usize {
-    terminal_quantity_canonical_len(signal.quantity)
-        .saturating_add(terminal_shape_canonical_len(signal.shape))
-        .saturating_add(32)
-        .saturating_add(8usize.saturating_add(signal.frame.canonical_key().len()))
-        .saturating_add(1)
+fn signal_canonical_len(signal: &SignalContract) -> Result<usize, CanonicalError> {
+    checked_row_len_sum([
+        terminal_quantity_canonical_len(signal.quantity),
+        terminal_shape_canonical_len(signal.shape),
+        32,
+        checked_row_len_add(8, signal.frame.canonical_key().len())?,
+        1,
+    ])
 }
 
-fn optional_causal_ref_canonical_len(namespace: Option<&str>) -> usize {
-    1usize.saturating_add(namespace.map_or(0, causal_ref_canonical_len))
+fn optional_causal_ref_canonical_len(namespace: Option<&str>) -> Result<usize, CanonicalError> {
+    checked_row_len_add(
+        1,
+        match namespace {
+            Some(namespace) => causal_ref_canonical_len(namespace)?,
+            None => 0,
+        },
+    )
 }
 
 fn equation_structure_row_len_cancellable(
     equation: &EquationSpec,
     cx: &Cx<'_>,
 ) -> Result<usize, CanonicalError> {
-    Ok(IDENTITY_RECEIPT_ADJUDICATION_BYTES
-        .saturating_add(CAUSAL_OWNER_CANONICAL_BYTES)
-        .saturating_add(supports_canonical_len_cancellable(&equation.supports, cx)?)
-        .saturating_add(signal_canonical_len(&equation.residual))
-        .saturating_add(2)
-        .saturating_add(activation_canonical_len_cancellable(
-            &equation.activation,
-            cx,
-        )?))
+    checked_row_len_sum([
+        IDENTITY_RECEIPT_ADJUDICATION_BYTES,
+        CAUSAL_OWNER_CANONICAL_BYTES,
+        supports_canonical_len_cancellable(&equation.supports, cx)?,
+        signal_canonical_len(&equation.residual)?,
+        2,
+        activation_canonical_len_cancellable(&equation.activation, cx)?,
+    ])
 }
 
 fn variable_structure_row_len_cancellable(
     variable: &VariableSpec,
     cx: &Cx<'_>,
 ) -> Result<usize, CanonicalError> {
-    Ok(IDENTITY_RECEIPT_ADJUDICATION_BYTES
-        .saturating_add(CAUSAL_OWNER_CANONICAL_BYTES)
-        .saturating_add(supports_canonical_len_cancellable(&variable.supports, cx)?)
-        .saturating_add(signal_canonical_len(&variable.value))
-        .saturating_add(2)
-        .saturating_add(optional_causal_ref_canonical_len(
+    checked_row_len_sum([
+        IDENTITY_RECEIPT_ADJUDICATION_BYTES,
+        CAUSAL_OWNER_CANONICAL_BYTES,
+        supports_canonical_len_cancellable(&variable.supports, cx)?,
+        signal_canonical_len(&variable.value)?,
+        2,
+        optional_causal_ref_canonical_len(
             variable
                 .port_schema_crosswalk
                 .as_ref()
                 .map(|binding| binding.projection.namespace()),
-        ))
-        .saturating_add(activation_canonical_len_cancellable(
-            &variable.activation,
-            cx,
-        )?))
+        )?,
+        activation_canonical_len_cancellable(&variable.activation, cx)?,
+    ])
 }
 
 fn machine_behavior_identity_row(receipt: IdentityReceipt<MachineBehaviorIdV1>) -> Vec<u8> {
@@ -4603,82 +4807,62 @@ fn extraction_context_row(context: &CausalExtractionContext) -> Vec<u8> {
     out
 }
 
-fn equation_structure_row(equation: &EquationSpec, cx: &Cx<'_>) -> Result<Vec<u8>, CanonicalError> {
-    let support_bytes = supports_canonical_len_cancellable(&equation.supports, cx)?;
-    let activation_bytes = activation_canonical_len_cancellable(&equation.activation, cx)?;
-    let canonical_bytes = IDENTITY_RECEIPT_ADJUDICATION_BYTES
-        .saturating_add(CAUSAL_OWNER_CANONICAL_BYTES)
-        .saturating_add(support_bytes)
-        .saturating_add(signal_canonical_len(&equation.residual))
-        .saturating_add(2)
-        .saturating_add(activation_bytes);
-    let mut out = Vec::with_capacity(canonical_bytes);
-    push_identity_receipt_adjudication(&mut out, equation.id.identity_receipt());
-    push_owner(&mut out, &equation.owner);
-    push_supports_cancellable(&mut out, &equation.supports, cx)?;
-    push_signal(&mut out, &equation.residual);
+fn equation_structure_row(
+    equation: &EquationSpec,
+    cx: &Cx<'_>,
+    out: &mut Vec<u8>,
+) -> Result<(), CanonicalError> {
+    debug_assert!(out.is_empty());
+    push_identity_receipt_adjudication(out, equation.id.identity_receipt());
+    push_owner(out, &equation.owner);
+    push_supports_cancellable(out, &equation.supports, cx)?;
+    push_signal(out, &equation.residual)?;
     out.push(equation_role_tag(equation.role));
     out.push(equation_participation_tag(equation.solve_participation));
-    debug_assert!(out.len() <= NODE_FIXED_CANONICAL_CAPACITY + support_bytes);
     identity_materialization_checkpoint(cx, out.len())?;
-    push_activation_cancellable(&mut out, &equation.activation, cx)?;
-    debug_assert_eq!(out.len(), canonical_bytes);
-    identity_materialization_checkpoint(cx, out.len())?;
-    Ok(out)
+    push_activation_cancellable(out, &equation.activation, cx)?;
+    identity_materialization_checkpoint(cx, out.len())
 }
 
-fn variable_structure_row(variable: &VariableSpec, cx: &Cx<'_>) -> Result<Vec<u8>, CanonicalError> {
-    let support_bytes = supports_canonical_len_cancellable(&variable.supports, cx)?;
-    let activation_bytes = activation_canonical_len_cancellable(&variable.activation, cx)?;
-    let canonical_bytes = IDENTITY_RECEIPT_ADJUDICATION_BYTES
-        .saturating_add(CAUSAL_OWNER_CANONICAL_BYTES)
-        .saturating_add(support_bytes)
-        .saturating_add(signal_canonical_len(&variable.value))
-        .saturating_add(2)
-        .saturating_add(optional_causal_ref_canonical_len(
-            variable
-                .port_schema_crosswalk
-                .as_ref()
-                .map(|binding| binding.projection.namespace()),
-        ))
-        .saturating_add(activation_bytes);
-    let mut out = Vec::with_capacity(canonical_bytes);
-    push_identity_receipt_adjudication(&mut out, variable.id.identity_receipt());
-    push_owner(&mut out, &variable.owner);
-    push_supports_cancellable(&mut out, &variable.supports, cx)?;
-    push_signal(&mut out, &variable.value);
+fn variable_structure_row(
+    variable: &VariableSpec,
+    cx: &Cx<'_>,
+    out: &mut Vec<u8>,
+) -> Result<(), CanonicalError> {
+    debug_assert!(out.is_empty());
+    push_identity_receipt_adjudication(out, variable.id.identity_receipt());
+    push_owner(out, &variable.owner);
+    push_supports_cancellable(out, &variable.supports, cx)?;
+    push_signal(out, &variable.value)?;
     out.push(variable_role_tag(variable.role));
     out.push(solve_participation_tag(variable.solve_participation));
     push_optional_ref(
-        &mut out,
+        out,
         variable
             .port_schema_crosswalk
             .as_ref()
             .map(|binding| &binding.projection),
     );
-    debug_assert!(out.len() <= NODE_FIXED_CANONICAL_CAPACITY + support_bytes);
     identity_materialization_checkpoint(cx, out.len())?;
-    push_activation_cancellable(&mut out, &variable.activation, cx)?;
-    debug_assert_eq!(out.len(), canonical_bytes);
-    identity_materialization_checkpoint(cx, out.len())?;
-    Ok(out)
+    push_activation_cancellable(out, &variable.activation, cx)?;
+    identity_materialization_checkpoint(cx, out.len())
 }
 
 fn condition_row(
     condition: &ActivationConditionSpec,
     cx: &Cx<'_>,
-) -> Result<Vec<u8>, CanonicalError> {
-    let canonical_bytes = condition_canonical_len_cancellable(condition, cx)?;
-    let mut out = Vec::with_capacity(canonical_bytes);
-    condition.condition.append_canonical(&mut out);
+    out: &mut Vec<u8>,
+) -> Result<(), CanonicalError> {
+    debug_assert!(out.is_empty());
+    condition.condition.append_canonical(out);
     match &condition.source {
         ActivationConditionSource::GuardEquation {
             equation,
             obligation,
         } => {
             out.push(1);
-            push_identity_receipt_adjudication(&mut out, equation.identity_receipt());
-            obligation.append_canonical(&mut out);
+            push_identity_receipt_adjudication(out, equation.identity_receipt());
+            obligation.append_canonical(out);
         }
         // `condition`, branches, and dependencies carry the normalized
         // predicate semantics. The exact opaque implementation and its audit
@@ -4686,48 +4870,47 @@ fn condition_row(
         // structure/artifact identity split.
         ActivationConditionSource::AuditedPredicate(_) => out.push(2),
     }
-    out.extend_from_slice(&(condition.branches.len() as u64).to_le_bytes());
+    push_row_count(out, condition.branches.len())?;
     for (index, branch) in condition.branches.iter().enumerate() {
         identity_materialization_poll(cx, index, out.len())?;
-        branch.append_canonical(&mut out);
+        branch.append_canonical(out);
     }
-    out.extend_from_slice(&(condition.dependencies.len() as u64).to_le_bytes());
+    push_row_count(out, condition.dependencies.len())?;
     for (index, dependency) in condition.dependencies.iter().enumerate() {
         identity_materialization_poll(cx, index, out.len())?;
-        push_identity_receipt_adjudication(&mut out, dependency.identity_receipt());
+        push_identity_receipt_adjudication(out, dependency.identity_receipt());
     }
-    debug_assert_eq!(out.len(), canonical_bytes);
-    identity_materialization_checkpoint(cx, out.len())?;
-    Ok(out)
+    identity_materialization_checkpoint(cx, out.len())
 }
 
-fn condition_artifact_row(condition: &ActivationConditionSpec) -> Vec<u8> {
-    let canonical_bytes = condition_artifact_row_len(condition);
-    let mut out = Vec::with_capacity(canonical_bytes);
-    condition.condition.append_canonical(&mut out);
+fn condition_artifact_row(condition: &ActivationConditionSpec, out: &mut Vec<u8>) {
+    debug_assert!(out.is_empty());
+    condition.condition.append_canonical(out);
     match &condition.source {
         ActivationConditionSource::GuardEquation { .. } => out.push(1),
         ActivationConditionSource::AuditedPredicate(escape) => {
             out.push(2);
-            escape.audit.append_canonical(&mut out);
-            escape.audited_source.append_canonical(&mut out);
+            escape.audit.append_canonical(out);
+            escape.audited_source.append_canonical(out);
         }
     }
-    debug_assert_eq!(out.len(), canonical_bytes);
-    out
 }
 
-fn condition_artifact_row_len(condition: &ActivationConditionSpec) -> usize {
+fn condition_artifact_row_len(
+    condition: &ActivationConditionSpec,
+) -> Result<usize, CanonicalError> {
     let source_bytes = match &condition.source {
         ActivationConditionSource::GuardEquation { .. } => 0,
-        ActivationConditionSource::AuditedPredicate(escape) => {
-            causal_ref_canonical_len(escape.audit.namespace())
-                .saturating_add(causal_ref_canonical_len(escape.audited_source.namespace()))
-        }
+        ActivationConditionSource::AuditedPredicate(escape) => checked_row_len_sum([
+            causal_ref_canonical_len(escape.audit.namespace())?,
+            causal_ref_canonical_len(escape.audited_source.namespace())?,
+        ])?,
     };
-    causal_ref_canonical_len(condition.condition.namespace())
-        .saturating_add(1)
-        .saturating_add(source_bytes)
+    checked_row_len_sum([
+        causal_ref_canonical_len(condition.condition.namespace())?,
+        1,
+        source_bytes,
+    ])
 }
 
 fn incidence_meaning_row_cancellable(
@@ -4762,8 +4945,9 @@ fn incidence_meaning_row_parts_cancellable(
     cx: &Cx<'_>,
 ) -> Result<Vec<u8>, CanonicalError> {
     let activation_bytes = activation_canonical_len_cancellable(activation, cx)?;
-    let mut out =
-        Vec::with_capacity(INCIDENCE_FIXED_CANONICAL_CAPACITY.saturating_add(activation_bytes));
+    let canonical_bytes =
+        checked_row_len_add(INCIDENCE_FIXED_CANONICAL_CAPACITY, activation_bytes)?;
+    let mut out = Vec::with_capacity(canonical_bytes);
     push_incidence_meaning_fixed(
         &mut out,
         equation,
@@ -4774,7 +4958,7 @@ fn incidence_meaning_row_parts_cancellable(
         term,
         operator,
         clock_relation,
-    );
+    )?;
     debug_assert!(out.len() <= INCIDENCE_FIXED_CANONICAL_CAPACITY);
     identity_materialization_checkpoint(cx, out.len())?;
     push_activation_cancellable(&mut out, activation, cx)?;
@@ -4793,13 +4977,13 @@ fn push_incidence_meaning_fixed(
     term: &SignalContract,
     operator: Option<&IncidenceOperatorRef>,
     clock_relation: &IncidenceClockRelation,
-) {
+) -> Result<(), CanonicalError> {
     push_identity_receipt_adjudication(out, equation.identity_receipt());
     push_identity_receipt_adjudication(out, variable.identity_receipt());
     out.extend_from_slice(&derivative_order.to_le_bytes());
     out.push(solve_participation_tag(solve_participation));
     push_dims(out, coefficient_dimensions);
-    push_signal(out, term);
+    push_signal(out, term)?;
     push_optional_ref(out, operator);
     match clock_relation {
         IncidenceClockRelation::SameClock => out.push(1),
@@ -4816,6 +5000,7 @@ fn push_incidence_meaning_fixed(
             bridge.append_canonical(out);
         }
     }
+    Ok(())
 }
 
 fn incidence_receipt_from_meaning_cancellable(
@@ -4849,79 +5034,67 @@ fn node_artifact_row_equation(
     id: &EquationId,
     lineage: &NodeLineage,
     cx: &Cx<'_>,
-) -> Result<Vec<u8>, CanonicalError> {
-    let lineage = lineage.canonical_row_cancellable(cx)?;
-    let canonical_bytes = IDENTITY_RECEIPT_ADJUDICATION_BYTES
-        .saturating_add(8)
-        .saturating_add(lineage.len());
-    let mut out = Vec::with_capacity(canonical_bytes);
-    push_identity_receipt_adjudication(&mut out, id.identity_receipt());
-    push_len_prefixed(&mut out, &lineage);
-    debug_assert_eq!(out.len(), canonical_bytes);
-    identity_materialization_checkpoint(cx, out.len())?;
-    Ok(out)
+    out: &mut Vec<u8>,
+) -> Result<(), CanonicalError> {
+    debug_assert!(out.is_empty());
+    let lineage_bytes = lineage.canonical_row_len_cancellable(cx)?;
+    push_identity_receipt_adjudication(out, id.identity_receipt());
+    push_row_count(out, lineage_bytes)?;
+    lineage.append_canonical_row_cancellable(out, cx)?;
+    identity_materialization_checkpoint(cx, out.len())
 }
 
 fn node_artifact_row_equation_len_cancellable(
     lineage: &NodeLineage,
     cx: &Cx<'_>,
 ) -> Result<usize, CanonicalError> {
-    Ok(IDENTITY_RECEIPT_ADJUDICATION_BYTES
-        .saturating_add(8)
-        .saturating_add(lineage.canonical_row_len_cancellable(cx)?))
+    checked_row_len_sum([
+        IDENTITY_RECEIPT_ADJUDICATION_BYTES,
+        8,
+        lineage.canonical_row_len_cancellable(cx)?,
+    ])
 }
 
 fn node_artifact_row_variable(
     variable: &VariableSpec,
     cx: &Cx<'_>,
-) -> Result<Vec<u8>, CanonicalError> {
-    let lineage = variable.lineage.canonical_row_cancellable(cx)?;
-    let audit_bytes = 1usize.saturating_add(
-        variable
-            .port_schema_crosswalk
-            .as_ref()
-            .map_or(0, |binding| {
-                causal_ref_canonical_len(binding.audit.namespace())
-            }),
-    );
-    let canonical_bytes = IDENTITY_RECEIPT_ADJUDICATION_BYTES
-        .saturating_add(8)
-        .saturating_add(lineage.len())
-        .saturating_add(audit_bytes);
-    let mut out = Vec::with_capacity(canonical_bytes);
-    push_identity_receipt_adjudication(&mut out, variable.id.identity_receipt());
-    push_len_prefixed(&mut out, &lineage);
+    out: &mut Vec<u8>,
+) -> Result<(), CanonicalError> {
+    debug_assert!(out.is_empty());
+    let lineage_bytes = variable.lineage.canonical_row_len_cancellable(cx)?;
+    push_identity_receipt_adjudication(out, variable.id.identity_receipt());
+    push_row_count(out, lineage_bytes)?;
+    variable.lineage.append_canonical_row_cancellable(out, cx)?;
     push_optional_ref(
-        &mut out,
+        out,
         variable
             .port_schema_crosswalk
             .as_ref()
             .map(|binding| &binding.audit),
     );
-    debug_assert_eq!(out.len(), canonical_bytes);
-    identity_materialization_checkpoint(cx, out.len())?;
-    Ok(out)
+    identity_materialization_checkpoint(cx, out.len())
 }
 
 fn node_artifact_row_variable_len_cancellable(
     variable: &VariableSpec,
     cx: &Cx<'_>,
 ) -> Result<usize, CanonicalError> {
-    Ok(IDENTITY_RECEIPT_ADJUDICATION_BYTES
-        .saturating_add(8)
-        .saturating_add(variable.lineage.canonical_row_len_cancellable(cx)?)
-        .saturating_add(optional_causal_ref_canonical_len(
+    checked_row_len_sum([
+        IDENTITY_RECEIPT_ADJUDICATION_BYTES,
+        8,
+        variable.lineage.canonical_row_len_cancellable(cx)?,
+        optional_causal_ref_canonical_len(
             variable
                 .port_schema_crosswalk
                 .as_ref()
                 .map(|binding| binding.audit.namespace()),
-        )))
+        )?,
+    ])
 }
 
-fn incidence_artifact_row(incidence: &IncidenceSpec) -> Vec<u8> {
-    let canonical_bytes = incidence_artifact_row_len(incidence);
-    let mut out = Vec::with_capacity(canonical_bytes);
-    push_identity_receipt_adjudication(&mut out, incidence.id.identity_receipt());
+fn incidence_artifact_row(incidence: &IncidenceSpec, out: &mut Vec<u8>) {
+    debug_assert!(out.is_empty());
+    push_identity_receipt_adjudication(out, incidence.id.identity_receipt());
     match &incidence.clock_relation {
         IncidenceClockRelation::SameClock => out.push(1),
         IncidenceClockRelation::AuditedBridge {
@@ -4930,25 +5103,26 @@ fn incidence_artifact_row(incidence: &IncidenceSpec) -> Vec<u8> {
             ..
         } => {
             out.push(2);
-            audit.append_canonical(&mut out);
-            audited_bridge.append_canonical(&mut out);
+            audit.append_canonical(out);
+            audited_bridge.append_canonical(out);
         }
     }
-    debug_assert_eq!(out.len(), canonical_bytes);
-    out
 }
 
-fn incidence_artifact_row_len(incidence: &IncidenceSpec) -> usize {
-    IDENTITY_RECEIPT_ADJUDICATION_BYTES.saturating_add(match &incidence.clock_relation {
+fn incidence_artifact_row_len(incidence: &IncidenceSpec) -> Result<usize, CanonicalError> {
+    let relation_bytes = match &incidence.clock_relation {
         IncidenceClockRelation::SameClock => 1,
         IncidenceClockRelation::AuditedBridge {
             audit,
             audited_bridge,
             ..
-        } => 1usize
-            .saturating_add(causal_ref_canonical_len(audit.namespace()))
-            .saturating_add(causal_ref_canonical_len(audited_bridge.namespace())),
-    })
+        } => checked_row_len_sum([
+            1,
+            causal_ref_canonical_len(audit.namespace())?,
+            causal_ref_canonical_len(audited_bridge.namespace())?,
+        ])?,
+    };
+    checked_row_len_add(IDENTITY_RECEIPT_ADJUDICATION_BYTES, relation_bytes)
 }
 
 fn node_origin_canonical_len_cancellable(
@@ -4963,21 +5137,24 @@ fn node_origin_canonical_len_cancellable(
             | MachineNodeOrigin::Interface(_) => 2 + 32,
             MachineNodeOrigin::Element(_) | MachineNodeOrigin::PortCoordinate { .. } => 2 + 33,
         },
-        NodeOrigin::AuditedEscapeHatch(escape) => {
-            1 + causal_ref_canonical_len(escape.source.namespace())
-                + causal_ref_canonical_len(escape.audit.namespace())
-                + causal_ref_canonical_len(escape.audited_source.namespace())
-        }
+        NodeOrigin::AuditedEscapeHatch(escape) => checked_row_len_sum([
+            1,
+            causal_ref_canonical_len(escape.source.namespace())?,
+            causal_ref_canonical_len(escape.audit.namespace())?,
+            causal_ref_canonical_len(escape.audited_source.namespace())?,
+        ])?,
         NodeOrigin::Derived(derived) => {
-            let mut bytes = 1usize.saturating_add(8);
+            let mut bytes = checked_row_len_add(1, 8)?;
             for (index, _) in derived.parents.iter().enumerate() {
                 identity_materialization_poll(cx, index, bytes)?;
-                bytes = bytes.saturating_add(1 + IDENTITY_RECEIPT_ADJUDICATION_BYTES);
+                bytes = checked_row_len_add(bytes, 1 + IDENTITY_RECEIPT_ADJUDICATION_BYTES)?;
             }
-            bytes
-                .saturating_add(causal_ref_canonical_len(derived.transformation.namespace()))
-                .saturating_add(2)
-                .saturating_add(causal_ref_canonical_len(derived.obligation.namespace()))
+            checked_row_len_sum([
+                bytes,
+                causal_ref_canonical_len(derived.transformation.namespace())?,
+                2,
+                causal_ref_canonical_len(derived.obligation.namespace())?,
+            ])?
         }
     };
     identity_materialization_checkpoint(cx, bytes)?;
@@ -5002,7 +5179,7 @@ fn push_node_origin_cancellable(
         }
         NodeOrigin::Derived(derived) => {
             out.push(3);
-            out.extend_from_slice(&(derived.parents.len() as u64).to_le_bytes());
+            push_row_count(out, derived.parents.len())?;
             for (index, parent) in derived.parents.iter().enumerate() {
                 identity_materialization_poll(cx, index, out.len())?;
                 match parent {
@@ -5073,7 +5250,7 @@ fn push_supports_cancellable(
     supports: &[CausalSupport],
     cx: &Cx<'_>,
 ) -> Result<(), CanonicalError> {
-    out.extend_from_slice(&(supports.len() as u64).to_le_bytes());
+    push_row_count(out, supports.len())?;
     for (index, support) in supports.iter().enumerate() {
         identity_materialization_poll(cx, index, out.len())?;
         match support {
@@ -5099,13 +5276,14 @@ fn supports_canonical_len_cancellable(
     let mut bytes = 8usize;
     for (index, support) in supports.iter().enumerate() {
         identity_materialization_poll(cx, index, bytes)?;
-        bytes = bytes.saturating_add(match support {
+        let support_bytes = match support {
             CausalSupport::Lumped => 1,
             CausalSupport::MachineElement(_) => 1 + 33,
             CausalSupport::External(reference) => {
-                1 + causal_ref_canonical_len(reference.namespace())
+                checked_row_len_add(1, causal_ref_canonical_len(reference.namespace())?)?
             }
-        });
+        };
+        bytes = checked_row_len_add(bytes, support_bytes)?;
     }
     identity_materialization_checkpoint(cx, bytes)?;
     Ok(bytes)
@@ -5116,37 +5294,41 @@ fn condition_canonical_len_cancellable(
     cx: &Cx<'_>,
 ) -> Result<usize, CanonicalError> {
     identity_materialization_checkpoint(cx, 0)?;
-    let mut bytes = causal_ref_canonical_len(condition.condition.namespace());
-    bytes = bytes.saturating_add(match &condition.source {
-        ActivationConditionSource::GuardEquation { obligation, .. } => {
-            1 + IDENTITY_RECEIPT_ADJUDICATION_BYTES
-                + causal_ref_canonical_len(obligation.namespace())
-        }
+    let mut bytes = causal_ref_canonical_len(condition.condition.namespace())?;
+    let source_bytes = match &condition.source {
+        ActivationConditionSource::GuardEquation { obligation, .. } => checked_row_len_sum([
+            1,
+            IDENTITY_RECEIPT_ADJUDICATION_BYTES,
+            causal_ref_canonical_len(obligation.namespace())?,
+        ])?,
         ActivationConditionSource::AuditedPredicate(_) => 1,
-    });
-    bytes = bytes.saturating_add(8);
+    };
+    bytes = checked_row_len_add(bytes, source_bytes)?;
+    bytes = checked_row_len_add(bytes, 8)?;
     for (index, branch) in condition.branches.iter().enumerate() {
         identity_materialization_poll(cx, index, bytes)?;
-        bytes = bytes.saturating_add(causal_ref_canonical_len(branch.namespace()));
+        bytes = checked_row_len_add(bytes, causal_ref_canonical_len(branch.namespace())?)?;
     }
-    bytes = bytes.saturating_add(8);
+    bytes = checked_row_len_add(bytes, 8)?;
     for (index, _) in condition.dependencies.iter().enumerate() {
         identity_materialization_poll(cx, index, bytes)?;
-        bytes = bytes.saturating_add(IDENTITY_RECEIPT_ADJUDICATION_BYTES);
+        bytes = checked_row_len_add(bytes, IDENTITY_RECEIPT_ADJUDICATION_BYTES)?;
     }
     identity_materialization_checkpoint(cx, bytes)?;
     Ok(bytes)
 }
 
-fn push_signal(out: &mut Vec<u8>, signal: &SignalContract) {
+fn push_signal(out: &mut Vec<u8>, signal: &SignalContract) -> Result<(), CanonicalError> {
     super::push_terminal_quantity(out, signal.quantity);
     super::push_terminal_shape(out, signal.shape);
     out.extend_from_slice(signal.clock.identity().as_bytes());
-    push_len_prefixed(out, signal.frame.canonical_key().as_bytes());
+    push_row_count(out, signal.frame.canonical_key().len())?;
+    out.extend_from_slice(signal.frame.canonical_key().as_bytes());
     out.push(match signal.frame.orientation() {
         super::OrientationParity::Preserving => 1,
         super::OrientationParity::Reversing => 2,
     });
+    Ok(())
 }
 
 fn push_dims(out: &mut Vec<u8>, dims: Dims) {
@@ -5162,10 +5344,10 @@ fn push_activation_cancellable(
         ActivationDomain::Always => out.push(1),
         ActivationDomain::Conditional { cubes } => {
             out.push(2);
-            out.extend_from_slice(&(cubes.len() as u64).to_le_bytes());
+            push_row_count(out, cubes.len())?;
             for (cube_index, cube) in cubes.iter().enumerate() {
                 identity_materialization_poll(cx, cube_index, out.len())?;
-                out.extend_from_slice(&(cube.selections.len() as u64).to_le_bytes());
+                push_row_count(out, cube.selections.len())?;
                 for (selection_index, selection) in cube.selections.iter().enumerate() {
                     identity_materialization_poll(cx, selection_index, out.len())?;
                     selection.condition.append_canonical(out);
@@ -5184,15 +5366,17 @@ fn activation_canonical_len_cancellable(
     identity_materialization_checkpoint(cx, 0)?;
     let mut bytes = 1usize;
     if let ActivationDomain::Conditional { cubes } = activation {
-        bytes = bytes.saturating_add(8);
+        bytes = checked_row_len_add(bytes, 8)?;
         for (cube_index, cube) in cubes.iter().enumerate() {
             identity_materialization_poll(cx, cube_index, bytes)?;
-            bytes = bytes.saturating_add(8);
+            bytes = checked_row_len_add(bytes, 8)?;
             for (selection_index, selection) in cube.selections.iter().enumerate() {
                 identity_materialization_poll(cx, selection_index, bytes)?;
-                bytes = bytes
-                    .saturating_add(causal_ref_canonical_len(selection.condition.namespace()))
-                    .saturating_add(causal_ref_canonical_len(selection.branch.namespace()));
+                bytes = checked_row_len_sum([
+                    bytes,
+                    causal_ref_canonical_len(selection.condition.namespace())?,
+                    causal_ref_canonical_len(selection.branch.namespace())?,
+                ])?;
             }
         }
     }
@@ -5208,16 +5392,18 @@ fn assignment_canonical_len_cancellable(
     let mut bytes = 8usize;
     for (index, selection) in assignment.iter().enumerate() {
         identity_materialization_poll(cx, index, bytes)?;
-        bytes = bytes
-            .saturating_add(causal_ref_canonical_len(selection.condition.namespace()))
-            .saturating_add(causal_ref_canonical_len(selection.branch.namespace()));
+        bytes = checked_row_len_sum([
+            bytes,
+            causal_ref_canonical_len(selection.condition.namespace())?,
+            causal_ref_canonical_len(selection.branch.namespace())?,
+        ])?;
     }
     identity_materialization_checkpoint(cx, bytes)?;
     Ok(bytes)
 }
 
-const fn causal_ref_canonical_len(namespace: &str) -> usize {
-    8 + namespace.len() + 8 + 32
+fn causal_ref_canonical_len(namespace: &str) -> Result<usize, CanonicalError> {
+    checked_row_len_sum([8, namespace.len(), 8, 32])
 }
 
 trait AppendCausalRef {
@@ -5785,8 +5971,10 @@ impl std::error::Error for MaximumMatchingBindingError {
 fn maximum_matching_identity_error(error: CausalIdentityError) -> MaximumMatchingBindingError {
     if error.stream_refusal().is_some() {
         MaximumMatchingBindingError::IdentityStream(error)
+    } else if let Some(canonical_error) = error.canonical_error() {
+        MaximumMatchingBindingError::Identity(canonical_error)
     } else {
-        MaximumMatchingBindingError::Identity(error.canonical_error())
+        MaximumMatchingBindingError::IdentityStream(error)
     }
 }
 
@@ -6296,8 +6484,10 @@ fn conditional_coverage_identity_error(
 ) -> ConditionalCoverageBindingError {
     if error.stream_refusal().is_some() {
         ConditionalCoverageBindingError::IdentityStream(error)
+    } else if let Some(canonical_error) = error.canonical_error() {
+        ConditionalCoverageBindingError::Identity(canonical_error)
     } else {
-        ConditionalCoverageBindingError::Identity(error.canonical_error())
+        ConditionalCoverageBindingError::IdentityStream(error)
     }
 }
 
@@ -7435,7 +7625,7 @@ fn identity_receipt_refusal(error: CausalIdentityError) -> CausalReceiptRefusal 
             rule,
             CausalReceiptSubject::Receipt,
         )],
-        Some(error.canonical_error()),
+        error.canonical_error(),
     );
     refusal.identity_stream_refusal = error.stream_refusal();
     refusal
@@ -8102,7 +8292,10 @@ fn causal_outcome_identity(
         &draft.matching,
         cx,
         |_, _| Ok(3 * IDENTITY_RECEIPT_ADJUDICATION_BYTES + 2),
-        |pair, _| Ok(matching_row(pair)),
+        |pair, _, row| {
+            matching_row(pair, row);
+            Ok(())
+        },
     )?;
     let encoder = stream_identity_rows(
         encoder,
@@ -8110,10 +8303,9 @@ fn causal_outcome_identity(
         &draft.unmatched_equations,
         cx,
         |_, _| Ok(IDENTITY_RECEIPT_ADJUDICATION_BYTES),
-        |equation, _| {
-            let mut row = Vec::with_capacity(116);
-            push_identity_receipt_adjudication(&mut row, equation.identity_receipt());
-            Ok(row)
+        |equation, _, row| {
+            push_identity_receipt_adjudication(row, equation.identity_receipt());
+            Ok(())
         },
     )?;
     let encoder = stream_identity_rows(
@@ -8122,7 +8314,10 @@ fn causal_outcome_identity(
         &draft.unmatched_variables,
         cx,
         |_, _| Ok(IDENTITY_RECEIPT_ADJUDICATION_BYTES + 2),
-        |variable, _| Ok(derivative_variable_row(variable)),
+        |variable, _, row| {
+            derivative_variable_row(variable, row);
+            Ok(())
+        },
     )?;
     stream_identity_rows(
         encoder,
@@ -8200,7 +8395,10 @@ fn causalization_receipt_identity(
         &draft.matching,
         cx,
         |_, _| Ok(3 * IDENTITY_RECEIPT_ADJUDICATION_BYTES + 2),
-        |pair, _| Ok(matching_row(pair)),
+        |pair, _, row| {
+            matching_row(pair, row);
+            Ok(())
+        },
     )?;
     let encoder = stream_identity_rows(
         encoder,
@@ -8208,10 +8406,9 @@ fn causalization_receipt_identity(
         &draft.unmatched_equations,
         cx,
         |_, _| Ok(IDENTITY_RECEIPT_ADJUDICATION_BYTES),
-        |equation, _| {
-            let mut row = Vec::with_capacity(116);
-            push_identity_receipt_adjudication(&mut row, equation.identity_receipt());
-            Ok(row)
+        |equation, _, row| {
+            push_identity_receipt_adjudication(row, equation.identity_receipt());
+            Ok(())
         },
     )?;
     let encoder = stream_identity_rows(
@@ -8220,7 +8417,10 @@ fn causalization_receipt_identity(
         &draft.unmatched_variables,
         cx,
         |_, _| Ok(IDENTITY_RECEIPT_ADJUDICATION_BYTES + 2),
-        |variable, _| Ok(derivative_variable_row(variable)),
+        |variable, _, row| {
+            derivative_variable_row(variable, row);
+            Ok(())
+        },
     )?;
     let encoder = stream_identity_rows(
         encoder,
@@ -8244,8 +8444,11 @@ fn causalization_receipt_identity(
         Field::new(14, "unknown-axes"),
         &draft.unknown_axes,
         cx,
-        |state, _| Ok(unknown_axis_row_len(state)),
-        |state, _| Ok(unknown_axis_row(state)),
+        |state, _| unknown_axis_row_len(state),
+        |state, _, row| {
+            unknown_axis_row(state, row);
+            Ok(())
+        },
     )?;
     encoder
         .variant(
@@ -8272,12 +8475,12 @@ fn receipt_domain_row_cancellable(
         }
         CausalReceiptDomain::UnconditionalGraph | CausalReceiptDomain::HybridSummary => 0,
     };
-    let mut out = Vec::with_capacity(1usize.saturating_add(assignment_bytes));
+    let mut out = Vec::with_capacity(checked_row_len_add(1, assignment_bytes)?);
     match domain {
         CausalReceiptDomain::UnconditionalGraph => out.push(1),
         CausalReceiptDomain::ModeCell { assignment } => {
             out.push(2);
-            out.extend_from_slice(&(assignment.len() as u64).to_le_bytes());
+            push_row_count(&mut out, assignment.len())?;
             for (index, selection) in assignment.iter().enumerate() {
                 identity_materialization_poll(cx, index, out.len())?;
                 selection.condition.append_canonical(&mut out);
@@ -8298,21 +8501,23 @@ fn receipt_domain_row_cancellable(
     Ok(out)
 }
 
-fn unknown_axis_row(state: &CausalUnknownAxisState) -> Vec<u8> {
-    let mut out = Vec::with_capacity(160);
+fn unknown_axis_row(state: &CausalUnknownAxisState, out: &mut Vec<u8>) {
+    debug_assert!(out.is_empty());
     out.push(outcome_axis_tag(state.axis));
     out.push(unknown_reason_tag(state.reason));
-    push_optional_ref(&mut out, state.resume_checkpoint.as_ref());
-    out
+    push_optional_ref(out, state.resume_checkpoint.as_ref());
 }
 
-fn unknown_axis_row_len(state: &CausalUnknownAxisState) -> usize {
-    2usize.saturating_add(optional_causal_ref_canonical_len(
-        state
-            .resume_checkpoint
-            .as_ref()
-            .map(CausalCheckpointRef::namespace),
-    ))
+fn unknown_axis_row_len(state: &CausalUnknownAxisState) -> Result<usize, CanonicalError> {
+    checked_row_len_add(
+        2,
+        optional_causal_ref_canonical_len(
+            state
+                .resume_checkpoint
+                .as_ref()
+                .map(CausalCheckpointRef::namespace),
+        )?,
+    )
 }
 
 fn analysis_context_row(context: &CausalAnalysisContext) -> Vec<u8> {
@@ -8325,13 +8530,12 @@ fn analysis_context_row(context: &CausalAnalysisContext) -> Vec<u8> {
     out
 }
 
-fn matching_row(pair: &CausalMatchingPair) -> Vec<u8> {
-    let mut out = Vec::with_capacity(350);
-    push_identity_receipt_adjudication(&mut out, pair.incidence.identity_receipt());
-    push_identity_receipt_adjudication(&mut out, pair.equation.identity_receipt());
-    push_identity_receipt_adjudication(&mut out, pair.variable.variable.identity_receipt());
+fn matching_row(pair: &CausalMatchingPair, out: &mut Vec<u8>) {
+    debug_assert!(out.is_empty());
+    push_identity_receipt_adjudication(out, pair.incidence.identity_receipt());
+    push_identity_receipt_adjudication(out, pair.equation.identity_receipt());
+    push_identity_receipt_adjudication(out, pair.variable.variable.identity_receipt());
     out.extend_from_slice(&pair.variable.derivative_order.to_le_bytes());
-    out
 }
 
 fn causal_matching_pair_nominal_eq(left: &CausalMatchingPair, right: &CausalMatchingPair) -> bool {
@@ -8376,7 +8580,10 @@ fn causal_matching_set_identity_cancellable(
         canonical_matching,
         cx,
         |_, _| Ok(3 * IDENTITY_RECEIPT_ADJUDICATION_BYTES + 2),
-        |pair, _| Ok(matching_row(pair)),
+        |pair, _, row| {
+            matching_row(pair, row);
+            Ok(())
+        },
     )?
     .finish()
     .map_err(Into::into)
@@ -8403,84 +8610,73 @@ fn maximum_matching_binding_row_cancellable(
     Ok(out)
 }
 
-fn derivative_variable_row(variable: &DerivativeVariableKey) -> Vec<u8> {
-    let mut out = Vec::with_capacity(118);
-    push_identity_receipt_adjudication(&mut out, variable.variable.identity_receipt());
+fn derivative_variable_row(variable: &DerivativeVariableKey, out: &mut Vec<u8>) {
+    debug_assert!(out.is_empty());
+    push_identity_receipt_adjudication(out, variable.variable.identity_receipt());
     out.extend_from_slice(&variable.derivative_order.to_le_bytes());
-    out
 }
 
 fn conditional_outcome_row_cancellable(
     outcome: &ConditionalCausalOutcome,
     cx: &Cx<'_>,
-) -> Result<Vec<u8>, CanonicalError> {
+    out: &mut Vec<u8>,
+) -> Result<(), CanonicalError> {
     // The full child receipt below already commits its ordered unknown-axis
     // reasons and checkpoints. Keep those progress coordinates out of the
     // normalized child outcome while retaining them transitively in this
     // provenance-bearing parent row and directly on the typed child object.
-    let assignment_bytes = assignment_canonical_len_cancellable(&outcome.assignment, cx)?;
-    let canonical_bytes = assignment_bytes
-        .saturating_add(2)
-        .saturating_add(2 * IDENTITY_RECEIPT_ADJUDICATION_BYTES);
-    let mut out = Vec::with_capacity(canonical_bytes);
-    out.extend_from_slice(&(outcome.assignment.len() as u64).to_le_bytes());
+    debug_assert!(out.is_empty());
+    push_row_count(out, outcome.assignment.len())?;
     for (index, selection) in outcome.assignment.iter().enumerate() {
         identity_materialization_poll(cx, index, out.len())?;
-        selection.condition.append_canonical(&mut out);
-        selection.branch.append_canonical(&mut out);
+        selection.condition.append_canonical(out);
+        selection.branch.append_canonical(out);
     }
     out.push(determination_tag(outcome.determination));
     out.push(structural_rank_tag(outcome.structural_rank));
-    push_identity_receipt_adjudication(&mut out, outcome.outcome);
-    push_identity_receipt_adjudication(&mut out, outcome.receipt);
-    debug_assert_eq!(out.len(), canonical_bytes);
-    identity_materialization_checkpoint(cx, out.len())?;
-    Ok(out)
+    push_identity_receipt_adjudication(out, outcome.outcome);
+    push_identity_receipt_adjudication(out, outcome.receipt);
+    identity_materialization_checkpoint(cx, out.len())
 }
 
 fn conditional_outcome_row_len_cancellable(
     outcome: &ConditionalCausalOutcome,
     cx: &Cx<'_>,
 ) -> Result<usize, CanonicalError> {
-    Ok(
-        assignment_canonical_len_cancellable(&outcome.assignment, cx)?
-            .saturating_add(2)
-            .saturating_add(2 * IDENTITY_RECEIPT_ADJUDICATION_BYTES),
-    )
+    checked_row_len_sum([
+        assignment_canonical_len_cancellable(&outcome.assignment, cx)?,
+        2,
+        2 * IDENTITY_RECEIPT_ADJUDICATION_BYTES,
+    ])
 }
 
 fn normalized_conditional_outcome_row_cancellable(
     outcome: &ConditionalCausalOutcome,
     cx: &Cx<'_>,
-) -> Result<Vec<u8>, CanonicalError> {
-    let assignment_bytes = assignment_canonical_len_cancellable(&outcome.assignment, cx)?;
-    let canonical_bytes = assignment_bytes
-        .saturating_add(2)
-        .saturating_add(IDENTITY_RECEIPT_ADJUDICATION_BYTES);
-    let mut out = Vec::with_capacity(canonical_bytes);
-    out.extend_from_slice(&(outcome.assignment.len() as u64).to_le_bytes());
+    out: &mut Vec<u8>,
+) -> Result<(), CanonicalError> {
+    debug_assert!(out.is_empty());
+    push_row_count(out, outcome.assignment.len())?;
     for (index, selection) in outcome.assignment.iter().enumerate() {
         identity_materialization_poll(cx, index, out.len())?;
-        selection.condition.append_canonical(&mut out);
-        selection.branch.append_canonical(&mut out);
+        selection.condition.append_canonical(out);
+        selection.branch.append_canonical(out);
     }
     out.push(determination_tag(outcome.determination));
     out.push(structural_rank_tag(outcome.structural_rank));
-    push_identity_receipt_adjudication(&mut out, outcome.outcome);
-    debug_assert_eq!(out.len(), canonical_bytes);
-    identity_materialization_checkpoint(cx, out.len())?;
-    Ok(out)
+    push_identity_receipt_adjudication(out, outcome.outcome);
+    identity_materialization_checkpoint(cx, out.len())
 }
 
 fn normalized_conditional_outcome_row_len_cancellable(
     outcome: &ConditionalCausalOutcome,
     cx: &Cx<'_>,
 ) -> Result<usize, CanonicalError> {
-    Ok(
-        assignment_canonical_len_cancellable(&outcome.assignment, cx)?
-            .saturating_add(2)
-            .saturating_add(IDENTITY_RECEIPT_ADJUDICATION_BYTES),
-    )
+    checked_row_len_sum([
+        assignment_canonical_len_cancellable(&outcome.assignment, cx)?,
+        2,
+        IDENTITY_RECEIPT_ADJUDICATION_BYTES,
+    ])
 }
 
 fn conditional_outcome_set_identity_cancellable(
@@ -9171,6 +9367,24 @@ mod internal_tests {
         })
     }
 
+    fn materialize_planned_test_row(
+        planned_bytes: usize,
+        write: impl FnOnce(&mut Vec<u8>) -> Result<(), CanonicalError>,
+    ) -> Vec<u8> {
+        let plan = CausalIdentityRowPlan::new(0, planned_bytes).expect("test row plan");
+        let mut row = Vec::new();
+        reserve_identity_row(&mut row, plan).expect("test row reserve");
+        let admitted_capacity = row.capacity();
+        write(&mut row).expect("test row producer");
+        assert_eq!(
+            row.capacity(),
+            admitted_capacity,
+            "test row producer must not grow past its admitted reservation"
+        );
+        assert_eq!(row.len(), planned_bytes, "test row plan must be exact");
+        row
+    }
+
     #[test]
     fn g3_streamed_identity_rows_match_eager_canonical_bytes_and_roots() {
         let rows = vec![
@@ -9206,7 +9420,10 @@ mod internal_tests {
                 &rows,
                 cx,
                 |row, _| Ok(row.len()),
-                |row, _| Ok(row.clone()),
+                |row, _, out| {
+                    out.extend_from_slice(row);
+                    Ok(())
+                },
             )
             .expect("streamed rows admit")
             .finish()
@@ -9271,8 +9488,11 @@ mod internal_tests {
             .expect("valid frame"),
         };
         let mut signal_row = Vec::new();
-        push_signal(&mut signal_row, &signal);
-        assert_eq!(signal_canonical_len(&signal), signal_row.len());
+        push_signal(&mut signal_row, &signal).expect("signal row");
+        assert_eq!(
+            signal_canonical_len(&signal).expect("signal length"),
+            signal_row.len()
+        );
         let equation = EquationSpec {
             id: equation_id.clone(),
             diagnostic_label: "equation".into(),
@@ -9321,39 +9541,36 @@ mod internal_tests {
         };
 
         with_internal_cx(|cx| {
-            let equation_row = equation_structure_row(&equation, cx).expect("equation row");
-            assert_eq!(
-                equation_structure_row_len_cancellable(&equation, cx).expect("equation length"),
-                equation_row.len()
-            );
-            let variable_row = variable_structure_row(&variable, cx).expect("variable row");
-            assert_eq!(
-                variable_structure_row_len_cancellable(&variable, cx).expect("variable length"),
-                variable_row.len()
-            );
-            let condition_row = condition_row(&condition, cx).expect("condition row");
-            assert_eq!(
-                condition_canonical_len_cancellable(&condition, cx).expect("condition length"),
-                condition_row.len()
-            );
-            assert_eq!(
-                condition_artifact_row_len(&condition),
-                condition_artifact_row(&condition).len()
-            );
-            assert_eq!(
+            let equation_len =
+                equation_structure_row_len_cancellable(&equation, cx).expect("equation length");
+            materialize_planned_test_row(equation_len, |row| {
+                equation_structure_row(&equation, cx, row)
+            });
+            let variable_len =
+                variable_structure_row_len_cancellable(&variable, cx).expect("variable length");
+            materialize_planned_test_row(variable_len, |row| {
+                variable_structure_row(&variable, cx, row)
+            });
+            let condition_len =
+                condition_canonical_len_cancellable(&condition, cx).expect("condition length");
+            materialize_planned_test_row(condition_len, |row| condition_row(&condition, cx, row));
+            let condition_artifact_len =
+                condition_artifact_row_len(&condition).expect("condition artifact length");
+            materialize_planned_test_row(condition_artifact_len, |row| {
+                condition_artifact_row(&condition, row);
+                Ok(())
+            });
+            let equation_artifact_len =
                 node_artifact_row_equation_len_cancellable(&equation.lineage, cx)
-                    .expect("equation lineage length"),
-                node_artifact_row_equation(&equation.id, &equation.lineage, cx)
-                    .expect("equation lineage row")
-                    .len()
-            );
-            assert_eq!(
-                node_artifact_row_variable_len_cancellable(&variable, cx)
-                    .expect("variable lineage length"),
-                node_artifact_row_variable(&variable, cx)
-                    .expect("variable lineage row")
-                    .len()
-            );
+                    .expect("equation lineage length");
+            materialize_planned_test_row(equation_artifact_len, |row| {
+                node_artifact_row_equation(&equation.id, &equation.lineage, cx, row)
+            });
+            let variable_artifact_len = node_artifact_row_variable_len_cancellable(&variable, cx)
+                .expect("variable lineage length");
+            materialize_planned_test_row(variable_artifact_len, |row| {
+                node_artifact_row_variable(&variable, cx, row)
+            });
 
             let incidence = IncidenceSpec::new(
                 equation_id.clone(),
@@ -9368,10 +9585,12 @@ mod internal_tests {
                 cx,
             )
             .expect("incidence identity");
-            assert_eq!(
-                incidence_artifact_row_len(&incidence),
-                incidence_artifact_row(&incidence).len()
-            );
+            let incidence_artifact_len =
+                incidence_artifact_row_len(&incidence).expect("incidence artifact length");
+            materialize_planned_test_row(incidence_artifact_len, |row| {
+                incidence_artifact_row(&incidence, row);
+                Ok(())
+            });
             let matching = CausalMatchingPair {
                 incidence: incidence.id,
                 equation: equation_id,
@@ -9380,14 +9599,14 @@ mod internal_tests {
                     derivative_order: 0,
                 },
             };
-            assert_eq!(
-                3 * IDENTITY_RECEIPT_ADJUDICATION_BYTES + 2,
-                matching_row(&matching).len()
-            );
-            assert_eq!(
-                IDENTITY_RECEIPT_ADJUDICATION_BYTES + 2,
-                derivative_variable_row(&matching.variable).len()
-            );
+            materialize_planned_test_row(3 * IDENTITY_RECEIPT_ADJUDICATION_BYTES + 2, |row| {
+                matching_row(&matching, row);
+                Ok(())
+            });
+            materialize_planned_test_row(IDENTITY_RECEIPT_ADJUDICATION_BYTES + 2, |row| {
+                derivative_variable_row(&matching.variable, row);
+                Ok(())
+            });
             let unknown = CausalUnknownAxisState {
                 axis: CausalOutcomeAxis::Determination,
                 reason: CausalUnknownReason::Cancelled,
@@ -9396,10 +9615,11 @@ mod internal_tests {
                         .expect("valid checkpoint"),
                 ),
             };
-            assert_eq!(
-                unknown_axis_row_len(&unknown),
-                unknown_axis_row(&unknown).len()
-            );
+            let unknown_len = unknown_axis_row_len(&unknown).expect("unknown-axis length");
+            materialize_planned_test_row(unknown_len, |row| {
+                unknown_axis_row(&unknown, row);
+                Ok(())
+            });
         });
     }
 
@@ -9430,9 +9650,10 @@ mod internal_tests {
                     planned.set(planned.get() + 1);
                     Ok(row.len())
                 },
-                |row, _| {
+                |row, _, out| {
                     produced.set(produced.get() + 1);
-                    Ok(row.clone())
+                    out.extend_from_slice(row);
+                    Ok(())
                 },
             )
             .expect_err("four rows must refuse a three-row envelope")
@@ -9440,11 +9661,11 @@ mod internal_tests {
 
         assert_eq!(
             refusal.canonical_error(),
-            CanonicalError::LimitExceeded {
+            Some(CanonicalError::LimitExceeded {
                 kind: LimitKind::CollectionItems,
                 requested: 4,
                 limit: 3,
-            }
+            })
         );
         let stream = refusal
             .stream_refusal()
@@ -9478,9 +9699,10 @@ mod internal_tests {
                 &rows,
                 cx,
                 |(), _| Ok(9),
-                |(), _| {
+                |(), _, out| {
                     produced.set(produced.get() + 1);
-                    Ok(vec![0; 9])
+                    out.extend_from_slice(&[0; 9]);
+                    Ok(())
                 },
             )
             .expect_err("one-over row must refuse before its producer")
@@ -9488,11 +9710,11 @@ mod internal_tests {
 
         assert_eq!(
             refusal.canonical_error(),
-            CanonicalError::LimitExceeded {
+            Some(CanonicalError::LimitExceeded {
                 kind: LimitKind::FieldBytes,
                 requested: 9,
                 limit: 8,
-            }
+            })
         );
         let stream = refusal
             .stream_refusal()
@@ -9513,6 +9735,130 @@ mod internal_tests {
     }
 
     #[test]
+    fn g0_streamed_identity_rows_admit_empty_and_exact_reduced_limit() {
+        let rows = [Vec::new(), vec![0x5a; 8]];
+        let limits = CanonicalLimits::new(4 * 1_024, 8, 1, 2, 16);
+
+        let receipt = with_internal_cx(|cx| {
+            let encoder = CanonicalEncoder::<EvidenceNodeId<StreamParitySchemaV1>, _>::new(
+                limits,
+                NeverCancel,
+            )
+            .expect("valid reduced-limit encoder");
+            stream_identity_rows(
+                encoder,
+                Field::new(0, "rows"),
+                &rows,
+                cx,
+                |row, _| Ok(row.len()),
+                |row, _, out| {
+                    out.extend_from_slice(row);
+                    Ok(())
+                },
+            )
+            .expect("empty and exact-cap rows admit")
+            .finish()
+            .expect("exact-cap identity publishes")
+        });
+
+        assert_eq!(receipt.collection_items(), 2);
+    }
+
+    #[test]
+    fn g0_streamed_identity_rows_distinguish_injected_reserve_failure() {
+        let rows = [b"planned".as_slice()];
+        let limits = CanonicalLimits::new(4 * 1_024, 8, 1, 1, 16);
+        let produced = core::cell::Cell::new(0usize);
+
+        let refusal = with_internal_cx(|cx| {
+            let encoder = CanonicalEncoder::<EvidenceNodeId<StreamParitySchemaV1>, _>::new(
+                limits,
+                NeverCancel,
+            )
+            .expect("valid bounded encoder");
+            stream_identity_rows_with_reserve(
+                encoder,
+                Field::new(0, "rows"),
+                &rows,
+                cx,
+                |row, _| Ok(row.len()),
+                |row, _, out| {
+                    produced.set(produced.get() + 1);
+                    out.extend_from_slice(row);
+                    Ok(())
+                },
+                |_, plan| {
+                    Err(CausalIdentityAllocationRefusal {
+                        requested_bytes: plan.canonical_bytes,
+                    })
+                },
+            )
+            .expect_err("injected reserve failure must consume without publication")
+        });
+
+        assert_eq!(refusal.canonical_error(), None);
+        assert_eq!(
+            refusal.allocation_refusal(),
+            Some(CausalIdentityAllocationRefusal { requested_bytes: 7 })
+        );
+        let stream = refusal
+            .stream_refusal()
+            .expect("reserve refusal retains stream context");
+        assert_eq!(stream.origin(), CausalIdentityStreamOrigin::Allocation);
+        assert_eq!(
+            stream.diagnostic().phase(),
+            OrderedBytesStreamPhase::RowProducer
+        );
+        assert_eq!(stream.diagnostic().row_index(), Some(0));
+        assert_eq!(stream.diagnostic().declared_row_bytes(), Some(7));
+        assert_eq!(stream.diagnostic().written_row_bytes(), 0);
+        assert_eq!(produced.get(), 0, "reserve refusal precedes serialization");
+    }
+
+    #[test]
+    fn g0_streamed_identity_rows_refuse_length_payload_disagreement() {
+        let rows = [()];
+        let limits = CanonicalLimits::new(4 * 1_024, 8, 1, 1, 16);
+
+        let refusal = with_internal_cx(|cx| {
+            let encoder = CanonicalEncoder::<EvidenceNodeId<StreamParitySchemaV1>, _>::new(
+                limits,
+                NeverCancel,
+            )
+            .expect("valid bounded encoder");
+            stream_identity_rows(
+                encoder,
+                Field::new(0, "rows"),
+                &rows,
+                cx,
+                |(), _| Ok(4),
+                |(), _, out| {
+                    out.extend_from_slice(&[1, 2, 3]);
+                    Ok(())
+                },
+            )
+            .expect_err("short payload must refuse exact row completion")
+        });
+
+        assert_eq!(
+            refusal.canonical_error(),
+            Some(CanonicalError::DeclaredLengthMismatch {
+                declared: 4,
+                observed: 3,
+            })
+        );
+        let stream = refusal
+            .stream_refusal()
+            .expect("length mismatch retains stream context");
+        assert_eq!(stream.origin(), CausalIdentityStreamOrigin::Canonical);
+        assert_eq!(
+            stream.diagnostic().phase(),
+            OrderedBytesStreamPhase::RowCompletion
+        );
+        assert_eq!(stream.diagnostic().written_row_bytes(), 3);
+    }
+
+    #[test]
     fn g4_stream_row_producer_cancellation_retains_completed_prefix() {
         let rows = [b"first".as_slice(), b"second".as_slice()];
         let limits = CanonicalLimits::new(4 * 1_024, 1_024, 1, 2, 16);
@@ -9530,13 +9876,14 @@ mod internal_tests {
                 &rows,
                 cx,
                 |row, _| Ok(row.len()),
-                |row, _| {
+                |row, _, out| {
                     let index = produced.get();
                     produced.set(index + 1);
                     if index == 1 {
                         Err(CanonicalError::Cancelled { absorbed_bytes: 0 })
                     } else {
-                        Ok(row.to_vec())
+                        out.extend_from_slice(row);
+                        Ok(())
                     }
                 },
             )
@@ -9545,7 +9892,7 @@ mod internal_tests {
 
         assert_eq!(
             refusal.canonical_error(),
-            CanonicalError::Cancelled { absorbed_bytes: 0 }
+            Some(CanonicalError::Cancelled { absorbed_bytes: 0 })
         );
         let stream = refusal
             .stream_refusal()
