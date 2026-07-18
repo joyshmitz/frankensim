@@ -827,14 +827,24 @@ admitted derived-geometry boundary.
   introduce zero, one, or up to 64 graph-owned bodies and schedule one through
   64 occurrences. Every scheduled participant must be available before that
   step or introduced by it, every introduced body must participate in a
-  scheduled occurrence, and the complete canonical before/after availability
-  transition publishes only after the whole step validates. Each admitted step
-  retains the exact before/after counts and domain-separated set digests; the
-  complete sets remain deterministically replayable from the retained initial
-  set and canonical introductions, avoiding quadratic receipt storage and
-  serialization. Every occurrence is scheduled exactly once. Chronology has no
-  base/incoming endpoint order and V2 exposes no ambiguous `ContinueExisting`
-  representation.
+  scheduled occurrence, and the nominal transition publishes only after the
+  whole step validates. Availability commitment V1 hashes the complete sorted
+  initial set exactly once under its own domain. Each step then retains a
+  history-bound before/after root and exact counts: the before root is the
+  preceding after root (or the initial root at ordinal zero), while the next
+  domain-separated root binds commitment version, prior root/count, stable step
+  ID and ordinal, sorted introduced-body rows and count, and after-count. A
+  verifier holding the initial set and transitions can recompute every root and
+  complete available set. These roots intentionally are not
+  history-independent set digests: equal final sets reached through different
+  introduction histories have different final roots. Commitment serialization
+  work is linear in `initial bodies + total introductions`, retained root
+  storage is linear in steps, and chronology validation uses only the live set
+  plus each at-most-64-body introduction set rather than cloning the complete
+  growing set per step. This statement does not erase ordinary bounded sorting
+  and tree-lookup costs elsewhere in admission. Every occurrence is scheduled
+  exactly once. Chronology has no base/incoming endpoint order and V2 exposes
+  no ambiguous `ContinueExisting` representation.
 - Each occurrence carries a closed family-specific topology of at most 64 typed
   participants. A preloaded-bolt hyperedge has at least two canonically unordered
   clamped members, a contiguous bolt-head-to-thread-end fastener stack with
@@ -846,16 +856,16 @@ admitted derived-geometry boundary.
   an occurrence. Only genuinely unordered sets canonicalize symmetrically;
   reversing a directed physical role or fastener-stack position is semantic.
 - `ContactFeatureId` remains a durable physical feature, not a consumable
-  operation token. Every occurrence-local selection therefore has a globally
-  unique `JointFeatureUseIdV2`. Repeated physical-feature use across weld passes,
-  rework, and hybrid joints is admitted under the explicit `Reusable` policy;
-  `ExclusiveWithinAssembly` is an opt-in typed policy and conflicts
-  deterministically with any second use. One physical feature may not acquire
-  conflicting declared bodies across uses. Each selected body and feature must
-  exist and share one subsystem owner, but this proves only structural
-  co-ownership, never feature containment; a same-owner "wrong body" selector
-  remains an authority-free caller declaration. Different participants may be
-  graph-owned by different subsystems without fabricating an
+  operation token. Every occurrence-local selection therefore has a
+  `JointFeatureUseIdV2` unique within this assembly declaration. Repeated
+  physical-feature use across weld passes, rework, and hybrid joints is admitted
+  under the explicit `Reusable` policy; `ExclusiveWithinAssembly` is an opt-in
+  typed policy and conflicts deterministically with any second use. One physical
+  feature may not acquire conflicting declared bodies across uses. Each selected
+  body and feature must exist and share one subsystem owner, but this proves only
+  structural co-ownership, never feature containment; a same-owner "wrong body"
+  selector remains an authority-free caller declaration. Different participants
+  may be graph-owned by different subsystems without fabricating an
   `InterfaceBinding`.
 - `AssemblyLifecycleV2` is closed over truthful `Planned { procedure, path }`
   and `ExecutionClaimed { procedure, path, evidence }` states. The latter is a
@@ -864,6 +874,11 @@ admitted derived-geometry boundary.
   across typed artifact roles because one artifact can intentionally serve more
   than one nominal role; the lifecycle discriminant, each role position, and
   every coordinate remain separately bound. Coordinates are not authenticated.
+  Planned and execution-claimed occurrences both participate in the same
+  structural chronology: "available" means nominally present in the declared
+  schedule, not observed process completion. A planned introduction therefore
+  supplies no execution-causality evidence for a later claim, and V2 performs
+  no lifecycle-consistency proof across occurrences.
   The preloaded-bolt force must be finite and positive and retains submitted
   binary64 bits, explicit newton/kilonewton unit, and deterministic coherent-SI
   newton bits. It is not achieved force, torque conversion, or joint authority.
@@ -872,10 +887,13 @@ admitted derived-geometry boundary.
   occurrence/use/step identities, family payloads and typed roles, every body
   and feature identity/key, explicit reuse policy, lifecycle and artifacts,
   preload source/unit/SI bits, scheduled occurrence links, introduced bodies,
-  and every canonical availability-before/after count and digest. Its explicit
-  160 MiB field / 256 MiB aggregate envelope covers the computed maximum-width
-  occurrence, step, and initial-set fields without quadratic availability-set
-  rows. Admission refuses raw N+1 inputs before nested graph/canonical-row work;
+  and every canonical availability count and history-bound chain root. Its
+  explicit 160 MiB field / 256 MiB aggregate envelope covers the independently
+  derived true maximum: an `ExecutionClaimed` `PreloadedBolt` with two clamped
+  members and 62 typed stack participants has a 33,741-byte occurrence row, a
+  138,235,912-byte 4,096-row occurrence field, and a 226,037,784-byte combined
+  maximum collection payload before fixed schema framing. Admission refuses raw
+  N+1 inputs before nested graph/canonical-row work;
   duplicate identities, ordinals, references, or stack positions;
   family-cardinality/role defects; unknown or cross-owner selectors;
   conflicting declared bodies or exclusivity; unavailable or unused
@@ -884,8 +902,14 @@ admitted derived-geometry boundary.
   for all six families, zero/one/multi-body transitions, reusable and exclusive
   features, both lifecycle states, artifact-coordinate equality, symmetric and
   directed permutations, isolated semantic mutations, deterministic refusals,
-  exact 4,096/N+1 and 64/N+1 boundaries, an independent canonical-preimage
-  oracle, and pinned maximum-grammar-width row/field arithmetic.
+  exact N/N+1 boundaries for steps, occurrences, initial bodies, introductions,
+  per-step occurrence references and participants, a growing one-body schedule
+  with independently accounted linear commitment work, and a canonical oracle
+  that hard-codes all V2 tags and the raw fs-blake3 frame/schema grammar rather
+  than calling production tag accessors or `CanonicalEncoder`. Reviewed literal
+  semantic-ID, schema-ID, canonical-preimage, availability-root, byte and item
+  goldens plus tag/order/framing mutations guard coordinated oracle drift. The
+  true maximum-grammar-width row and field arithmetic is independently pinned.
 - This structural seed does not find or validate collision-free insertion
   paths, tool access, order optimality, inventory, occurrence/configuration or
   effectivity, mating/alignment, detached-subassembly connectivity, or actual or
@@ -897,9 +921,9 @@ admitted derived-geometry boundary.
   PMI or standards, authenticate artifacts, prove assembly/manufacturability,
   mutate the Machine graph, or transport declarations across lineage; successor
   graphs require explicit readmission. This assembly section first became
-  effective with source and tests at `9054f830`; its premature text had landed
-  in parent `8a143b23`. V2 supersedes that rejected V1 model without rewriting
-  shared-main history.
+  effective as V2 with source and tests at `89de6ddf`. Premature V1 contract text
+  landed in `8a143b23`, and rejected V1 source/tests landed in `9054f830`; V2
+  supersedes that history without rewriting shared-main commits.
 - `query` (addendum Proposal 8 — declarative query language v0): a query is
   `(QoI, Target, budget_usd, deadline_s)` where `Qoi` is a fixed MENU —
   `MaxOverRegion`, `Integral` (linear), `Exceedance` (probabilistic, needs a

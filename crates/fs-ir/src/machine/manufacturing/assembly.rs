@@ -26,6 +26,8 @@ use super::ManufacturingArtifactRefV1;
 
 /// Identity and admission schema version for the corrected assembly model.
 pub const MACHINE_ASSEMBLY_SCHEMA_VERSION_V2: u32 = 2;
+/// Version of the authenticated availability-transition commitment carried by V2.
+pub const MACHINE_ASSEMBLY_AVAILABILITY_COMMITMENT_VERSION_V2: u32 = 1;
 /// Maximum chronological steps retained by one assembly receipt.
 pub const MAX_MACHINE_ASSEMBLY_STEPS_V2: usize = 4_096;
 /// Maximum physical joint occurrences retained by one assembly receipt.
@@ -41,12 +43,18 @@ pub const MAX_MACHINE_ASSEMBLY_PARTICIPANTS_PER_OCCURRENCE_V2: usize = 64;
 
 /// Explicit canonical resource envelope for V2 assembly identity publication.
 ///
-/// The 160 MiB field ceiling covers 4,096 maximum-width occurrence rows, each
-/// with 64 maximum-grammar-width participant uses. The 256 MiB aggregate
-/// ceiling also covers 4,096 maximum-width transition rows, the initial set,
-/// and frame overhead without quadratic availability-set serialization.
+/// The 160 MiB field ceiling covers the independently derived 138,235,912-byte
+/// field containing 4,096 true maximum-width `ExecutionClaimed` preloaded-bolt
+/// rows. The 256 MiB aggregate ceiling covers the independently derived
+/// 226,037,784-byte three-collection payload plus fixed frame overhead. The
+/// availability evidence hashes the initial set once and then only each
+/// bounded transition, so no complete growing set is serialized per step.
 pub const MACHINE_ASSEMBLY_IDENTITY_LIMITS_V2: CanonicalLimits =
     CanonicalLimits::new(256 * 1_024 * 1_024, 160 * 1_024 * 1_024, 6, 4_096, 4_096);
+
+const AVAILABILITY_INITIAL_ROOT_DOMAIN_V2: &str = "org.frankensim.fs-ir.machine.manufacturing-assembly.v2/availability-transition-chain.v1/initial";
+const AVAILABILITY_STEP_ROOT_DOMAIN_V2: &str =
+    "org.frankensim.fs-ir.machine.manufacturing-assembly.v2/availability-transition-chain.v1/step";
 
 macro_rules! assembly_key_id_v2 {
     ($(#[$meta:meta])* $name:ident, $role:literal) => {
@@ -91,7 +99,7 @@ assembly_key_id_v2!(
     "assembly-joint-occurrence-id"
 );
 assembly_key_id_v2!(
-    /// Assembly-global identity of one occurrence-local durable-feature use.
+    /// Assembly-declaration-local identity of one occurrence-local durable-feature use.
     JointFeatureUseIdV2,
     "assembly-joint-feature-use-id"
 );
@@ -419,7 +427,7 @@ impl JointFeatureUseV2 {
         }
     }
 
-    /// Stable assembly-global identity for this occurrence-local use.
+    /// Stable identity, unique within one assembly declaration, for this use.
     #[must_use]
     pub const fn id(&self) -> &JointFeatureUseIdV2 {
         &self.id
@@ -933,7 +941,7 @@ impl CanonicalSchema for MachineAssemblyIdentitySchemaV2 {
     const DOMAIN: &'static str = "org.frankensim.fs-ir.machine.manufacturing-assembly.v2";
     const NAME: &'static str = "admitted-machine-assembly";
     const VERSION: u32 = MACHINE_ASSEMBLY_SCHEMA_VERSION_V2;
-    const CONTEXT: &'static str = "one exact Machine graph, initial availability set, family-specific physical occurrences, and atomic chronological availability transitions";
+    const CONTEXT: &'static str = "one exact Machine graph, initial availability set, family-specific physical occurrences, and versioned authenticated chronological availability-transition chain";
     const FIELDS: &'static [FieldSpec] = &[
         FieldSpec::required("assembly-schema-version", WireType::U64),
         FieldSpec::required("frankenscript-ir-version", WireType::U64),
@@ -947,14 +955,14 @@ impl CanonicalSchema for MachineAssemblyIdentitySchemaV2 {
 /// Strong semantic identity of one admitted V2 assembly declaration.
 pub type MachineAssemblyIdV2 = ProblemSemanticId<MachineAssemblyIdentitySchemaV2>;
 
-/// One validated transition with replayable before/after counts and digests.
+/// One validated transition in the replayable authenticated availability chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdmittedAssemblyStepV2 {
     step: AssemblyStepV2,
     available_before_count: usize,
     available_after_count: usize,
-    available_before_digest: ContentId,
-    available_after_digest: ContentId,
+    availability_before_root: ContentId,
+    availability_after_root: ContentId,
 }
 
 impl AdmittedAssemblyStepV2 {
@@ -976,16 +984,23 @@ impl AdmittedAssemblyStepV2 {
         self.available_after_count
     }
 
-    /// Domain-separated digest of the complete canonical before set.
+    /// History-bound root immediately before this step.
+    ///
+    /// For step zero this is the canonical initial-set root. For every later
+    /// step it is exactly the preceding step's `availability_after_root`.
     #[must_use]
-    pub const fn available_before_digest(&self) -> ContentId {
-        self.available_before_digest
+    pub const fn availability_before_root(&self) -> ContentId {
+        self.availability_before_root
     }
 
-    /// Domain-separated digest of the complete canonical after set.
+    /// History-bound root after authenticating this exact transition.
+    ///
+    /// This is not a history-independent set digest. A verifier recomputes it
+    /// from the prior root/count, step ID/ordinal, sorted introductions, and
+    /// after-count under the versioned V2 transition domain.
     #[must_use]
-    pub const fn available_after_digest(&self) -> ContentId {
-        self.available_after_digest
+    pub const fn availability_after_root(&self) -> ContentId {
+        self.availability_after_root
     }
 
     fn canonical_row(&self) -> Vec<u8> {
@@ -1004,9 +1019,9 @@ impl AdmittedAssemblyStepV2 {
                 .map(|id| id_key_row_v2(id.canonical_key())),
         );
         row.extend_from_slice(&(self.available_before_count as u64).to_le_bytes());
-        append_bytes_v2(&mut row, self.available_before_digest.as_bytes());
+        append_bytes_v2(&mut row, self.availability_before_root.as_bytes());
         row.extend_from_slice(&(self.available_after_count as u64).to_le_bytes());
-        append_bytes_v2(&mut row, self.available_after_digest.as_bytes());
+        append_bytes_v2(&mut row, self.availability_after_root.as_bytes());
         row
     }
 }
@@ -1016,6 +1031,7 @@ impl AdmittedAssemblyStepV2 {
 pub struct AdmittedMachineAssemblyV2 {
     admitted_against_graph: MachineGraphIdV1,
     initial_available_bodies: Vec<BodyId>,
+    initial_availability_root: ContentId,
     occurrences: Vec<JointOccurrenceV2>,
     steps: Vec<AdmittedAssemblyStepV2>,
     receipt: IdentityReceipt<MachineAssemblyIdV2>,
@@ -1032,6 +1048,12 @@ impl AdmittedMachineAssemblyV2 {
     #[must_use]
     pub fn initial_available_bodies(&self) -> &[BodyId] {
         &self.initial_available_bodies
+    }
+
+    /// Canonical-set root that seeds the history-bound transition chain.
+    #[must_use]
+    pub const fn initial_availability_root(&self) -> ContentId {
+        self.initial_availability_root
     }
 
     /// Physical occurrences in stable occurrence-ID order.
@@ -1844,6 +1866,8 @@ fn admit_assembly_v2(
         .iter()
         .cloned()
         .collect::<BTreeSet<_>>();
+    let initial_availability_root = initial_availability_root_v2(&initial_available_bodies);
+    let mut availability_root = initial_availability_root;
     let mut scheduled = BTreeMap::<JointOccurrenceIdV2, AssemblyStepIdV2>::new();
     let mut admitted_steps = Vec::with_capacity(steps.len());
 
@@ -1871,9 +1895,12 @@ fn admit_assembly_v2(
             );
         }
 
-        let available_before = available.iter().cloned().collect::<Vec<_>>();
-        let available_before_count = available_before.len();
-        let mut candidate = available.clone();
+        let available_before_count = available.len();
+        let introduced = step
+            .introduced_bodies
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
         for body in &step.introduced_bodies {
             if !owners.body.contains_key(body) {
                 return Err(MachineAssemblyAdmissionErrorV2::UnknownIntroducedBody {
@@ -1881,7 +1908,7 @@ fn admit_assembly_v2(
                     body: body.clone(),
                 });
             }
-            if !candidate.insert(body.clone()) {
+            if available.contains(body) {
                 return Err(MachineAssemblyAdmissionErrorV2::BodyAlreadyAvailable {
                     step: step.id.clone(),
                     body: body.clone(),
@@ -1910,7 +1937,7 @@ fn admit_assembly_v2(
             let occurrence = &occurrences[*index];
             for (role, feature_use) in occurrence.topology.participants() {
                 let body = feature_use.selector().declared_body();
-                if !candidate.contains(body) {
+                if !available.contains(body) && !introduced.contains(body) {
                     return Err(
                         MachineAssemblyAdmissionErrorV2::ParticipantBodyUnavailable {
                             step: step.id.clone(),
@@ -1938,18 +1965,26 @@ fn admit_assembly_v2(
         for occurrence_id in pending_occurrences {
             scheduled.insert(occurrence_id, step.id.clone());
         }
-        available = candidate;
-        let available_after = available.iter().cloned().collect::<Vec<_>>();
-        let available_after_count = available_after.len();
-        let available_before_digest = availability_set_digest_v2(&available_before);
-        let available_after_digest = availability_set_digest_v2(&available_after);
+        let available_after_count = available_before_count + step.introduced_bodies.len();
+        let availability_after_root = availability_transition_root_v2(
+            availability_root,
+            available_before_count,
+            &step,
+            available_after_count,
+        );
+        for body in &step.introduced_bodies {
+            let inserted = available.insert(body.clone());
+            debug_assert!(inserted, "validated introductions are new");
+        }
+        debug_assert_eq!(available.len(), available_after_count);
         admitted_steps.push(AdmittedAssemblyStepV2 {
             step,
             available_before_count,
             available_after_count,
-            available_before_digest,
-            available_after_digest,
+            availability_before_root: availability_root,
+            availability_after_root,
         });
+        availability_root = availability_after_root;
     }
 
     if let Some(occurrence) = occurrences
@@ -2007,6 +2042,7 @@ fn admit_assembly_v2(
     Ok(AdmittedMachineAssemblyV2 {
         admitted_against_graph: graph_id,
         initial_available_bodies,
+        initial_availability_root,
         occurrences,
         steps: admitted_steps,
         receipt,
@@ -2019,10 +2055,35 @@ fn body_row_v2(body: &BodyId) -> Vec<u8> {
     row
 }
 
-fn availability_set_digest_v2(bodies: &[BodyId]) -> ContentId {
-    let mut preimage =
-        b"org.frankensim.fs-ir.machine.manufacturing-assembly.v2/availability-set".to_vec();
+fn initial_availability_root_v2(bodies: &[BodyId]) -> ContentId {
+    let mut preimage = Vec::with_capacity(128 + bodies.len().saturating_mul(184));
+    append_bytes_v2(
+        &mut preimage,
+        AVAILABILITY_INITIAL_ROOT_DOMAIN_V2.as_bytes(),
+    );
+    preimage.extend_from_slice(&MACHINE_ASSEMBLY_AVAILABILITY_COMMITMENT_VERSION_V2.to_le_bytes());
     append_rows_v2(&mut preimage, bodies.iter().map(body_row_v2));
+    ContentId::of_bytes(&preimage)
+}
+
+fn availability_transition_root_v2(
+    prior_root: ContentId,
+    available_before_count: usize,
+    step: &AssemblyStepV2,
+    available_after_count: usize,
+) -> ContentId {
+    let mut preimage = Vec::with_capacity(256 + step.introduced_bodies.len().saturating_mul(184));
+    append_bytes_v2(&mut preimage, AVAILABILITY_STEP_ROOT_DOMAIN_V2.as_bytes());
+    preimage.extend_from_slice(&MACHINE_ASSEMBLY_AVAILABILITY_COMMITMENT_VERSION_V2.to_le_bytes());
+    append_bytes_v2(&mut preimage, prior_root.as_bytes());
+    preimage.extend_from_slice(&(available_before_count as u64).to_le_bytes());
+    append_bytes_v2(&mut preimage, step.id.canonical_key().as_bytes());
+    preimage.extend_from_slice(&step.ordinal.to_le_bytes());
+    append_rows_v2(
+        &mut preimage,
+        step.introduced_bodies.iter().map(body_row_v2),
+    );
+    preimage.extend_from_slice(&(available_after_count as u64).to_le_bytes());
     ContentId::of_bytes(&preimage)
 }
 
@@ -2050,8 +2111,7 @@ fn append_artifact_v2(out: &mut Vec<u8>, artifact: &ManufacturingArtifactRefV1) 
     append_bytes_v2(out, &row);
 }
 
-fn append_rows_v2(out: &mut Vec<u8>, rows: impl IntoIterator<Item = Vec<u8>>) {
-    let rows = rows.into_iter().collect::<Vec<_>>();
+fn append_rows_v2(out: &mut Vec<u8>, rows: impl std::iter::ExactSizeIterator<Item = Vec<u8>>) {
     out.extend_from_slice(&(rows.len() as u64).to_le_bytes());
     for row in rows {
         append_bytes_v2(out, &row);
