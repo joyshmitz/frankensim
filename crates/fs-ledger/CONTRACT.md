@@ -349,6 +349,26 @@ and the lower-layer Franken crates declared in `Cargo.toml`, including
   `tune_content_identity` until `reconcile_tune_content_identity` re-reads the
   bounded source row and transactionally inserts or refreshes only the raw
   value IDs. Immutable key IDs and the row schema must still verify exactly.
+- Resumable operation/cache reconciliation (`identity_migration`, schema v19):
+  `begin_identity_reconciliation` captures the physical ledger instance,
+  current schema, and inclusive operation/tune row-ID high-water marks in one
+  owned transaction. Its fixed 64-byte `FSIDRC01` cursor v1 carries those
+  fields, one closed phase tag, canonical zero reserved bytes, and the last
+  durably visited row; truncation, extension, unknown version/phase, nonzero
+  reserve bytes, negative bounds, and progress beyond a bound fail closed.
+  `reconcile_identity_sidecars_page` accepts only a cursor for the same
+  physical ledger and schema, visits at most 64 rows in deterministic row-ID
+  order, and owns one transaction. It polls the explicit `fs_exec::Cx` before
+  the transaction, before every row, and before commit. Cancellation rolls the
+  whole page back and returns the byte-identical input cursor; if rollback
+  itself fails, both primary and cleanup diagnostics remain visible instead.
+  Response-loss replay is idempotent. A committed page reports its input/output cursor
+  content IDs and separate operation/tune counts. High-water marks bound a
+  run; automatically assigned rows above them require another run. The cursor
+  and page value report bounded storage progress only, never owner semantics,
+  cache validity, or authority. The cursor content ID is a plain byte digest,
+  not a signature: decoded caller-supplied progress requires an external
+  admission policy when its transport is untrusted.
 - Rev S extension tables (sparse v0, uniform `(name UNIQUE, body JSON)`
   shape): `put_extension`/`get_extension` over `requirements`, `model_cards`,
   `evidence`, `scenarios`, `constraints`, `capability_probes`, `imports`,
@@ -684,7 +704,15 @@ refusal, or verifier panic).
     re-hash from the exact bounded cache row. Mutable params/measured IDs must
     change atomically with the source values. Raw equality cannot establish a
     cache-key schema, measurement validity, freshness, or authority.
-22. The nightly writer publishes op + metric + benchmark event + terminal
+22. A reconciliation cursor is valid only for its exact physical ledger,
+    current schema, closed phase, non-negative progress, and captured
+    high-water interval. One page either commits every visited raw-content
+    sidecar or rolls back all of them before returning an advanced cursor. A
+    cancellation result returns the unchanged input cursor after successful
+    cleanup; a rollback failure retains both errors, and page progress is never
+    inferred from provisional rows. Decoded cursor bytes alone do not certify
+    that an earlier page committed.
+23. The nightly writer publishes op + metric + benchmark event + terminal
     outcome in one explicit transaction. A write or commit failure is primary;
     rollback is always attempted, and a rollback failure is retained after the
     primary failure in a deterministic combined diagnostic. Cleanup failure
@@ -724,6 +752,12 @@ missing receipts, run disagreement, drain-count disagreement, response-loss
 conflicts, and transport identity mismatch as fail-closed `Invalid`,
 `ArtifactReadLimit`, `Corrupt`, or underlying storage errors; none is silently
 treated as a negative lookup or completion.
+Resumable identity reconciliation uses the separate
+`IdentityReconcileCursorError` and `IdentityReconcileError` boundaries.
+Malformed cursor transport, a physical-ledger/schema mismatch, cancellation,
+an underlying `LedgerError`, and a primary-plus-rollback cleanup failure remain
+distinguishable; cancellation carries the exact replay cursor rather than
+masquerading as success or partial progress.
 Never panics across the crate boundary. Signed database metadata that
 represents a length or count is converted with an explicit non-negative check;
 physical corruption cannot reinterpret `-1` as `u64::MAX`.
@@ -739,6 +773,10 @@ function). Row ids, timestamps, and physical file bytes are NOT deterministic
 and are excluded from identity. Deterministic replays should pass logical
 times to `begin_op`/`append_event` (caller-controlled `t`). Tune scans use the
 total order `(shape_class, machine)` and refuse rather than truncate.
+Identity reconciliation orders operation IDs and tune row IDs ascending under
+captured inclusive ceilings; the same retained source state and input cursor
+produce the same output cursor and counts. Physical row IDs remain storage
+envelopes, not semantic identities.
 Nightly admission and diagnostic ordering are deterministic:
 `argv -> db-path -> outcome -> suite -> value -> GITHUB_SHA -> RUNNER_OS ->
 constructed envelopes`. Environment values are used exactly as supplied after
@@ -756,7 +794,11 @@ this G4 case is the executable witness for context identity and cancellation
 propagation on that tested async response-wait path. Cancellation is observed
 after SQL dispatch: it does not preempt blocking SQL, and it does not prove an
 already-dispatched mutation was rolled back. The synchronous `Ledger` API does
-not yet claim per-call scope-tree cancellation.
+not claim general per-call scope-tree cancellation. The narrow exception is
+`reconcile_identity_sidecars_page`: it explicitly polls its supplied `Cx` at
+bounded row boundaries and immediately before commit, owns the transaction,
+and rolls the complete page back when a poll observes cancellation. One
+already-dispatched bounded row query is not preempted.
 The nightly writer has no asynchronous cancellation boundary. Once its
 transaction begins, every fallible write/commit path attempts synchronous
 rollback; if both operations fail, both errors escape in primary-then-cleanup
@@ -867,6 +909,13 @@ simulate pre-v18 operation inserts and pre-v19 cache inserts/value updates
 after the schema is current, prove typed reads fail closed before
 reconciliation, and prove exact reconciliation is idempotent and rolls back
 with its source write.
+The resumable-page regressions freeze the 64-byte cursor transport and refuse
+truncation, extension, changed magic/version/phase, nonzero reserved bytes,
+zero schema, negative bounds, out-of-range progress, and a foreign physical
+ledger. They also prove one-row page ordering across both source families,
+response-loss replay, high-water exclusion of later automatically assigned
+rows, max-page bounds, and cancellation after one provisional write with zero
+published sidecars and the unchanged resume cursor.
 These code-first tests require the central batch-proof pass before their results
 may be cited as green evidence.
 `tests/color_battery.rs` `col-018` freezes exact canonical-byte sentinels for
@@ -1092,15 +1141,19 @@ The graph is the minting authority for `fs_evidence::AdmittedColor`:
   cache inserts/value updates without rewriting immutable operation IDs or
   cache-key IDs. It does not continuously mirror an old writer, choose an
   owner schema, or make an authority claim; another old-writer mutation makes
-  the next typed read fail closed until reconciliation runs again. The v1
+  the next typed read fail closed until reconciliation runs again. The bounded
+  cursor makes operation/cache repair resumable and cancellation-correct per
+  page, but it is not a global writer fence: source mutation inside a captured
+  row-ID interval is read when its page runs, and rows above the captured
+  ceilings require a later cursor. The v1
   migration-receipt wire transport now
   preserves every receipt field and fails closed on truncation, extension,
   unknown versions, forged IDs, malformed lengths, and content divergence, but
-  package integration and end-to-end database-wire-package parity remain open;
-  resumable fleet backfill and automatic multi-version writer coordination
-  beyond the explicit per-row compatibility window, package parity,
-  cancellation/crash fault injection, and rollback views remain required
-  before the parent persistence bead can close.
+  package integration and end-to-end database-wire-package parity remain open.
+  Automatic multi-version writer coordination beyond explicit bounded
+  reconciliation, durable fleet scheduling/log retention, process-crash fault
+  injection, and rollback views remain required before the parent persistence
+  bead can close.
 - Safe std-only identity generation is implemented through `/dev/urandom` on
   Unix. Fresh identity creation on non-Unix targets is explicitly refused;
   existing v4+ ledgers remain readable when their persisted identity and

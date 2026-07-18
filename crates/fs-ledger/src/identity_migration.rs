@@ -20,13 +20,14 @@ use fs_blake3::identity::{
     IdentityAuditRecord, IdentityReceipt, IdentityRole, NoClaimState, SchemaId, SemanticId,
     StrongIdentity, TrustState, WireType, legacy::LegacyProvenanceV1,
 };
+use fs_exec::Cx;
 use fsqlite::SqliteValue;
 
 use crate::{
-    ContentHash, EdgeRole, FiveExplicits, Ledger, LedgerError, MAX_TUNE_KERNEL_BYTES,
-    MAX_TUNE_MACHINE_BYTES, MAX_TUNE_MEASURED_BYTES, MAX_TUNE_PARAMS_BYTES,
-    MAX_TUNE_SHAPE_CLASS_BYTES, TuneRow, blob_param, now_wall_ns, row_text, sql_err, text_param,
-    tune_corrupt,
+    ContentHash, EdgeRole, FiveExplicits, Ledger, LedgerError, LedgerInstanceId,
+    MAX_TUNE_KERNEL_BYTES, MAX_TUNE_MACHINE_BYTES, MAX_TUNE_MEASURED_BYTES, MAX_TUNE_PARAMS_BYTES,
+    MAX_TUNE_SHAPE_CLASS_BYTES, SCHEMA_VERSION, TuneRow, blob_param, now_wall_ns, row_i64,
+    row_text, sql_err, text_param, tune_corrupt,
 };
 
 /// Schema version of one artifact compatibility-hash to typed-content-ID row.
@@ -43,6 +44,12 @@ pub const MAX_ARTIFACT_SEMANTIC_BINDING_CANDIDATES: usize = 256;
 pub const MAX_EVIDENCE_SEMANTIC_BINDING_NAME_BYTES: usize = 64 * 1024;
 /// Maximum receipt IDs exposed by one evidence-semantic candidate lookup.
 pub const MAX_EVIDENCE_SEMANTIC_BINDING_CANDIDATES: usize = 256;
+/// Maximum source rows reconciled by one durable identity-backfill page.
+pub const MAX_IDENTITY_RECONCILE_PAGE_ROWS: usize = 64;
+/// Version of the fixed-width durable identity-reconciliation cursor.
+pub const IDENTITY_RECONCILE_CURSOR_WIRE_VERSION: u32 = 1;
+/// Exact byte length of the fixed-width durable reconciliation cursor.
+pub const IDENTITY_RECONCILE_CURSOR_WIRE_BYTES: usize = 64;
 
 /// Identity schema version for immutable migration receipts.
 pub const IDENTITY_MIGRATION_RECEIPT_VERSION: u32 = 1;
@@ -75,6 +82,7 @@ pub const MAX_IDENTITY_MIGRATION_RECEIPT_WIRE_BYTES: usize =
 
 const IDENTITY_MIGRATION_RECEIPT_WIRE_MAGIC: &[u8; 8] = b"FSMIGR01";
 const IDENTITY_MIGRATION_RECEIPT_WIRE_BASE_BYTES: usize = 290;
+const IDENTITY_RECONCILE_CURSOR_WIRE_MAGIC: &[u8; 8] = b"FSIDRC01";
 
 const RECEIPT_ID_LIMITS: CanonicalLimits = CanonicalLimits::new(64 * 1024, 8 * 1024, 64, 64, 4096);
 
@@ -202,6 +210,61 @@ impl fmt::Display for IdentityMigrationWireError {
 }
 
 impl std::error::Error for IdentityMigrationWireError {}
+
+/// Structured refusal from the fixed-width reconciliation-cursor codec.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdentityReconcileCursorError {
+    /// The transport is truncated or extended.
+    TransportLength { found: usize, expected: usize },
+    /// The fixed cursor family marker is absent or changed.
+    Magic,
+    /// The cursor wire version is unknown to this decoder.
+    UnsupportedVersion { found: u32 },
+    /// Reserved bytes are nonzero and therefore not canonical v1 transport.
+    ReservedBytes,
+    /// The closed reconciliation-phase tag is unknown.
+    InvalidPhase { found: u8 },
+    /// A fixed-width cursor field violates its structural domain.
+    InvalidField {
+        field: &'static str,
+        detail: &'static str,
+    },
+}
+
+impl fmt::Display for IdentityReconcileCursorError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TransportLength { found, expected } => write!(
+                formatter,
+                "reconciliation cursor has {found} bytes; expected exactly {expected}"
+            ),
+            Self::Magic => formatter.write_str("reconciliation cursor magic differs from v1"),
+            Self::UnsupportedVersion { found } => {
+                write!(
+                    formatter,
+                    "unsupported reconciliation cursor version {found}"
+                )
+            }
+            Self::ReservedBytes => {
+                formatter.write_str("reconciliation cursor reserved bytes are nonzero")
+            }
+            Self::InvalidPhase { found } => {
+                write!(
+                    formatter,
+                    "reconciliation cursor has unknown phase tag {found}"
+                )
+            }
+            Self::InvalidField { field, detail } => {
+                write!(
+                    formatter,
+                    "reconciliation cursor field {field} is invalid: {detail}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for IdentityReconcileCursorError {}
 
 /// Owner-local declaration consumed by `xtask check-identities`.
 pub const IDENTITY_MIGRATION_RECEIPT_SCHEMA_DECLARATION: &[&str] = &[
@@ -736,6 +799,346 @@ impl TuneContentIdentity {
     #[must_use]
     pub const fn row_schema_version(self) -> u32 {
         self.row_schema_version
+    }
+}
+
+/// Closed stage of one high-water-bounded identity reconciliation run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityReconcilePhase {
+    /// Reconcile frozen operation-field sidecars through the captured op ID.
+    Operations,
+    /// Reconcile autotuner sidecars through the captured tune row ID.
+    Tune,
+    /// Every source row inside both captured high-water marks was visited.
+    Complete,
+}
+
+impl IdentityReconcilePhase {
+    const fn tag(self) -> u8 {
+        match self {
+            Self::Operations => 1,
+            Self::Tune => 2,
+            Self::Complete => 3,
+        }
+    }
+
+    fn from_tag(tag: u8) -> Result<Self, IdentityReconcileCursorError> {
+        match tag {
+            1 => Ok(Self::Operations),
+            2 => Ok(Self::Tune),
+            3 => Ok(Self::Complete),
+            found => Err(IdentityReconcileCursorError::InvalidPhase { found }),
+        }
+    }
+}
+
+/// Persistable, fixed-width resume token for bounded operation/cache sidecar
+/// reconciliation.
+///
+/// The cursor names one physical ledger instance, the exact current schema,
+/// and operation/tune high-water marks captured before the run. New rows
+/// beyond those marks intentionally belong to a later run. The fixed transport
+/// and its plain content ID detect accidental byte changes only: decoded cursor
+/// bytes are caller-supplied progress, not an authenticated receipt or a source
+/// of semantic or migration authority.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct IdentityReconcileCursor {
+    ledger_instance_id: LedgerInstanceId,
+    schema_version: u32,
+    phase: IdentityReconcilePhase,
+    after_rowid: i64,
+    op_high_water: i64,
+    tune_high_water: i64,
+}
+
+impl fmt::Debug for IdentityReconcileCursor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("IdentityReconcileCursor")
+            .field("ledger_instance_id", &self.ledger_instance_id.to_string())
+            .field("schema_version", &self.schema_version)
+            .field("phase", &self.phase)
+            .field("after_rowid", &self.after_rowid)
+            .field("op_high_water", &self.op_high_water)
+            .field("tune_high_water", &self.tune_high_water)
+            .finish()
+    }
+}
+
+impl IdentityReconcileCursor {
+    /// Physical ledger instance named by this resume token.
+    #[must_use]
+    pub const fn ledger_instance_id(self) -> LedgerInstanceId {
+        self.ledger_instance_id
+    }
+
+    /// Exact ledger schema observed when the high-water snapshot was minted.
+    #[must_use]
+    pub const fn schema_version(self) -> u32 {
+        self.schema_version
+    }
+
+    /// Source family processed by the next page.
+    #[must_use]
+    pub const fn phase(self) -> IdentityReconcilePhase {
+        self.phase
+    }
+
+    /// Last source row durably reconciled inside the current phase.
+    #[must_use]
+    pub const fn after_rowid(self) -> i64 {
+        self.after_rowid
+    }
+
+    /// Inclusive operation-ID ceiling captured before the run.
+    #[must_use]
+    pub const fn op_high_water(self) -> i64 {
+        self.op_high_water
+    }
+
+    /// Inclusive tune-rowid ceiling captured before the run.
+    #[must_use]
+    pub const fn tune_high_water(self) -> i64 {
+        self.tune_high_water
+    }
+
+    /// Whether both captured source families have been completely visited.
+    #[must_use]
+    pub const fn is_complete(self) -> bool {
+        matches!(self.phase, IdentityReconcilePhase::Complete)
+    }
+
+    /// Canonical fixed-width v1 transport.
+    #[must_use]
+    pub fn to_wire_bytes(self) -> [u8; IDENTITY_RECONCILE_CURSOR_WIRE_BYTES] {
+        let mut bytes = [0_u8; IDENTITY_RECONCILE_CURSOR_WIRE_BYTES];
+        bytes[..8].copy_from_slice(IDENTITY_RECONCILE_CURSOR_WIRE_MAGIC);
+        bytes[8..12].copy_from_slice(&IDENTITY_RECONCILE_CURSOR_WIRE_VERSION.to_le_bytes());
+        bytes[12..28].copy_from_slice(&self.ledger_instance_id.as_bytes());
+        bytes[28..32].copy_from_slice(&self.schema_version.to_le_bytes());
+        bytes[32] = self.phase.tag();
+        bytes[40..48].copy_from_slice(&self.after_rowid.to_le_bytes());
+        bytes[48..56].copy_from_slice(&self.op_high_water.to_le_bytes());
+        bytes[56..64].copy_from_slice(&self.tune_high_water.to_le_bytes());
+        bytes
+    }
+
+    /// Plain content identity of the exact fixed-width cursor bytes.
+    #[must_use]
+    pub fn content_id(self) -> ContentId {
+        ContentId::of_bytes(&self.to_wire_bytes())
+    }
+
+    /// Decode and structurally validate one exact fixed-width v1 cursor.
+    ///
+    /// This proves only canonical transport shape. Presenting the result to
+    /// [`Ledger::reconcile_identity_sidecars_page`] additionally verifies that
+    /// its named physical ledger and schema match the open handle; neither step
+    /// authenticates caller-supplied progress.
+    pub fn from_wire_bytes(bytes: &[u8]) -> Result<Self, IdentityReconcileCursorError> {
+        if bytes.len() != IDENTITY_RECONCILE_CURSOR_WIRE_BYTES {
+            return Err(IdentityReconcileCursorError::TransportLength {
+                found: bytes.len(),
+                expected: IDENTITY_RECONCILE_CURSOR_WIRE_BYTES,
+            });
+        }
+        if &bytes[..8] != IDENTITY_RECONCILE_CURSOR_WIRE_MAGIC {
+            return Err(IdentityReconcileCursorError::Magic);
+        }
+        let mut wire_version_bytes = [0_u8; 4];
+        wire_version_bytes.copy_from_slice(&bytes[8..12]);
+        let wire_version = u32::from_le_bytes(wire_version_bytes);
+        if wire_version != IDENTITY_RECONCILE_CURSOR_WIRE_VERSION {
+            return Err(IdentityReconcileCursorError::UnsupportedVersion {
+                found: wire_version,
+            });
+        }
+        if bytes[33..40].iter().any(|byte| *byte != 0) {
+            return Err(IdentityReconcileCursorError::ReservedBytes);
+        }
+        let mut instance_bytes = [0_u8; 16];
+        instance_bytes.copy_from_slice(&bytes[12..28]);
+        let mut schema_version_bytes = [0_u8; 4];
+        schema_version_bytes.copy_from_slice(&bytes[28..32]);
+        let mut after_rowid_bytes = [0_u8; 8];
+        after_rowid_bytes.copy_from_slice(&bytes[40..48]);
+        let mut op_high_water_bytes = [0_u8; 8];
+        op_high_water_bytes.copy_from_slice(&bytes[48..56]);
+        let mut tune_high_water_bytes = [0_u8; 8];
+        tune_high_water_bytes.copy_from_slice(&bytes[56..64]);
+        let cursor = Self {
+            ledger_instance_id: LedgerInstanceId(instance_bytes),
+            schema_version: u32::from_le_bytes(schema_version_bytes),
+            phase: IdentityReconcilePhase::from_tag(bytes[32])?,
+            after_rowid: i64::from_le_bytes(after_rowid_bytes),
+            op_high_water: i64::from_le_bytes(op_high_water_bytes),
+            tune_high_water: i64::from_le_bytes(tune_high_water_bytes),
+        };
+        cursor.validate_structure()?;
+        Ok(cursor)
+    }
+
+    fn validate_structure(self) -> Result<(), IdentityReconcileCursorError> {
+        if self.schema_version == 0 {
+            return Err(IdentityReconcileCursorError::InvalidField {
+                field: "schema_version",
+                detail: "zero has no shipped ledger schema meaning",
+            });
+        }
+        if self.after_rowid < 0 {
+            return Err(IdentityReconcileCursorError::InvalidField {
+                field: "after_rowid",
+                detail: "row progress must be non-negative",
+            });
+        }
+        if self.op_high_water < 0 {
+            return Err(IdentityReconcileCursorError::InvalidField {
+                field: "op_high_water",
+                detail: "operation high-water mark must be non-negative",
+            });
+        }
+        if self.tune_high_water < 0 {
+            return Err(IdentityReconcileCursorError::InvalidField {
+                field: "tune_high_water",
+                detail: "tune high-water mark must be non-negative",
+            });
+        }
+        match self.phase {
+            IdentityReconcilePhase::Operations if self.after_rowid > self.op_high_water => {
+                Err(IdentityReconcileCursorError::InvalidField {
+                    field: "after_rowid",
+                    detail: "operation progress exceeds its captured high-water mark",
+                })
+            }
+            IdentityReconcilePhase::Tune if self.after_rowid > self.tune_high_water => {
+                Err(IdentityReconcileCursorError::InvalidField {
+                    field: "after_rowid",
+                    detail: "tune progress exceeds its captured high-water mark",
+                })
+            }
+            IdentityReconcilePhase::Complete if self.after_rowid != 0 => {
+                Err(IdentityReconcileCursorError::InvalidField {
+                    field: "after_rowid",
+                    detail: "a complete cursor has canonical zero progress",
+                })
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Structured refusal or cooperative cancellation from a reconciliation page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdentityReconcileError {
+    /// A decoded resume token is structurally invalid.
+    Cursor(IdentityReconcileCursorError),
+    /// Storage, bounded-envelope, or sidecar verification failed.
+    Ledger(LedgerError),
+    /// The cursor belongs to another physical ledger or schema context.
+    StaleCursor { field: &'static str, detail: String },
+    /// Cancellation was observed at a bounded row boundary. The whole page was
+    /// rolled back; replay this exact cursor.
+    Cancelled { resume: IdentityReconcileCursor },
+    /// A primary reconciliation failure was followed by a rollback failure.
+    /// Both diagnostics are retained because cleanup success cannot be
+    /// inferred in this state.
+    Cleanup {
+        primary: Box<IdentityReconcileError>,
+        rollback: LedgerError,
+    },
+}
+
+impl From<IdentityReconcileCursorError> for IdentityReconcileError {
+    fn from(error: IdentityReconcileCursorError) -> Self {
+        Self::Cursor(error)
+    }
+}
+
+impl From<LedgerError> for IdentityReconcileError {
+    fn from(error: LedgerError) -> Self {
+        Self::Ledger(error)
+    }
+}
+
+impl fmt::Display for IdentityReconcileError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cursor(error) => write!(formatter, "invalid reconciliation cursor: {error}"),
+            Self::Ledger(error) => write!(formatter, "identity reconciliation refused: {error}"),
+            Self::StaleCursor { field, detail } => {
+                write!(
+                    formatter,
+                    "reconciliation cursor {field} is stale: {detail}"
+                )
+            }
+            Self::Cancelled { resume } => write!(
+                formatter,
+                "identity reconciliation cancelled; replay cursor {}",
+                resume.content_id()
+            ),
+            Self::Cleanup { primary, rollback } => write!(
+                formatter,
+                "identity reconciliation failed ({primary}); rollback also failed ({rollback})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for IdentityReconcileError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Cursor(error) => Some(error),
+            Self::Ledger(error) => Some(error),
+            Self::Cleanup { primary, .. } => Some(primary.as_ref()),
+            Self::StaleCursor { .. } | Self::Cancelled { .. } => None,
+        }
+    }
+}
+
+/// Result of one committed bounded reconciliation page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdentityReconcilePage {
+    input_cursor_id: ContentId,
+    next_cursor: IdentityReconcileCursor,
+    operation_rows: u32,
+    tune_rows: u32,
+}
+
+impl IdentityReconcilePage {
+    /// Plain content ID of the exact input cursor replayed by this page.
+    #[must_use]
+    pub const fn input_cursor_id(self) -> ContentId {
+        self.input_cursor_id
+    }
+
+    /// Resume token after the committed page.
+    #[must_use]
+    pub const fn next_cursor(self) -> IdentityReconcileCursor {
+        self.next_cursor
+    }
+
+    /// Operation rows visited by this committed page.
+    #[must_use]
+    pub const fn operation_rows(self) -> u32 {
+        self.operation_rows
+    }
+
+    /// Tune rows visited by this committed page.
+    #[must_use]
+    pub const fn tune_rows(self) -> u32 {
+        self.tune_rows
+    }
+
+    /// Whether both captured source families are complete.
+    #[must_use]
+    pub const fn is_complete(self) -> bool {
+        self.next_cursor.is_complete()
+    }
+
+    /// Plain content ID of the exact output cursor.
+    #[must_use]
+    pub fn output_cursor_id(self) -> ContentId {
+        self.next_cursor.content_id()
     }
 }
 
@@ -3054,6 +3457,330 @@ impl Ledger {
         Ok(())
     }
 
+    /// Capture a persistable high-water cursor for bounded operation/cache
+    /// content-identity reconciliation.
+    ///
+    /// The two ceilings and the physical ledger/schema binding are observed in
+    /// one owned read transaction. Automatically assigned rows above either
+    /// ceiling require a later cursor; retained rows inside the interval are
+    /// read when their page runs. The method refuses a caller-owned transaction
+    /// so the returned token cannot name uncommitted source rows.
+    pub fn begin_identity_reconciliation(
+        &self,
+    ) -> Result<IdentityReconcileCursor, IdentityReconcileError> {
+        if self.in_transaction() {
+            return Err(LedgerError::Invalid {
+                field: "identity_reconciliation.transaction".to_string(),
+                problem:
+                    "cannot mint a persistable high-water cursor inside a caller-owned transaction"
+                        .to_string(),
+            }
+            .into());
+        }
+        self.begin()?;
+        let captured = (|| {
+            let found_schema = self.schema_version()?;
+            if found_schema != SCHEMA_VERSION {
+                return Err(IdentityReconcileError::StaleCursor {
+                    field: "schema_version",
+                    detail: format!(
+                        "ledger reports v{found_schema}; this binary requires current v{SCHEMA_VERSION}"
+                    ),
+                });
+            }
+            let schema_version =
+                u32::try_from(found_schema).map_err(|_| IdentityReconcileError::StaleCursor {
+                    field: "schema_version",
+                    detail: format!(
+                        "ledger schema {found_schema} is outside the cursor u32 domain"
+                    ),
+                })?;
+            let ledger_instance_id = self.checked_instance_id()?;
+            let op_bounds = self
+                .conn
+                .query_row("SELECT COALESCE(MIN(id), 1), COALESCE(MAX(id), 0) FROM ops")
+                .map_err(|error| sql_err("identity reconciliation op high-water", &error))?;
+            let op_min = row_i64(&op_bounds, 0, "identity reconciliation minimum op")?;
+            let op_high_water = row_i64(&op_bounds, 1, "identity reconciliation maximum op")?;
+            if op_min <= 0 || op_high_water < 0 {
+                return Err(LedgerError::OpCorrupt {
+                    op: op_min.min(op_high_water),
+                    detail: "operation row IDs must be positive before a resumable reconciliation snapshot"
+                        .to_string(),
+                }
+                .into());
+            }
+            let tune_bounds = self
+                .conn
+                .query_row("SELECT COALESCE(MIN(rowid), 1), COALESCE(MAX(rowid), 0) FROM tune")
+                .map_err(|error| sql_err("identity reconciliation tune high-water", &error))?;
+            let tune_min = row_i64(&tune_bounds, 0, "identity reconciliation minimum tune row")?;
+            let tune_high_water =
+                row_i64(&tune_bounds, 1, "identity reconciliation maximum tune row")?;
+            if tune_min <= 0 || tune_high_water < 0 {
+                return Err(LedgerError::TuneCorrupt {
+                    kernel: "<reconciliation>".to_string(),
+                    detail:
+                        "tune row IDs must be positive before a resumable reconciliation snapshot"
+                            .to_string(),
+                }
+                .into());
+            }
+            Ok(IdentityReconcileCursor {
+                ledger_instance_id,
+                schema_version,
+                phase: IdentityReconcilePhase::Operations,
+                after_rowid: 0,
+                op_high_water,
+                tune_high_water,
+            })
+        })();
+        match captured {
+            Ok(cursor) => match self.commit() {
+                Ok(()) => Ok(cursor),
+                Err(error) => Err(self.identity_reconcile_rollback(error.into())),
+            },
+            Err(error) => Err(self.identity_reconcile_rollback(error)),
+        }
+    }
+
+    /// Reconcile at most one bounded page under an explicit cancellation
+    /// context, then return the next persistable cursor after commit.
+    ///
+    /// Each page owns one transaction. Cancellation is polled before opening
+    /// it, before every source row, and before commit. If observed, every write
+    /// in the page rolls back and the error returns the byte-identical input
+    /// cursor. Replaying a page after response loss is idempotent. A cursor from
+    /// another physical ledger or schema fails closed. Cursor transport is not
+    /// an authenticated progress receipt; callers that accept untrusted cursor
+    /// bytes must apply their own admission policy.
+    ///
+    /// # Errors
+    /// [`IdentityReconcileError::Cancelled`] for cooperative cancellation;
+    /// [`IdentityReconcileError::StaleCursor`] for a ledger/schema mismatch;
+    /// cursor, storage, or typed-sidecar refusals otherwise.
+    pub fn reconcile_identity_sidecars_page(
+        &self,
+        cx: &Cx<'_>,
+        cursor: IdentityReconcileCursor,
+        max_rows: usize,
+    ) -> Result<IdentityReconcilePage, IdentityReconcileError> {
+        self.reconcile_identity_sidecars_page_with_checkpoint(cursor, max_rows, || {
+            cx.checkpoint().is_err()
+        })
+    }
+
+    #[allow(clippy::too_many_lines)] // Keep the two-phase transaction and every cancellation edge visibly ordered.
+    fn reconcile_identity_sidecars_page_with_checkpoint(
+        &self,
+        cursor: IdentityReconcileCursor,
+        max_rows: usize,
+        mut cancellation_requested: impl FnMut() -> bool,
+    ) -> Result<IdentityReconcilePage, IdentityReconcileError> {
+        cursor.validate_structure()?;
+        if max_rows == 0 || max_rows > MAX_IDENTITY_RECONCILE_PAGE_ROWS {
+            return Err(LedgerError::Invalid {
+                field: "identity_reconciliation.max_rows".to_string(),
+                problem: format!(
+                    "must be between 1 and {MAX_IDENTITY_RECONCILE_PAGE_ROWS}, got {max_rows}"
+                ),
+            }
+            .into());
+        }
+        if self.in_transaction() {
+            return Err(LedgerError::Invalid {
+                field: "identity_reconciliation.transaction".to_string(),
+                problem: "a resumable page must own its transaction".to_string(),
+            }
+            .into());
+        }
+        if cancellation_requested() {
+            return Err(IdentityReconcileError::Cancelled { resume: cursor });
+        }
+        self.begin()?;
+        let attempted = (|| {
+            self.validate_identity_reconcile_cursor(cursor)?;
+            let input_cursor_id = cursor.content_id();
+            let mut next = cursor;
+            let mut operation_rows = 0_u32;
+            let mut tune_rows = 0_u32;
+
+            while usize::try_from(operation_rows + tune_rows).unwrap_or(usize::MAX) < max_rows
+                && !next.is_complete()
+            {
+                if cancellation_requested() {
+                    return Err(IdentityReconcileError::Cancelled { resume: cursor });
+                }
+                let processed = usize::try_from(operation_rows + tune_rows).unwrap_or(usize::MAX);
+                let remaining = max_rows.saturating_sub(processed);
+                match next.phase {
+                    IdentityReconcilePhase::Operations => {
+                        let rows = self
+                            .conn
+                            .query_with_params(
+                                &format!(
+                                    "SELECT id FROM ops
+                                     WHERE id > ?1 AND id <= ?2
+                                     ORDER BY id LIMIT {remaining}"
+                                ),
+                                &[
+                                    SqliteValue::Integer(next.after_rowid),
+                                    SqliteValue::Integer(next.op_high_water),
+                                ],
+                            )
+                            .map_err(|error| {
+                                sql_err("identity reconciliation operation page", &error)
+                            })?;
+                        for row in &rows {
+                            if cancellation_requested() {
+                                return Err(IdentityReconcileError::Cancelled { resume: cursor });
+                            }
+                            let op = row_i64(row, 0, "identity reconciliation operation row")?;
+                            if op <= next.after_rowid || op > next.op_high_water {
+                                return Err(LedgerError::OpCorrupt {
+                                    op,
+                                    detail: "operation page escaped its strict cursor interval"
+                                        .to_string(),
+                                }
+                                .into());
+                            }
+                            self.reconcile_op_content_identity(op)?.ok_or_else(|| {
+                                LedgerError::OpCorrupt {
+                                    op,
+                                    detail: "operation disappeared inside its reconciliation transaction"
+                                        .to_string(),
+                                }
+                            })?;
+                            next.after_rowid = op;
+                            operation_rows += 1;
+                        }
+                        if rows.len() < remaining || next.after_rowid >= next.op_high_water {
+                            next.phase = IdentityReconcilePhase::Tune;
+                            next.after_rowid = 0;
+                        }
+                    }
+                    IdentityReconcilePhase::Tune => {
+                        let rows = self
+                            .conn
+                            .query_with_params(
+                                &format!(
+                                    "SELECT rowid FROM tune
+                                     WHERE rowid > ?1 AND rowid <= ?2
+                                     ORDER BY rowid LIMIT {remaining}"
+                                ),
+                                &[
+                                    SqliteValue::Integer(next.after_rowid),
+                                    SqliteValue::Integer(next.tune_high_water),
+                                ],
+                            )
+                            .map_err(|error| {
+                                sql_err("identity reconciliation tune page", &error)
+                            })?;
+                        for row in &rows {
+                            if cancellation_requested() {
+                                return Err(IdentityReconcileError::Cancelled { resume: cursor });
+                            }
+                            let rowid = row_i64(row, 0, "identity reconciliation tune row")?;
+                            if rowid <= next.after_rowid || rowid > next.tune_high_water {
+                                return Err(LedgerError::TuneCorrupt {
+                                    kernel: "<reconciliation>".to_string(),
+                                    detail: "tune page escaped its strict cursor interval"
+                                        .to_string(),
+                                }
+                                .into());
+                            }
+                            let (kernel, shape_class, machine) =
+                                self.bounded_tune_key_at_rowid(rowid)?;
+                            self.reconcile_tune_content_identity(
+                                &kernel,
+                                &shape_class,
+                                &machine,
+                            )?
+                            .ok_or_else(|| {
+                                tune_corrupt(
+                                    &kernel,
+                                    "cache row disappeared inside its reconciliation transaction",
+                                )
+                            })?;
+                            next.after_rowid = rowid;
+                            tune_rows += 1;
+                        }
+                        if rows.len() < remaining || next.after_rowid >= next.tune_high_water {
+                            next.phase = IdentityReconcilePhase::Complete;
+                            next.after_rowid = 0;
+                        }
+                    }
+                    IdentityReconcilePhase::Complete => break,
+                }
+            }
+            if cancellation_requested() {
+                return Err(IdentityReconcileError::Cancelled { resume: cursor });
+            }
+            Ok(IdentityReconcilePage {
+                input_cursor_id,
+                next_cursor: next,
+                operation_rows,
+                tune_rows,
+            })
+        })();
+        match attempted {
+            Ok(page) => match self.commit() {
+                Ok(()) => Ok(page),
+                Err(error) => Err(self.identity_reconcile_rollback(error.into())),
+            },
+            Err(error) => Err(self.identity_reconcile_rollback(error)),
+        }
+    }
+
+    fn identity_reconcile_rollback(
+        &self,
+        primary: IdentityReconcileError,
+    ) -> IdentityReconcileError {
+        if !self.in_transaction() {
+            return primary;
+        }
+        match self.rollback() {
+            Ok(()) => primary,
+            Err(rollback) => IdentityReconcileError::Cleanup {
+                primary: Box::new(primary),
+                rollback,
+            },
+        }
+    }
+
+    fn validate_identity_reconcile_cursor(
+        &self,
+        cursor: IdentityReconcileCursor,
+    ) -> Result<(), IdentityReconcileError> {
+        cursor.validate_structure()?;
+        let current_instance = self.checked_instance_id()?;
+        if cursor.ledger_instance_id != current_instance {
+            return Err(IdentityReconcileError::StaleCursor {
+                field: "ledger_instance_id",
+                detail: format!(
+                    "cursor names {}, but this ledger is {}",
+                    cursor.ledger_instance_id, current_instance
+                ),
+            });
+        }
+        let current_schema = self.schema_version()?;
+        let current_schema_u32 =
+            u32::try_from(current_schema).map_err(|_| IdentityReconcileError::StaleCursor {
+                field: "schema_version",
+                detail: format!("current schema {current_schema} is outside the cursor u32 domain"),
+            })?;
+        if current_schema != SCHEMA_VERSION || cursor.schema_version != current_schema_u32 {
+            return Err(IdentityReconcileError::StaleCursor {
+                field: "schema_version",
+                detail: format!(
+                    "cursor names v{}, ledger reports v{current_schema}, binary requires v{SCHEMA_VERSION}",
+                    cursor.schema_version
+                ),
+            });
+        }
+        Ok(())
+    }
+
     fn stored_artifact_semantic_binding(
         &self,
         artifact_hash: &ContentHash,
@@ -4251,7 +4978,7 @@ impl Ledger {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SCHEMA_VERSION, schema};
+    use crate::schema;
 
     fn drop_v13_objects(ledger: &Ledger) {
         for ddl in [
@@ -4799,6 +5526,233 @@ mod tests {
                 .expect("exact cache reconciliation retry"),
             Some(updated)
         );
+    }
+
+    #[test]
+    fn reconciliation_cursor_wire_is_exact_bounded_and_ledger_scoped() {
+        let ledger = Ledger::open(":memory:").expect("fresh v19 ledger");
+        let cursor = ledger
+            .begin_identity_reconciliation()
+            .expect("mint current high-water cursor");
+        assert_eq!(cursor.ledger_instance_id(), ledger.instance_id());
+        assert_eq!(
+            cursor.schema_version(),
+            u32::try_from(SCHEMA_VERSION).unwrap()
+        );
+        assert_eq!(cursor.phase(), IdentityReconcilePhase::Operations);
+        assert_eq!(cursor.after_rowid(), 0);
+        assert_eq!(cursor.op_high_water(), 0);
+        assert_eq!(cursor.tune_high_water(), 0);
+        let wire = cursor.to_wire_bytes();
+        assert_eq!(wire.len(), IDENTITY_RECONCILE_CURSOR_WIRE_BYTES);
+        assert_eq!(
+            IdentityReconcileCursor::from_wire_bytes(&wire).unwrap(),
+            cursor
+        );
+        assert_eq!(cursor.content_id(), ContentId::of_bytes(&wire));
+
+        assert!(matches!(
+            IdentityReconcileCursor::from_wire_bytes(&wire[..wire.len() - 1]),
+            Err(IdentityReconcileCursorError::TransportLength { .. })
+        ));
+        let mut extended = wire.to_vec();
+        extended.push(0);
+        assert!(matches!(
+            IdentityReconcileCursor::from_wire_bytes(&extended),
+            Err(IdentityReconcileCursorError::TransportLength { .. })
+        ));
+        let mut changed = wire;
+        changed[0] ^= 1;
+        assert!(matches!(
+            IdentityReconcileCursor::from_wire_bytes(&changed),
+            Err(IdentityReconcileCursorError::Magic)
+        ));
+        changed = wire;
+        changed[8..12].copy_from_slice(&(IDENTITY_RECONCILE_CURSOR_WIRE_VERSION + 1).to_le_bytes());
+        assert!(matches!(
+            IdentityReconcileCursor::from_wire_bytes(&changed),
+            Err(IdentityReconcileCursorError::UnsupportedVersion { .. })
+        ));
+        changed = wire;
+        changed[32] = 0xff;
+        assert!(matches!(
+            IdentityReconcileCursor::from_wire_bytes(&changed),
+            Err(IdentityReconcileCursorError::InvalidPhase { found: 0xff })
+        ));
+        changed = wire;
+        changed[33] = 1;
+        assert!(matches!(
+            IdentityReconcileCursor::from_wire_bytes(&changed),
+            Err(IdentityReconcileCursorError::ReservedBytes)
+        ));
+        changed = wire;
+        changed[28..32].copy_from_slice(&0_u32.to_le_bytes());
+        assert!(matches!(
+            IdentityReconcileCursor::from_wire_bytes(&changed),
+            Err(IdentityReconcileCursorError::InvalidField {
+                field: "schema_version",
+                ..
+            })
+        ));
+        changed = wire;
+        changed[40..48].copy_from_slice(&1_i64.to_le_bytes());
+        assert!(matches!(
+            IdentityReconcileCursor::from_wire_bytes(&changed),
+            Err(IdentityReconcileCursorError::InvalidField {
+                field: "after_rowid",
+                ..
+            })
+        ));
+        changed = wire;
+        changed[48..56].copy_from_slice(&(-1_i64).to_le_bytes());
+        assert!(matches!(
+            IdentityReconcileCursor::from_wire_bytes(&changed),
+            Err(IdentityReconcileCursorError::InvalidField {
+                field: "op_high_water",
+                ..
+            })
+        ));
+
+        let other = Ledger::open(":memory:").expect("independent physical ledger");
+        assert!(matches!(
+            other.reconcile_identity_sidecars_page_with_checkpoint(cursor, 1, || false),
+            Err(IdentityReconcileError::StaleCursor {
+                field: "ledger_instance_id",
+                ..
+            })
+        ));
+        assert!(!other.in_transaction());
+
+        ledger.begin().expect("caller transaction");
+        assert!(matches!(
+            ledger.begin_identity_reconciliation(),
+            Err(IdentityReconcileError::Ledger(LedgerError::Invalid { .. }))
+        ));
+        ledger.rollback().expect("close caller transaction");
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // One fixture proves rollback, replay, ordering, and high-water exclusion end to end.
+    fn bounded_reconciliation_pages_resume_replay_and_cancel_without_partial_publish() {
+        let ledger = Ledger::open(":memory:").expect("fresh v19 ledger");
+        let insert_old_op = |seed: &'static [u8], t_start: i64| {
+            ledger
+                .conn
+                .prepare(
+                    "INSERT INTO ops(
+                         session, ir, seed, versions, budget, capability,
+                         t_start, branch, exec_mode
+                     ) VALUES (NULL, '{}', ?1, '{}', '{}', '{}', ?2, 1, 'deterministic')",
+                )
+                .expect("prepare old operation")
+                .execute_with_params(&[blob_param(seed), SqliteValue::Integer(t_start)])
+                .expect("insert old operation without sidecar");
+            ledger.conn.last_insert_rowid()
+        };
+        let insert_old_tune = |kernel: &'static str| {
+            ledger
+                .conn
+                .prepare(
+                    "INSERT INTO tune(kernel, shape_class, machine, params, measured)
+                     VALUES (?1, 'shape', X'0102', '{}', '{}')",
+                )
+                .expect("prepare old tune row")
+                .execute_with_params(&[text_param(kernel)])
+                .expect("insert old tune row without sidecar");
+        };
+
+        let first_op = insert_old_op(b"old-seed-a", 1);
+        let second_op = insert_old_op(b"old-seed-b", 2);
+        insert_old_tune("old-kernel-a");
+        insert_old_tune("old-kernel-b");
+        let initial = ledger
+            .begin_identity_reconciliation()
+            .expect("capture four-row high-water snapshot");
+        assert_eq!(initial.op_high_water(), second_op);
+        assert_eq!(initial.tune_high_water(), 2);
+
+        let late_op = insert_old_op(b"late-seed", 3);
+        insert_old_tune("late-kernel");
+        assert!(late_op > initial.op_high_water());
+
+        let cancelled = ledger
+            .reconcile_identity_sidecars_page_with_checkpoint(initial, 4, || {
+                ledger.table_count("op_content_identities").unwrap() == 1
+            })
+            .expect_err("cancel after one provisional operation sidecar");
+        assert_eq!(
+            cancelled,
+            IdentityReconcileError::Cancelled { resume: initial }
+        );
+        assert_eq!(ledger.table_count("op_content_identities").unwrap(), 0);
+        assert_eq!(ledger.table_count("tune_content_identities").unwrap(), 0);
+        assert!(!ledger.in_transaction());
+
+        let first_page = ledger
+            .reconcile_identity_sidecars_page_with_checkpoint(initial, 1, || false)
+            .expect("commit first one-row page");
+        assert_eq!(first_page.input_cursor_id(), initial.content_id());
+        assert_eq!(first_page.operation_rows(), 1);
+        assert_eq!(first_page.tune_rows(), 0);
+        assert_eq!(first_page.next_cursor().after_rowid(), first_op);
+        assert_eq!(
+            first_page.output_cursor_id(),
+            first_page.next_cursor().content_id()
+        );
+        assert_eq!(ledger.table_count("op_content_identities").unwrap(), 1);
+
+        let response_loss_replay = ledger
+            .reconcile_identity_sidecars_page_with_checkpoint(initial, 1, || false)
+            .expect("replay committed page after simulated response loss");
+        assert_eq!(response_loss_replay, first_page);
+        assert_eq!(ledger.table_count("op_content_identities").unwrap(), 1);
+
+        let mut cursor = first_page.next_cursor();
+        let mut operation_rows = first_page.operation_rows();
+        let mut tune_rows = first_page.tune_rows();
+        let mut committed_pages = 1_u32;
+        while !cursor.is_complete() {
+            let page = ledger
+                .reconcile_identity_sidecars_page_with_checkpoint(cursor, 1, || false)
+                .expect("resume next bounded page");
+            assert_eq!(page.input_cursor_id(), cursor.content_id());
+            operation_rows += page.operation_rows();
+            tune_rows += page.tune_rows();
+            cursor = page.next_cursor();
+            committed_pages += 1;
+            assert!(committed_pages <= 5, "bounded run must converge");
+        }
+        assert_eq!(committed_pages, 4);
+        assert_eq!(operation_rows, 2);
+        assert_eq!(tune_rows, 2);
+        assert_eq!(ledger.table_count("op_content_identities").unwrap(), 2);
+        assert_eq!(ledger.table_count("tune_content_identities").unwrap(), 2);
+        assert_eq!(
+            IdentityReconcileCursor::from_wire_bytes(&cursor.to_wire_bytes()).unwrap(),
+            cursor
+        );
+        assert!(cursor.is_complete());
+
+        assert!(matches!(
+            ledger.op_content_identity(late_op),
+            Err(LedgerError::OpCorrupt { op, .. }) if op == late_op
+        ));
+        assert!(matches!(
+            ledger.tune_content_identity("late-kernel", "shape", &[1, 2]),
+            Err(LedgerError::TuneCorrupt { .. })
+        ));
+        assert!(matches!(
+            ledger.reconcile_identity_sidecars_page_with_checkpoint(initial, 0, || false),
+            Err(IdentityReconcileError::Ledger(LedgerError::Invalid { .. }))
+        ));
+        assert!(matches!(
+            ledger.reconcile_identity_sidecars_page_with_checkpoint(
+                initial,
+                MAX_IDENTITY_RECONCILE_PAGE_ROWS + 1,
+                || false,
+            ),
+            Err(IdentityReconcileError::Ledger(LedgerError::Invalid { .. }))
+        ));
     }
 
     #[test]
