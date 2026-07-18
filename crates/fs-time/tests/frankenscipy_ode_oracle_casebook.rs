@@ -4,8 +4,11 @@
 //! dyadic state bit-for-bit. Decay and oscillator fixtures compare production
 //! `rk45_adaptive`, pinned FrankenScipy `solve_ivp`, and independent
 //! closed-form endpoints under explicit max-norm ceilings. Canonical frames
-//! bind every fixture and solver option; receipts retain every public output
-//! field and all signed comparison errors.
+//! bind every fixture, dimensionless unit convention, and solver option;
+//! receipts retain every public output field and all signed comparison
+//! errors. The declared oracle pin is checked against `constellation.lock`;
+//! proving that the sibling path checkout is at that pin remains the external
+//! `xtask check-constellation`/DSR admission precondition.
 //!
 //! This is finite-fixture G0 and same-build replay evidence. FrankenScipy is a
 //! pinned comparison implementation, not ground truth, and the test-side
@@ -26,11 +29,14 @@ use fsci_integrate::{SolveIvpOptions, SolveIvpResult, SolverKind, ToleranceValue
 
 const SUITE: &str = "bedrock/fs-time-frankenscipy-rk45-oracle-v1";
 const ORACLE_VERSION: &str = "fsci-integrate/0.1.0";
+const ORACLE_LOCK_VERSION: &str = "0.1.0";
 const ORACLE_PIN: &str = "9e271fd734465e2b2ff755aa73ea66a7217d619b";
+const CONSTELLATION_LOCK: &str = include_str!("../../../constellation.lock");
 const PRODUCTION_API: &str = "fs_time::rk45_adaptive:Dormand-Prince-5(4)+PI:max-norm:v1";
 const ORACLE_API: &str = "fsci_integrate::solve_ivp:SolverKind::Rk45:t-eval-endpoints:RMS-error:v1";
 const FRAME_ENCODING: &str =
     "field=(tag_len:u64le,tag,payload_len:u64le,payload);numbers=le;f64=bits:v1";
+const UNIT_POLICY: &str = "time=dimensionless;state-components=dimensionless;rhs=state/time;rtol=dimensionless;atol=state:v1";
 const ERROR_POLICY: &str = "signed=implementation-reference;aggregate=max-absolute-component:v1";
 const ANALYTIC_POLICY: &str = "test-side-std-exp-sin-cos;finite-fixture-only;not-cross-isa-bits:v1";
 const NO_CLAIM_POLICY: &str = "no-general-tolerance-calibration;no-controller-path-or-counter-equality;no-dense-output;no-events;no-backward;no-stiffness;no-cancellation;no-checkpoint-equivalence;no-adjoints;no-performance;no-python-scipy;no-fresh-cross-isa:v1";
@@ -46,14 +52,14 @@ const CORRUPTION_SEED: u64 = 0xF5A5_0022_0000_0101;
 
 // Filled from the framing code and independently reconstructed without
 // executing either numerical implementation.
-const STATIONARY_FRAME_LEN: usize = 2_059;
-const STATIONARY_FRAME_FNV1A64: u64 = 0x7050_b29f_b541_1906;
-const DECAY_FRAME_LEN: usize = 2_058;
-const DECAY_FRAME_FNV1A64: u64 = 0xdc60_928e_4a7a_6405;
-const OSCILLATOR_FRAME_LEN: usize = 2_110;
-const OSCILLATOR_FRAME_FNV1A64: u64 = 0x6dd0_e4bb_1912_8b32;
-const CORRUPTION_FRAME_LEN: usize = 4_144;
-const CORRUPTION_FRAME_FNV1A64: u64 = 0xf159_faf0_b1c8_2920;
+const STATIONARY_FRAME_LEN: usize = 2_183;
+const STATIONARY_FRAME_FNV1A64: u64 = 0xb44b_a095_30e5_689b;
+const DECAY_FRAME_LEN: usize = 2_182;
+const DECAY_FRAME_FNV1A64: u64 = 0xdd6e_7d60_53fa_9262;
+const OSCILLATOR_FRAME_LEN: usize = 2_234;
+const OSCILLATOR_FRAME_FNV1A64: u64 = 0xf2b1_6548_ac6a_a38d;
+const CORRUPTION_FRAME_LEN: usize = 4_392;
+const CORRUPTION_FRAME_FNV1A64: u64 = 0x929f_d15d_2c7e_9c96;
 
 const STATIONARY_Y0: [f64; 2] = [1.5, -0.25];
 const DECAY_Y0: [f64; 1] = [2.0];
@@ -288,6 +294,39 @@ fn bits(values: &[f64]) -> Vec<u64> {
     values.iter().map(|value| value.to_bits()).collect()
 }
 
+fn json_string_field<'a>(object: &'a str, field: &str) -> Option<&'a str> {
+    let field = format!("\"{field}\"");
+    let (_, tail) = object.split_once(field.as_str())?;
+    let (_, value) = tail.split_once(':')?;
+    let value = value.trim_start().strip_prefix('"')?;
+    value.split_once('"').map(|(value, _)| value)
+}
+
+fn constellation_library_object(library: &str) -> Option<&'static str> {
+    CONSTELLATION_LOCK.split('}').find_map(|prefix| {
+        let object = prefix.rsplit_once('{').map_or(prefix, |(_, object)| object);
+        (json_string_field(object, "lib") == Some(library)).then_some(object)
+    })
+}
+
+fn admit_oracle_declaration() -> Result<(), String> {
+    let object = constellation_library_object("frankenscipy").ok_or_else(|| {
+        "stage=oracle-pin-declaration; constellation.lock has no frankenscipy object".to_owned()
+    })?;
+    let framed_version = ORACLE_VERSION.strip_prefix("fsci-integrate/");
+    let declared_version = json_string_field(object, "version");
+    let declared_pin = json_string_field(object, "git_head");
+    if framed_version != Some(ORACLE_LOCK_VERSION)
+        || declared_version != Some(ORACLE_LOCK_VERSION)
+        || declared_pin != Some(ORACLE_PIN)
+    {
+        return Err(format!(
+            "stage=oracle-pin-declaration; expected_version={ORACLE_LOCK_VERSION}; framed_version={framed_version:?}; declared_version={declared_version:?}; expected_pin={ORACLE_PIN}; declared_pin={declared_pin:?}"
+        ));
+    }
+    Ok(())
+}
+
 fn bit_rows(rows: &[Vec<f64>]) -> Vec<Vec<u64>> {
     rows.iter().map(|row| bits(row)).collect()
 }
@@ -312,6 +351,7 @@ fn common_frame(domain: &str) -> Vec<u8> {
     push_text_field(&mut bytes, "oracle-pin", ORACLE_PIN);
     push_text_field(&mut bytes, "oracle-api", ORACLE_API);
     push_text_field(&mut bytes, "oracle-runtime-mode", "strict:v1");
+    push_text_field(&mut bytes, "unit-policy", UNIT_POLICY);
     push_f64_field(&mut bytes, "relative-tolerance", RTOL);
     push_f64_field(&mut bytes, "absolute-tolerance", ATOL);
     push_f64_field(&mut bytes, "production-initial-step", INITIAL_STEP);
@@ -765,6 +805,9 @@ fn capture_measurement(fixture: FixtureSpec, stage: &str) -> Result<Measurement,
 }
 
 fn fixture_outcome(fixture: FixtureSpec) -> CaseOutcome {
+    if let Err(error) = admit_oracle_declaration() {
+        return CaseOutcome::fail(error).with_evidence("constellation.lock:frankenscipy-0.1.0");
+    }
     let inputs = fixture_inputs(fixture);
     let first = match capture_measurement(fixture, "first-measurement") {
         Ok(measurement) => measurement,
@@ -856,6 +899,9 @@ fn reconstruct_corruption() -> Corruption {
 }
 
 fn corruption_outcome(corruption: Corruption) -> CaseOutcome {
+    if let Err(error) = admit_oracle_declaration() {
+        return CaseOutcome::fail(error).with_evidence("constellation.lock:frankenscipy-0.1.0");
+    }
     let measurement = match capture_measurement(STATIONARY, "red-baseline-measurement") {
         Ok(measurement) => measurement,
         Err(error) => return CaseOutcome::fail(error),
@@ -868,16 +914,29 @@ fn corruption_outcome(corruption: Corruption) -> CaseOutcome {
         .y
         .last()
         .expect("stationary oracle shape admitted")[corruption.component];
-    if computed == corruption.corrupted {
-        CaseOutcome::pass("disclosed stationary oracle-reference corruption was not detected")
-    } else if computed != corruption.canonical {
-        CaseOutcome::fail(format!(
+    if computed != corruption.canonical {
+        return CaseOutcome::fail(format!(
             "stage=seeded-corruption-baseline-drift; seed=0x{CORRUPTION_SEED:016x}; component={}; computed_bits=0x{computed:016x}; canonical_bits=0x{:016x}",
             corruption.component, corruption.canonical,
-        ))
-    } else {
-        CaseOutcome::fail(format!(
-            "stage=seeded-stationary-oracle-reference-corruption; seed=0x{CORRUPTION_SEED:016x}; component={}; bit={}; computed_bits=0x{computed:016x}; canonical_bits=0x{:016x}; corrupted_bits=0x{:016x}; input_frame_len={}; input_frame_fnv1a64=0x{:016x}; input_frame={}",
+        ));
+    }
+
+    let mut corrupted_measurement = measurement;
+    corrupted_measurement
+        .oracle
+        .y
+        .last_mut()
+        .expect("stationary oracle shape admitted")[corruption.component] = corruption.corrupted;
+    match admit_measurement(STATIONARY, &corrupted_measurement) {
+        Ok(_) => CaseOutcome::pass(format!(
+            "stage=seeded-corruption-not-detected; seed=0x{CORRUPTION_SEED:016x}; component={}; bit={}; canonical_bits=0x{:016x}; corrupted_bits=0x{:016x}",
+            corruption.component,
+            corruption.bit,
+            corruption.canonical,
+            corruption.corrupted,
+        )),
+        Err(refusal) if refusal.starts_with("stage=stationary-exact-kat;") => CaseOutcome::fail(format!(
+            "stage=seeded-stationary-oracle-reference-corruption; seed=0x{CORRUPTION_SEED:016x}; component={}; bit={}; computed_bits=0x{computed:016x}; canonical_bits=0x{:016x}; corrupted_bits=0x{:016x}; refusal={refusal}; input_frame_len={}; input_frame_fnv1a64=0x{:016x}; input_frame={}",
             corruption.component,
             corruption.bit,
             corruption.canonical,
@@ -886,7 +945,11 @@ fn corruption_outcome(corruption: Corruption) -> CaseOutcome {
             fnv1a64(&corruption.frame),
             hex_bytes(&corruption.frame),
         ))
-        .with_evidence("crates/fs-time/tests/frankenscipy_ode_oracle_casebook.rs#seeded-corruption")
+        .with_evidence("crates/fs-time/tests/frankenscipy_ode_oracle_casebook.rs#seeded-corruption"),
+        Err(refusal) => CaseOutcome::fail(format!(
+            "stage=seeded-corruption-unexpected-refusal; seed=0x{CORRUPTION_SEED:016x}; component={}; bit={}; refusal={refusal}",
+            corruption.component, corruption.bit,
+        )),
     }
 }
 
@@ -1008,6 +1071,11 @@ fn seeded_stationary_oracle_reference_corruption_is_stable_and_refused() {
     );
     assert!(first_failure.details.contains("component=1"));
     assert!(first_failure.details.contains("bit=1"));
+    assert!(
+        first_failure
+            .details
+            .contains("refusal=stage=stationary-exact-kat")
+    );
     assert!(first_failure.details.contains("input_frame="));
 
     let panic = catch_unwind(|| first.assert_green())
