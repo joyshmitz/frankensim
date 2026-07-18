@@ -1,6 +1,6 @@
 # CONTRACT: fs-ledger
 
-> Status: ACTIVE (Design Ledger, schema v12). Owns the core schema + Rev S
+> Status: ACTIVE (Design Ledger, schema v13). Owns the core schema + Rev S
 > extension tables, BLAKE3 content addressing, the WAL/snapshot concurrency
 > contract, and — since schema v2 — forkable worlds, `at(t)` views,
 > `explain()`, the replay audit, and unreferenced-artifact GC (`travel`
@@ -236,6 +236,25 @@ and the lower-layer Franken crates declared in `Cargo.toml`, including
   versions, parameter hash, and code hash on disagreement. Runtime-state reads
   are integrity checked under a 64 MiB cap. Migration infers no semantic
   receipts from generic solver snapshots.
+- Strong-identity migration receipts (`identity_migration`, schema v13):
+  `record_identity_migration` accepts exact legacy bytes, an exact quarantined
+  `LegacyProvenanceV1` FNV value, exact canonical owner bytes, a visible-ASCII
+  semantic rule, one schema-typed `IdentityReceipt<I>`, and its exact
+  `IdentityAuditRecord`. The ledger independently hashes both retained byte
+  payloads, requires the audit record to describe the same typed receipt,
+  checks the closed trust/anchor/verifier/key-policy/no-claim state machine,
+  and derives a domain-separated typed receipt ID before one immutable row
+  commits. Exact retry dedupes. `identity_migration_receipt` repeats bounded
+  storage checks, re-hashes both payloads, and reconstructs the complete
+  receipt identity before returning it. Raw content identity, semantic
+  identity, schema identity, legacy FNV, and authority occupy distinct columns
+  and Rust types. `typed_semantic_id::<I>()` returns the semantic digest only
+  when role, domain, schema name, schema descriptor ID, version, and context
+  all equal the caller's exact nominal type. Multiple receipts may name one
+  legacy content ID; `identity_migration_candidates` returns only a bounded,
+  deterministic, explicitly non-authoritative receipt-ID prefix with a
+  truncation bit and never chooses a winner. Migration from v12 creates an
+  empty table and infers no strong identity or authority from historical rows.
 - Rev S extension tables (sparse v0, uniform `(name UNIQUE, body JSON)`
   shape): `put_extension`/`get_extension` over `requirements`, `model_cards`,
   `evidence`, `scenarios`, `constraints`, `capability_probes`, `imports`,
@@ -296,6 +315,14 @@ bounded UTF-8 law-id bytes, exact u32 law/state-schema versions, a runtime-state
 artifact foreign key, parameter and contract/code hashes, indexes by stable
 slot/law/artifact, and update/delete/reinsert guards. State slots are indexed
 but not unique so successive immutable snapshots do not overwrite history.
+Schema v13 adds immutable `identity_migration_receipts`: exact legacy and
+canonical BLOBs are each capped at 1 MiB and bound to separate plain BLAKE3
+content IDs; historical FNV remains an exact eight-byte little-endian replay
+token; the semantic digest, role, domain, schema name/descriptor/version/context,
+canonical-frame root and producer bounds remain distinct; and explicit
+trust/anchor/verifier/key-policy/no-claim fields obey one schema CHECK. Legacy,
+canonical, and semantic lookup indexes are non-unique by design. Update,
+delete, and same-receipt reinsertion are refused by attested triggers.
 
 - `tombstone` module (addendum Proposal E, bead lmp4.13): the TOMBSTONE
   LEDGER — swarm memory's cheap half. `Descriptor` (name + dimensioned
@@ -498,7 +525,14 @@ refusal, or verifier panic).
     version, state-schema version, canonical parameter-block hash, and
     contract/code hash. Any disagreement withholds the state bytes as unknown
     semantics rather than attempting a stale decode.
-15. The nightly writer publishes op + metric + benchmark event + terminal
+15. A strong-identity migration row is valid only when both retained payloads
+    re-hash to their separate stored content IDs, its FNV value remains in the
+    quarantined legacy type, its audit tuple is internally coherent, and the
+    complete domain-separated receipt preimage reproduces the primary key.
+    Row presence and legacy lookup never select a semantic interpretation or
+    confer authority; typed projection requires exact role and static schema
+    agreement at the call site.
+16. The nightly writer publishes op + metric + benchmark event + terminal
     outcome in one explicit transaction. A write or commit failure is primary;
     rollback is always attempted, and a rollback failure is retained after the
     primary failure in a deterministic combined diagnostic. Cleanup failure
@@ -654,6 +688,14 @@ terminal lookup without weakening the production constants under test.
 Nested registry tests also cover checkpoint response-loss idempotency,
 fixed-width transport forgery, foreign-ledger refusal, conflicting artifact
 replay, wrong artifact kind, and snapshot/run mismatch.
+`tests/identity_migration.rs` covers exact-byte/content-root retention,
+quarantined FNV round trip, receipt/audit binding, exact response-loss
+idempotency, nominal typed projection, wrong-schema refusal, bounded ambiguous
+legacy lookup with zero-cap existence probes, and payload cap+1 refusal before
+publication. Inline module regressions cover genuine-v12 migration, exact v13
+stale-marker healing, divergent early-object refusal, and migration-ladder
+placement. These code-first tests require the central batch-proof pass before
+their results may be cited as green evidence.
 `tests/color_battery.rs` `col-018` freezes exact canonical-byte sentinels for
 positive/negative zero, infinite dispersion, infinite interval endpoints, a
 maximum-length identity, and validated/derived rows; it independently rehashes
@@ -857,6 +899,17 @@ The graph is the minting authority for `fs_evidence::AdmittedColor`:
   or prove cancel/resume/bit-replay. Those authorities remain with the
   executable L3 law and the E0d machine lifecycle. A generic v10 solver
   checkpoint is not silently upgraded into this stronger claim.
+- A v13 identity-migration receipt proves exact persistence of the two retained
+  payloads, their distinct content IDs, the quarantined FNV token, the supplied
+  typed semantic receipt metadata, and the explicitly recorded authority
+  state. It does not prove that the owner-defined semantic rule is scientifically
+  correct, that legacy FNV named the supplied bytes, or that an admitted
+  authority is promotion authority. Generic historical artifact/evidence/op/
+  edge/cache/package rows are not auto-migrated or dual-written by this first
+  tranche; cross-surface database-wire-package parity, resumable fleet
+  backfill, concurrent old/new compatibility windows, cancellation/crash fault
+  injection, and rollback views remain required before the parent persistence
+  bead can close.
 - Safe std-only identity generation is implemented through `/dev/urandom` on
   Unix. Fresh identity creation on non-Unix targets is explicitly refused;
   existing v4+ ledgers remain readable when their persisted identity and

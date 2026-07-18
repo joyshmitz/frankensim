@@ -31,10 +31,12 @@
 //! crosswalk rows whose source and target hashes both reference retained
 //! artifacts. Schema v12 adds portable semantic state-checkpoint receipts that
 //! bind runtime bytes to exact law, parameter, schema, and implementation
-//! identities.
+//! identities. Schema v13 adds immutable strong-identity migration receipts:
+//! exact legacy and canonical bytes remain distinct from raw content IDs,
+//! typed semantic IDs, legacy FNV replay tokens, and authority state.
 
 /// The schema version this crate writes and reads.
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// Storage chunk length for large artifacts (bytes). Artifacts strictly
 /// larger than this are stored as `artifact_chunks` rows of at most this
@@ -43,7 +45,7 @@ pub const STORAGE_CHUNK_LEN: usize = 4 * 1024 * 1024;
 
 /// Migration ladder: `MIGRATIONS[i]` migrates a database at `user_version`
 /// `i` to `i + 1`. Append-only; never edit a shipped batch.
-pub(crate) const MIGRATIONS: &[&[&str]] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12];
+pub(crate) const MIGRATIONS: &[&[&str]] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13];
 
 /// v1: the six core tables (Appendix D), chunk storage, and the Rev S
 /// extension tables (sparse in v0 but present EARLY so downstream crates can
@@ -930,7 +932,88 @@ pub const V12: &[&str] = &[
      END",
 ];
 
-/// Every table the CURRENT schema owns (v1 set + v2 through v12 additions); the
+/// v13: immutable crosswalk receipts for the strong-identity migration.
+/// Exact legacy bytes and their quarantined FNV token remain separate from
+/// canonical bytes, plain content IDs, typed semantic identity, schema
+/// identity, and authority state. Multiple receipts may name one legacy
+/// content ID; callers must inspect the bounded candidate set and explicitly
+/// select a typed schema instead of treating row presence as authority.
+pub const V13: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS identity_migration_receipts(
+        receipt_id BLOB NOT NULL PRIMARY KEY CHECK(length(receipt_id) = 32),
+        legacy_bytes BLOB NOT NULL CHECK(length(legacy_bytes) <= 1048576),
+        legacy_content_id BLOB NOT NULL CHECK(length(legacy_content_id) = 32),
+        legacy_fnv BLOB NOT NULL CHECK(length(legacy_fnv) = 8),
+        canonical_bytes BLOB NOT NULL CHECK(length(canonical_bytes) <= 1048576),
+        canonical_content_id BLOB NOT NULL CHECK(length(canonical_content_id) = 32),
+        semantic_rule BLOB NOT NULL CHECK(length(semantic_rule) BETWEEN 1 AND 256),
+        semantic_id BLOB NOT NULL CHECK(length(semantic_id) = 32),
+        identity_role INTEGER NOT NULL CHECK(identity_role BETWEEN 1 AND 12),
+        identity_domain BLOB NOT NULL CHECK(length(identity_domain) BETWEEN 1 AND 256),
+        identity_schema_name BLOB NOT NULL
+            CHECK(length(identity_schema_name) BETWEEN 1 AND 256),
+        identity_schema_id BLOB NOT NULL CHECK(length(identity_schema_id) = 32),
+        identity_schema_version INTEGER NOT NULL
+            CHECK(identity_schema_version BETWEEN 1 AND 4294967295),
+        identity_context BLOB NOT NULL CHECK(length(identity_context) BETWEEN 1 AND 4096),
+        canonical_preimage_id BLOB NOT NULL CHECK(length(canonical_preimage_id) = 32),
+        canonical_frame_bytes BLOB NOT NULL CHECK(length(canonical_frame_bytes) = 8),
+        field_count INTEGER NOT NULL CHECK(field_count BETWEEN 0 AND 4294967295),
+        collection_items BLOB NOT NULL CHECK(length(collection_items) = 8),
+        max_canonical_bytes BLOB NOT NULL CHECK(length(max_canonical_bytes) = 8),
+        max_field_bytes BLOB NOT NULL CHECK(length(max_field_bytes) = 8),
+        max_fields INTEGER NOT NULL CHECK(max_fields BETWEEN 1 AND 4294967295),
+        max_collection_items BLOB NOT NULL CHECK(length(max_collection_items) = 8),
+        cancellation_poll_bytes INTEGER NOT NULL
+            CHECK(cancellation_poll_bytes BETWEEN 1 AND 4294967295),
+        trust_state INTEGER NOT NULL CHECK(trust_state BETWEEN 0 AND 3),
+        anchor_content_id BLOB CHECK(anchor_content_id IS NULL OR length(anchor_content_id) = 32),
+        verifier_id BLOB CHECK(verifier_id IS NULL OR length(verifier_id) = 32),
+        key_policy_id BLOB CHECK(key_policy_id IS NULL OR length(key_policy_id) = 32),
+        no_claim_state INTEGER NOT NULL CHECK(no_claim_state BETWEEN 0 AND 1),
+        created_at INTEGER NOT NULL,
+        CHECK(
+            (trust_state = 0 AND anchor_content_id IS NULL AND verifier_id IS NULL
+                AND key_policy_id IS NULL AND no_claim_state = 0)
+            OR
+            (trust_state IN (1, 2) AND anchor_content_id IS NOT NULL
+                AND verifier_id IS NOT NULL AND key_policy_id IS NOT NULL
+                AND no_claim_state = 0)
+            OR
+            (trust_state = 3 AND anchor_content_id IS NOT NULL
+                AND verifier_id IS NOT NULL AND key_policy_id IS NOT NULL
+                AND no_claim_state = 1)
+        )
+    ) STRICT",
+    "CREATE INDEX IF NOT EXISTS idx_identity_migration_legacy
+     ON identity_migration_receipts(legacy_content_id, receipt_id)",
+    "CREATE INDEX IF NOT EXISTS idx_identity_migration_canonical
+     ON identity_migration_receipts(canonical_content_id, receipt_id)",
+    "CREATE INDEX IF NOT EXISTS idx_identity_migration_semantic
+     ON identity_migration_receipts(
+         identity_role, identity_domain, identity_schema_version, semantic_id, receipt_id
+     )",
+    "CREATE TRIGGER IF NOT EXISTS trg_identity_migration_receipts_immutable_update
+     BEFORE UPDATE ON identity_migration_receipts
+     BEGIN
+       SELECT RAISE(ABORT, 'identity migration receipt is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_identity_migration_receipts_immutable_delete
+     BEFORE DELETE ON identity_migration_receipts
+     BEGIN
+       SELECT RAISE(ABORT, 'identity migration receipt is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_identity_migration_receipts_immutable_reinsert
+     BEFORE INSERT ON identity_migration_receipts
+     WHEN EXISTS(
+         SELECT 1 FROM identity_migration_receipts WHERE receipt_id = NEW.receipt_id
+     )
+     BEGIN
+       SELECT RAISE(ABORT, 'identity migration receipt is immutable');
+     END",
+];
+
+/// Every table the CURRENT schema owns (v1 set + v2 through v13 additions); the
 /// `table_count`/lint whitelist.
 pub const ALL_TABLES: &[&str] = &[
     "artifacts",
@@ -962,4 +1045,5 @@ pub const ALL_TABLES: &[&str] = &[
     "session_checkpoint_receipts",
     "qty_dimension_crosswalks",
     "semantic_state_checkpoint_receipts",
+    "identity_migration_receipts",
 ];

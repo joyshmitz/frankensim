@@ -20,6 +20,7 @@
 pub mod colors;
 pub mod crosswalk;
 pub mod hash;
+pub mod identity_migration;
 pub mod schema;
 pub mod session_registry;
 pub mod state_checkpoint;
@@ -38,6 +39,15 @@ pub use colors::{
 };
 pub use crosswalk::{MAX_QTY_CROSSWALK_JSON_BYTES, QtyDimensionCrosswalkWrite};
 pub use hash::{Blake3, ContentHash, hash_bytes};
+pub use identity_migration::{
+    IDENTITY_MIGRATION_RECEIPT_DOMAIN, IDENTITY_MIGRATION_RECEIPT_SCHEMA_DECLARATION,
+    IDENTITY_MIGRATION_RECEIPT_VERSION, IdentityMigrationCandidates, IdentityMigrationClaim,
+    IdentityMigrationReceipt, IdentityMigrationReceiptId, IdentityMigrationReceiptSchemaV1,
+    IdentityMigrationWrite, MAX_IDENTITY_MIGRATION_CANDIDATES,
+    MAX_IDENTITY_MIGRATION_CONTEXT_BYTES, MAX_IDENTITY_MIGRATION_DOMAIN_BYTES,
+    MAX_IDENTITY_MIGRATION_PAYLOAD_BYTES, MAX_IDENTITY_MIGRATION_RULE_BYTES,
+    MAX_IDENTITY_MIGRATION_SCHEMA_NAME_BYTES,
+};
 pub use schema::{ALL_TABLES, SCHEMA_VERSION, STORAGE_CHUNK_LEN, V1_TABLES};
 pub use state_checkpoint::{
     KnownStateSemantics, MAX_RUNTIME_STATE_CHECKPOINT_BYTES, MAX_STATE_CHECKPOINT_LAW_ID_BYTES,
