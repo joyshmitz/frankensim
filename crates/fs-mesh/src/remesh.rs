@@ -20,6 +20,9 @@
 //! never flipped or collapsed; their endpoints never smooth. Split
 //! midpoints always chart-project — a no-op on straight creases (the
 //! chord lies on the chart), a documented rounding on curved ones.
+//! Admission keeps `crease_angle` in `[0, π]` so cosine periodicity cannot
+//! alias an unrelated policy, and the Jacobi smoothing multiplier in `[0, 1]`
+//! so it never extrapolates past the tangential neighbor-centroid step.
 //! The unit-mesh convention: split above 4/3, collapse below 4/5
 //! (metric lengths).
 
@@ -56,9 +59,70 @@ pub struct RemeshOptions {
     /// Full split/collapse/flip/smooth rounds.
     pub iterations: u32,
     /// Dihedral angle (radians) above which an edge is a locked crease.
+    /// The inclusive admitted interval is `[0, π]`.
     pub crease_angle: f64,
-    /// Tangential smoothing step (0 disables).
+    /// Tangential Jacobi multiplier in the inclusive interval `[0, 1]`.
+    /// Zero disables smoothing.
     pub smoothing: f64,
+}
+
+impl RemeshOptions {
+    /// Inclusive lower bound for [`Self::smoothing`].
+    pub const SMOOTHING_MIN: f64 = 0.0;
+    /// Inclusive upper bound for [`Self::smoothing`].
+    pub const SMOOTHING_MAX: f64 = 1.0;
+    /// Inclusive lower bound for [`Self::crease_angle`], in radians.
+    pub const CREASE_ANGLE_MIN: f64 = 0.0;
+    /// Inclusive upper bound for [`Self::crease_angle`], in radians.
+    pub const CREASE_ANGLE_MAX: f64 = core::f64::consts::PI;
+
+    /// Validate the scalar remeshing policy without inspecting geometry or
+    /// allocating, returning an admitted copy with both signed-zero encodings
+    /// canonicalized to positive zero.
+    ///
+    /// # Errors
+    /// [`MeshError::InvalidFinite`] for NaN or infinity, or
+    /// [`MeshError::InvalidControlRange`] for a finite value outside its
+    /// inclusive admitted interval. `crease_angle` has deterministic refusal
+    /// priority over `smoothing` when both are invalid.
+    pub fn validate(mut self) -> Result<Self, MeshError> {
+        for (field, value, minimum, maximum) in [
+            (
+                "crease_angle",
+                self.crease_angle,
+                Self::CREASE_ANGLE_MIN,
+                Self::CREASE_ANGLE_MAX,
+            ),
+            (
+                "smoothing",
+                self.smoothing,
+                Self::SMOOTHING_MIN,
+                Self::SMOOTHING_MAX,
+            ),
+        ] {
+            if !value.is_finite() {
+                return Err(MeshError::InvalidFinite {
+                    field,
+                    value_bits: value.to_bits(),
+                });
+            }
+            if value < minimum || value > maximum {
+                return Err(MeshError::InvalidControlRange {
+                    field,
+                    value_bits: value.to_bits(),
+                    minimum_bits: minimum.to_bits(),
+                    maximum_bits: maximum.to_bits(),
+                });
+            }
+        }
+        if self.crease_angle == 0.0 {
+            self.crease_angle = 0.0;
+        }
+        if self.smoothing == 0.0 {
+            self.smoothing = 0.0;
+        }
+        Ok(self)
+    }
 }
 
 impl Default for RemeshOptions {
@@ -541,7 +605,9 @@ impl Passes<'_> {
 ///
 /// # Errors
 /// [`MeshError::InvalidFinite`] before processing when a floating-point
-/// control is non-finite; [`MeshError::Cancelled`] between passes.
+/// control is non-finite, [`MeshError::InvalidControlRange`] when a finite
+/// control is outside its inclusive admitted interval, or
+/// [`MeshError::Cancelled`] between passes.
 pub fn remesh(
     soup: &Soup,
     chart: Option<&dyn Chart>,
@@ -549,17 +615,7 @@ pub fn remesh(
     opts: RemeshOptions,
     cx: &Cx<'_>,
 ) -> Result<(Soup, RemeshStats), MeshError> {
-    for (field, value) in [
-        ("crease_angle", opts.crease_angle),
-        ("smoothing", opts.smoothing),
-    ] {
-        if !value.is_finite() {
-            return Err(MeshError::InvalidFinite {
-                field,
-                value_bits: value.to_bits(),
-            });
-        }
-    }
+    let opts = opts.validate()?;
     let mut passes = Passes {
         positions: soup.positions.clone(),
         faces: soup.triangles.clone(),

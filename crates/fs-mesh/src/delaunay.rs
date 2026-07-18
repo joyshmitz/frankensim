@@ -48,6 +48,18 @@ pub enum MeshError {
         /// Exact rejected floating-point representation.
         value_bits: u64,
     },
+    /// A finite floating-point meshing control was outside its inclusive
+    /// admitted interval.
+    InvalidControlRange {
+        /// Stable control name.
+        field: &'static str,
+        /// Exact rejected floating-point representation.
+        value_bits: u64,
+        /// Exact inclusive lower-bound representation.
+        minimum_bits: u64,
+        /// Exact inclusive upper-bound representation.
+        maximum_bits: u64,
+    },
     /// Cooperative cancellation observed between insertions.
     Cancelled,
 }
@@ -67,6 +79,19 @@ impl core::fmt::Display for MeshError {
             MeshError::InvalidFinite { field, value_bits } => write!(
                 f,
                 "{field} must be finite (rejected bits {value_bits:#018x})"
+            ),
+            MeshError::InvalidControlRange {
+                field,
+                value_bits,
+                minimum_bits,
+                maximum_bits,
+            } => write!(
+                f,
+                "{field} must be in the inclusive admitted range \
+                 [{minimum}, {maximum}] (rejected bits {value_bits:#018x}; \
+                 range bits [{minimum_bits:#018x}, {maximum_bits:#018x}])",
+                minimum = f64::from_bits(*minimum_bits),
+                maximum = f64::from_bits(*maximum_bits),
             ),
             MeshError::Cancelled => write!(f, "cancelled between insertions"),
         }

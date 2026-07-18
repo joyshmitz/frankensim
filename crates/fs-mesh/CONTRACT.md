@@ -58,7 +58,12 @@ half-edge round-trips, closed-manifold audits).
   midpoints always project, which is a no-op on straight creases.
   Passes are FUNCTIONAL (connectivity rebuilt in `BTreeMap`s, ops in
   canonical order): auditable and P2-deterministic over raw
-  throughput, until the perf lane profiles it.
+  throughput, until the perf lane profiles it. Scalar policy admission is
+  allocation-free and precedes Soup cloning, cosine evaluation, polling, or
+  metric work: `smoothing` is finite in inclusive `[0, 1]`, and
+  `crease_angle` is finite in inclusive `[0, π]` radians so periodic cosine
+  aliases cannot silently select a different threshold. Both signed-zero
+  encodings are accepted and canonicalized to positive zero.
 - `MetricField` / `UniformMetric`: the SPD tensor input — isotropic
   remeshing IS `UniformMetric`; anisotropic fields (ultimately FLUX's
   DWR error metric) reuse the identical op set.
@@ -165,16 +170,22 @@ half-edge round-trips, closed-manifold audits).
     balance tolerance. Non-negative inputs plus admitted non-negative fractions
     cannot publish a negative target value. Signed-zero outputs and report
     totals canonicalize to positive zero.
+14. Every public remesh call validates its two floating-point policy controls
+    before geometry-dependent work. Exact endpoints admit; the adjacent
+    representable value outside either interval refuses with stable field,
+    rejected bits, and exact inclusive bound bits. Geometry translation or
+    rescaling cannot change that scalar admission result (G0/G3).
 
 ## Error model
 
 `MeshError` teaching errors: `TooFewPoints`, `DegenerateInput` (exact
 all-coplanar detection, says to triangulate in 2D instead), `InvalidFinite`
 (preserves the rejected bits and refuses non-finite `crease_angle` or
-`smoothing` before remeshing work), and `Cancelled`. Kernel internals hold
-invariants by construction (no flat tets: every created tet's apex is strictly
-visible); the audit exists so any regression is LOUD rather than silently
-non-Delaunay.
+`smoothing` before remeshing work), `InvalidControlRange` (preserves stable
+field, rejected bits, and exact inclusive bound bits for finite policy
+violations), and `Cancelled`. Kernel internals hold invariants by construction
+(no flat tets: every created tet's apex is strictly visible); the audit exists
+so any regression is LOUD rather than silently non-Delaunay.
 `AdaptivityError` refuses a source state reused as its own target, before/after
 QoI or source/target-state mismatch, contradictory action/effect declarations,
 an unbacked continuous-gradient claim, non-finite or negative accounting, and
@@ -213,6 +224,11 @@ phase parallelizes independently of width.
 Adaptivity accounting is a pure fixed-order operation. It canonicalizes signed
 zero, preserves exact retained ID bytes, uses a strict total-bound comparison,
 and serializes fields in one schema-fixed order (G3).
+Remesh control admission is bit-stable and geometry-independent. The admitted
+intervals prevent scalar extrapolation and periodic policy aliasing; they do
+not certify non-inversion, quality monotonicity, convergence, Newton-projection
+stability, exact threshold robustness, or cross-ISA bitwise cosine
+classification.
 
 ## Cancellation behavior
 

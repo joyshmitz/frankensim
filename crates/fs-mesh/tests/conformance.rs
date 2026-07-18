@@ -704,6 +704,197 @@ fn remesh_refuses_non_finite_controls_before_work() {
     });
 }
 
+struct PanicMetric;
+
+impl MetricField for PanicMetric {
+    fn metric(&self, _p: Point3) -> [[f64; 3]; 3] {
+        panic!("invalid remesh controls must refuse before metric work")
+    }
+}
+
+fn assert_control_range_error(
+    error: MeshError,
+    field: &'static str,
+    value: f64,
+    minimum: f64,
+    maximum: f64,
+) {
+    assert_eq!(
+        error,
+        MeshError::InvalidControlRange {
+            field,
+            value_bits: value.to_bits(),
+            minimum_bits: minimum.to_bits(),
+            maximum_bits: maximum.to_bits(),
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "{field} must be in the inclusive admitted range \
+             [{minimum}, {maximum}] (rejected bits {:#018x}; \
+             range bits [{:#018x}, {:#018x}])",
+            value.to_bits(),
+            minimum.to_bits(),
+            maximum.to_bits(),
+        )
+    );
+}
+
+/// G0: exact endpoints and their adjacent representable values define the
+/// scalar admission boundary; both signed zeros canonicalize identically.
+#[test]
+fn remesh_control_domain_endpoints_are_exact() {
+    with_cx(|cx| {
+        let empty = fs_rep_mesh::Soup {
+            positions: Vec::new(),
+            triangles: Vec::new(),
+        };
+        let representative = fs_rep_mesh::shapes::cube(Point3::new(0.0, 0.0, 0.0), 1.0);
+        let soups = [&empty, &representative];
+        let minimum_subnormal = f64::from_bits(1);
+        let smoothing_values = [
+            -0.0,
+            0.0,
+            minimum_subnormal,
+            f64::from_bits(RemeshOptions::SMOOTHING_MAX.to_bits() - 1),
+            RemeshOptions::SMOOTHING_MAX,
+        ];
+        for smoothing in smoothing_values {
+            let opts = RemeshOptions {
+                iterations: 0,
+                smoothing,
+                ..RemeshOptions::default()
+            };
+            let admitted = opts.validate().expect("smoothing endpoint admits");
+            if smoothing == 0.0 {
+                assert_eq!(admitted.smoothing.to_bits(), 0, "signed zero canonicalizes");
+            }
+            for soup in soups {
+                remesh(soup, None, &PanicMetric, opts, cx)
+                    .expect("accepted smoothing control reaches no metric work at zero rounds");
+            }
+        }
+
+        let crease_values = [
+            -0.0,
+            0.0,
+            minimum_subnormal,
+            f64::from_bits(RemeshOptions::CREASE_ANGLE_MAX.to_bits() - 1),
+            RemeshOptions::CREASE_ANGLE_MAX,
+        ];
+        for crease_angle in crease_values {
+            let opts = RemeshOptions {
+                iterations: 0,
+                crease_angle,
+                ..RemeshOptions::default()
+            };
+            let admitted = opts.validate().expect("crease-angle endpoint admits");
+            if crease_angle == 0.0 {
+                assert_eq!(
+                    admitted.crease_angle.to_bits(),
+                    0,
+                    "signed zero canonicalizes"
+                );
+            }
+            for soup in soups {
+                remesh(soup, None, &PanicMetric, opts, cx)
+                    .expect("accepted crease control reaches no metric work at zero rounds");
+            }
+        }
+        assert_eq!(
+            RemeshOptions::CREASE_ANGLE_MAX.to_bits(),
+            0x4009_21fb_5444_2d18,
+            "the governed pi endpoint is exact"
+        );
+    });
+}
+
+/// G0/G3: one-ULP, huge, and periodic finite aliases refuse identically for
+/// empty, representative, and rescaled/translated geometry before metric work.
+#[test]
+fn remesh_refuses_finite_control_aliases_before_geometry_work() {
+    with_cx(|cx| {
+        let empty = fs_rep_mesh::Soup {
+            positions: Vec::new(),
+            triangles: Vec::new(),
+        };
+        let representative = fs_rep_mesh::shapes::cube(Point3::new(0.0, 0.0, 0.0), 1.0);
+        let rescaled = fs_rep_mesh::Soup {
+            positions: representative
+                .positions
+                .iter()
+                .map(|p| Point3::new(p.x * 1.0e6 + 7.0, p.y * 1.0e6 - 11.0, p.z * 1.0e6))
+                .collect(),
+            triangles: representative.triangles.clone(),
+        };
+        let soups = [&empty, &representative, &rescaled];
+        let below_zero = -f64::from_bits(1);
+        let above_one = f64::from_bits(RemeshOptions::SMOOTHING_MAX.to_bits() + 1);
+        for smoothing in [below_zero, above_one, -f64::MAX, f64::MAX] {
+            let opts = RemeshOptions {
+                iterations: 1,
+                smoothing,
+                ..RemeshOptions::default()
+            };
+            for soup in soups {
+                let error = remesh(soup, None, &PanicMetric, opts, cx)
+                    .expect_err("out-of-range smoothing must refuse");
+                assert_control_range_error(
+                    error,
+                    "smoothing",
+                    smoothing,
+                    RemeshOptions::SMOOTHING_MIN,
+                    RemeshOptions::SMOOTHING_MAX,
+                );
+            }
+        }
+
+        let above_pi = f64::from_bits(RemeshOptions::CREASE_ANGLE_MAX.to_bits() + 1);
+        for crease_angle in [
+            below_zero,
+            -0.7,
+            above_pi,
+            core::f64::consts::TAU - 0.7,
+            core::f64::consts::TAU,
+            core::f64::consts::TAU + 0.7,
+            f64::MAX,
+        ] {
+            let opts = RemeshOptions {
+                iterations: 1,
+                crease_angle,
+                ..RemeshOptions::default()
+            };
+            for soup in soups {
+                let error = remesh(soup, None, &PanicMetric, opts, cx)
+                    .expect_err("out-of-range crease angle must refuse");
+                assert_control_range_error(
+                    error,
+                    "crease_angle",
+                    crease_angle,
+                    RemeshOptions::CREASE_ANGLE_MIN,
+                    RemeshOptions::CREASE_ANGLE_MAX,
+                );
+            }
+        }
+
+        let both_invalid = RemeshOptions {
+            iterations: 1,
+            crease_angle: core::f64::consts::TAU,
+            smoothing: above_one,
+        };
+        let error = remesh(&representative, None, &PanicMetric, both_invalid, cx)
+            .expect_err("both-invalid policy must fail before work");
+        assert_control_range_error(
+            error,
+            "crease_angle",
+            core::f64::consts::TAU,
+            RemeshOptions::CREASE_ANGLE_MIN,
+            RemeshOptions::CREASE_ANGLE_MAX,
+        );
+    });
+}
+
 /// tmesh-008 — the op-storm robustness battery: rounds of remeshing at
 /// randomized targets; after EVERY round the mesh passes half-edge
 /// invariants, closed-manifold audit, and Euler = 2.
