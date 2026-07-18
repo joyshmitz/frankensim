@@ -70,7 +70,8 @@ impl CbcProblem {
     /// `n + (dimension - 1) * n * (n - 1) + (dimension - 1) * n`.
     ///
     /// `limb_work_units` then charges each visit at the maximum product/factor
-    /// multiply width and accumulator carry width, plus a maximum-width score
+    /// multiply width and, for every source limb, the full accumulator width
+    /// for worst-case carry propagation. It also charges a maximum-width score
     /// comparison for every later candidate. This is an admission envelope,
     /// not a prediction of elapsed time.
     ///
@@ -142,8 +143,12 @@ impl CbcProblem {
             .checked_mul(max_product_limbs)
             .and_then(|units| units.checked_mul(kernel_factor_limbs))
             .ok_or_else(|| overflow("multiply-add limb work"))?;
+        // add_mul_factor may propagate carry after every source limb. Charge
+        // the full accumulator capacity for each such propagation rather than
+        // assuming one carry pass per lattice visit.
         let carry_units = lattice_visits
-            .checked_mul(accumulator_capacity_limbs)
+            .checked_mul(max_product_limbs)
+            .and_then(|units| units.checked_mul(accumulator_capacity_limbs))
             .ok_or_else(|| overflow("carry limb work"))?;
         let comparison_width = max_score_limbs.max(accumulator_capacity_limbs);
         let comparison_limb_units = comparison_count

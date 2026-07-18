@@ -75,6 +75,39 @@ fn g0_estimates_are_monotone_in_points_and_dimension() {
     assert!(denser.resident_bytes() > wider.resident_bytes());
 }
 
+/// Hand calculation for n=5, dimension=5, where the product is multi-limb:
+///
+/// - product <= 40 bits/two limbs; score <= 43 bits/two limbs,
+/// - accumulator/product capacity = 2 + 1 + 1 = 4 limbs,
+/// - visits = 5 + 4*5*4 + 4*5 = 105; comparisons = 4*4 = 16,
+/// - multiply = 105*2*1 = 210 units,
+/// - carry = 105 visits * 2 source limbs * 4 accumulator limbs = 840 units,
+/// - comparison = 16*4 = 64 units; total = 1,114.
+#[test]
+fn g0_multilimb_kat_charges_carry_for_every_source_limb() {
+    let boundary = CbcProblem::new(5, 4)
+        .expect("valid single-limb boundary problem")
+        .estimate()
+        .expect("finite boundary estimate");
+    let estimate = CbcProblem::new(5, 5)
+        .expect("valid multi-limb problem")
+        .estimate()
+        .expect("finite multi-limb estimate");
+    assert_eq!(boundary.max_product_bits(), 32);
+    assert_eq!(boundary.max_product_limbs(), 1);
+    assert_eq!(boundary.limb_work_units(), 356);
+    assert_eq!(estimate.max_product_bits(), 40);
+    assert_eq!(estimate.max_product_limbs(), 2);
+    assert_eq!(estimate.max_score_bits(), 43);
+    assert_eq!(estimate.max_score_limbs(), 2);
+    assert_eq!(estimate.accumulator_capacity_limbs(), 4);
+    assert_eq!(estimate.product_capacity_limbs(), 4);
+    assert_eq!(estimate.lattice_visits(), 105);
+    assert_eq!(estimate.comparison_count(), 16);
+    assert_eq!(estimate.limb_work_units(), 1_114);
+    assert!(estimate.limb_work_units() > boundary.limb_work_units());
+}
+
 #[test]
 fn g0_hostile_counts_fail_closed_on_checked_estimation() {
     let problem = CbcProblem::new(u32::MAX, usize::MAX).expect("structural counts are nonzero");
@@ -89,21 +122,33 @@ fn g0_hostile_counts_fail_closed_on_checked_estimation() {
 }
 
 #[test]
-fn g0_finite_estimate_beyond_target_address_space_is_not_admitted() {
+fn g0_multilimb_carry_work_overflow_is_fail_closed() {
     let problem =
         CbcProblem::new(u32::MAX, 1_000_000_000).expect("large counts remain structurally valid");
-    let estimate = problem
-        .estimate()
-        .expect("the accounting expression remains within u128");
+    assert!(matches!(
+        problem.estimate(),
+        Err(CbcAdmissionError::EstimateOverflow {
+            quantity: "carry limb work"
+        })
+    ));
+    assert!(matches!(
+        problem.admit(CbcBudget::new(0, 0)),
+        Err(CbcAdmissionError::EstimateOverflow {
+            quantity: "carry limb work"
+        })
+    ));
+}
+
+// This fixture makes the portability guard reachable on 32-bit targets. The
+// much larger cross-target hostile fixture above correctly leaves the u128
+// work domain before it could produce an address-admission receipt.
+#[cfg(target_pointer_width = "32")]
+#[test]
+fn g0_finite_estimate_beyond_32_bit_address_space_is_not_admitted() {
+    let problem = CbcProblem::new(3, 300_000_000).expect("large 32-bit counts remain valid");
+    let estimate = problem.estimate().expect("work and state fit u128");
     let addressable = u128::try_from(isize::MAX).expect("positive isize maximum fits u128");
     assert!(estimate.resident_bytes() > addressable);
-    assert_eq!(
-        problem.admit(CbcBudget::UNBOUNDED),
-        Err(CbcAdmissionError::AddressSpaceExceeded {
-            required: estimate.resident_bytes(),
-            addressable,
-        })
-    );
     assert_eq!(
         problem.admit(CbcBudget::new(0, 0)),
         Err(CbcAdmissionError::AddressSpaceExceeded {
