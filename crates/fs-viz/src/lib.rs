@@ -5,9 +5,10 @@
 //! verifiable core of that job — the pieces with ANALYTIC ground truth, so a
 //! rendered topology is a certificate rather than a guess:
 //!
-//! - [`streamline`] — RK4 integration of a flow field; on a rotation field the
-//!   streamline is a circle (radius conserved), on a saddle field it is a
-//!   hyperbola (`xy` conserved);
+//! - [`streamline_with_cx`] — admitted, cancellable, atomically published RK4
+//!   integration of a flow field; on a rotation field the streamline is a
+//!   circle (radius conserved), on a saddle field it is a hyperbola (`xy`
+//!   conserved). [`streamline`] is the no-authority compatibility wrapper;
 //! - [`classify_hessian`] — the Morse critical-point type (min / max / saddle)
 //!   and index from a scalar field's Hessian — the atom of a Morse–Smale
 //!   complex;
@@ -19,9 +20,9 @@
 //! - [`ScalarField3`] — a bounded versioned artifact codec with explicit
 //!   node/cell centering, quantity, and units for ledger composition.
 //!
-//! Deterministic. Scoped contour extraction consumes the lower-layer
-//! [`fs_exec::Cx`] contract and identifies published artifacts with the
-//! workspace's [`fs_blake3`] owner.
+//! Deterministic for deterministic callbacks. Scoped streamline and contour
+//! extraction consume the lower-layer [`fs_exec::Cx`] contract and identify
+//! published artifacts with the workspace's [`fs_blake3`] owner.
 
 mod isosurface;
 mod scalar_field;
@@ -46,25 +47,1540 @@ pub const ISO_CONTOUR_ARTIFACT_IDENTITY_VERSION: u32 = 1;
 /// A 2-D point / vector.
 pub type Vec2 = [f64; 2];
 
-/// Integrate a streamline of `field` from `seed` with `steps` RK4 steps of size
-/// `dt`. Returns the ordered polyline (including the seed).
-#[must_use]
-pub fn streamline(field: impl Fn(Vec2) -> Vec2, seed: Vec2, dt: f64, steps: usize) -> Vec<Vec2> {
-    let mut pts = Vec::with_capacity(steps + 1);
-    pts.push(seed);
-    let mut p = seed;
-    for _ in 0..steps {
-        let k1 = field(p);
-        let k2 = field([p[0] + 0.5 * dt * k1[0], p[1] + 0.5 * dt * k1[1]]);
-        let k3 = field([p[0] + 0.5 * dt * k2[0], p[1] + 0.5 * dt * k2[1]]);
-        let k4 = field([p[0] + dt * k3[0], p[1] + dt * k3[1]]);
-        p = [
-            p[0] + dt / 6.0 * (k1[0] + 2.0 * k2[0] + 2.0 * k3[0] + k4[0]),
-            p[1] + dt / 6.0 * (k1[1] + 2.0 * k2[1] + 2.0 * k3[1] + k4[1]),
-        ];
-        pts.push(p);
+/// Domain for canonical identities of published fixed-step streamline artifacts.
+pub const STREAMLINE_ARTIFACT_IDENTITY_DOMAIN: &str = "org.frankensim.fs-viz.streamline-rk4.v1";
+
+/// Version of the canonical streamline request/result preimage.
+pub const STREAMLINE_ARTIFACT_IDENTITY_VERSION: u32 = 1;
+
+/// Fixed integration method admitted by the v1 streamline service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamlineMethod {
+    /// Classical explicit four-stage, fourth-order Runge-Kutta.
+    Rk4,
+}
+
+impl StreamlineMethod {
+    const fn identity_tag(self) -> u8 {
+        match self {
+            Self::Rk4 => 1,
+        }
     }
-    pts
+}
+
+/// Explicit unit interpretation for a streamline request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamlineUnits {
+    /// Coordinates, vector values, and integration time are dimensionless.
+    Dimensionless,
+}
+
+impl StreamlineUnits {
+    const fn identity_tag(self) -> u8 {
+        match self {
+            Self::Dimensionless => 1,
+        }
+    }
+}
+
+/// Axis-aligned closed domain admitted for an optional boundary policy.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StreamlineDomain2 {
+    /// Inclusive lower coordinate bounds.
+    pub lower: Vec2,
+    /// Inclusive upper coordinate bounds.
+    pub upper: Vec2,
+}
+
+/// Action when a finite RK4 candidate leaves the admitted closed domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamlineBoundaryPolicy {
+    /// Refuse the entire operation; no partial trajectory publishes.
+    RefuseExit,
+    /// Publish the prefix ending at the last point inside the domain.
+    StopBeforeExit,
+}
+
+impl StreamlineBoundaryPolicy {
+    const fn identity_tag(self) -> u8 {
+        match self {
+            Self::RefuseExit => 1,
+            Self::StopBeforeExit => 2,
+        }
+    }
+}
+
+/// Action when one RK4 step rounds back to the current point bit-for-bit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamlineStagnationPolicy {
+    /// Retain the repeated point and continue through the requested step count.
+    RetainRepeatedPoints,
+    /// Publish the unique prefix without appending the repeated candidate.
+    StopBeforeRepeat,
+}
+
+impl StreamlineStagnationPolicy {
+    const fn identity_tag(self) -> u8 {
+        match self {
+            Self::RetainRepeatedPoints => 1,
+            Self::StopBeforeRepeat => 2,
+        }
+    }
+}
+
+/// Fully explicit semantic and polling request for one fixed-step streamline.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StreamlineRequest {
+    /// Initial point, always retained on successful zero-step work.
+    pub seed: Vec2,
+    /// Finite, nonzero signed step. Negative values request reverse time.
+    pub dt: f64,
+    /// Number of complete RK4 steps requested.
+    pub steps: usize,
+    /// Versioned numerical method.
+    pub method: StreamlineMethod,
+    /// Requested method/receipt schema version.
+    pub method_version: u32,
+    /// Explicit unit interpretation.
+    pub units: StreamlineUnits,
+    /// Optional closed integration domain.
+    pub domain: Option<StreamlineDomain2>,
+    /// Policy for a candidate outside `domain`.
+    pub boundary_policy: StreamlineBoundaryPolicy,
+    /// Policy for a bit-identical repeated point.
+    pub stagnation_policy: StreamlineStagnationPolicy,
+    /// Maximum complete RK4 steps or identity points between checkpoints.
+    pub items_per_poll: usize,
+}
+
+impl StreamlineRequest {
+    /// Construct the dimensionless RK4 request used by the compatibility path.
+    #[must_use]
+    pub const fn dimensionless_rk4(
+        seed: Vec2,
+        dt: f64,
+        steps: usize,
+        items_per_poll: usize,
+    ) -> Self {
+        Self {
+            seed,
+            dt,
+            steps,
+            method: StreamlineMethod::Rk4,
+            method_version: STREAMLINE_ARTIFACT_IDENTITY_VERSION,
+            units: StreamlineUnits::Dimensionless,
+            domain: None,
+            boundary_policy: StreamlineBoundaryPolicy::RefuseExit,
+            stagnation_policy: StreamlineStagnationPolicy::RetainRepeatedPoints,
+            items_per_poll,
+        }
+    }
+}
+
+/// Separately admitted resource in one streamline transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamlineResource {
+    /// Requested RK4 steps.
+    Steps,
+    /// Vector-field callback attempts.
+    FieldEvaluations,
+    /// Seed plus staged step results.
+    OutputPoints,
+    /// Logical point-payload bytes.
+    OutputBytes,
+    /// Fixed RK4 and identity scratch bytes.
+    ScratchBytes,
+    /// Terminal diagnostic records.
+    DiagnosticRecords,
+    /// Fixed report/error bytes.
+    DiagnosticBytes,
+    /// Simultaneously live request, output, scratch, and diagnostic bytes.
+    LiveBytes,
+    /// Canonical artifact-identity bytes hashed.
+    IdentityBytes,
+    /// Bounded cancellation checkpoints.
+    Polls,
+    /// Deterministic scalar work charged to the ambient execution budget.
+    WorkUnits,
+}
+
+impl core::fmt::Display for StreamlineResource {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str(match self {
+            Self::Steps => "steps",
+            Self::FieldEvaluations => "field evaluations",
+            Self::OutputPoints => "output points",
+            Self::OutputBytes => "output bytes",
+            Self::ScratchBytes => "scratch bytes",
+            Self::DiagnosticRecords => "diagnostic records",
+            Self::DiagnosticBytes => "diagnostic bytes",
+            Self::LiveBytes => "simultaneously live bytes",
+            Self::IdentityBytes => "identity bytes",
+            Self::Polls => "polls",
+            Self::WorkUnits => "work units",
+        })
+    }
+}
+
+/// Complete caller envelope for one streamline transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamlineBudget {
+    /// Maximum admitted RK4 steps.
+    pub step_limit: usize,
+    /// Maximum vector-field callback attempts.
+    pub field_evaluation_limit: usize,
+    /// Maximum seed-plus-step output count.
+    pub output_point_limit: usize,
+    /// Maximum logical point-payload bytes.
+    pub output_byte_limit: usize,
+    /// Maximum fixed temporary bytes.
+    pub scratch_byte_limit: usize,
+    /// Maximum terminal diagnostic records.
+    pub diagnostic_record_limit: usize,
+    /// Maximum fixed report/error bytes.
+    pub diagnostic_byte_limit: usize,
+    /// Maximum simultaneously live accounted bytes.
+    pub live_byte_limit: usize,
+    /// Maximum canonical identity bytes hashed.
+    pub identity_byte_limit: usize,
+    /// Maximum checkpoint attempts.
+    pub poll_limit: usize,
+    /// Maximum deterministic work units.
+    pub work_unit_limit: u64,
+}
+
+/// Checked conservative plan for a complete streamline request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamlinePlan {
+    /// Requested RK4 steps.
+    pub steps: usize,
+    /// Four callback attempts per complete RK4 step.
+    pub field_evaluations: usize,
+    /// Seed plus one possible result per step.
+    pub output_points: usize,
+    /// Bytes retained by the request and operation envelope.
+    pub input_bytes: usize,
+    /// Logical output payload bytes requested from the allocator.
+    pub output_bytes: usize,
+    /// Fixed RK4/identity scratch bytes.
+    pub scratch_bytes: usize,
+    /// Number of required terminal records.
+    pub diagnostic_records: usize,
+    /// Fixed report/error bytes.
+    pub diagnostic_bytes: usize,
+    /// Maximum canonical identity bytes hashed.
+    pub identity_bytes: usize,
+    /// Requested simultaneously live bytes before allocator slack.
+    pub live_bytes: usize,
+    /// Maximum checkpoint attempts for the full trajectory.
+    pub polls: usize,
+    /// Conservative deterministic work charged to the ambient Cx budget.
+    pub work_units: u64,
+    /// Admitted maximum steps/identity points between checkpoints.
+    pub items_per_poll: usize,
+}
+
+/// RK4 stage associated with a typed callback or arithmetic refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamlineStage {
+    /// First field evaluation at the current point.
+    K1,
+    /// Arithmetic constructing the second-stage point.
+    K2Input,
+    /// Second field evaluation.
+    K2,
+    /// Arithmetic constructing the third-stage point.
+    K3Input,
+    /// Third field evaluation.
+    K3,
+    /// Arithmetic constructing the fourth-stage point.
+    K4Input,
+    /// Fourth field evaluation.
+    K4,
+    /// Weighted RK4 state update.
+    Advance,
+}
+
+/// Why a successfully published trajectory stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamlineTermination {
+    /// All requested steps completed.
+    StepsComplete,
+    /// The zero-based attempted step would have left the admitted domain.
+    DomainExit { attempted_step: usize },
+    /// The zero-based attempted step rounded to the current point.
+    Stagnated { attempted_step: usize },
+}
+
+impl StreamlineTermination {
+    const fn identity_tag(self) -> u8 {
+        match self {
+            Self::StepsComplete => 1,
+            Self::DomainExit { .. } => 2,
+            Self::Stagnated { .. } => 3,
+        }
+    }
+
+    const fn identity_step(self, requested_steps: usize) -> usize {
+        match self {
+            Self::StepsComplete => requested_steps,
+            Self::DomainExit { attempted_step } | Self::Stagnated { attempted_step } => {
+                attempted_step
+            }
+        }
+    }
+}
+
+/// Terminal disposition of a scoped streamline transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamlineDisposition {
+    /// Every requested step completed and published.
+    Completed,
+    /// A declared boundary/stagnation policy published a valid prefix.
+    Terminated,
+    /// Admission, arithmetic, callback, allocation, or a budget refused.
+    Refused,
+    /// Caller-owned cancellation was observed at a checkpoint.
+    Cancelled,
+}
+
+/// Fixed structured evidence for one streamline attempt.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StreamlineReport {
+    /// Exact semantic request.
+    pub request: StreamlineRequest,
+    /// Caller envelope presented for admission.
+    pub operation_budget: Option<StreamlineBudget>,
+    /// Checked plan, absent when request validation or plan arithmetic failed.
+    pub plan: Option<StreamlinePlan>,
+    /// Successfully appended RK4 steps.
+    pub completed_steps: usize,
+    /// Field callback attempts, including a panicking or non-finite callback.
+    pub field_evaluations: usize,
+    /// Points staged in the private output, including the seed.
+    pub output_points: usize,
+    /// Checkpoint attempts.
+    pub polls: usize,
+    /// Actual deterministic work charged or awaiting its terminal charge.
+    pub work_units: u64,
+    /// Allocator-reported point capacity in payload bytes.
+    pub reserved_output_bytes: usize,
+    /// Highest accounted simultaneously live byte count.
+    pub peak_live_bytes: usize,
+    /// Canonical identity bytes absorbed by the streaming hasher.
+    pub identity_bytes_hashed: usize,
+    /// Successful termination reason.
+    pub termination: Option<StreamlineTermination>,
+    /// Embedded local error estimate. Fixed-step RK4 v1 has none.
+    pub error_estimate: Option<f64>,
+    /// Number of retained terminal diagnostic records.
+    pub diagnostic_records: usize,
+    /// Whether a terminal success/refusal/cancellation record was finalized.
+    pub terminal: bool,
+    /// Whether the private trajectory passed the final checkpoint and escaped.
+    pub published: bool,
+    /// Terminal disposition.
+    pub disposition: StreamlineDisposition,
+    /// Domain-separated identity of the published trajectory.
+    pub artifact_identity: Option<ContentHash>,
+}
+
+impl StreamlineReport {
+    fn empty(request: StreamlineRequest, budget: StreamlineBudget) -> Self {
+        Self {
+            request,
+            operation_budget: Some(budget),
+            plan: None,
+            completed_steps: 0,
+            field_evaluations: 0,
+            output_points: 0,
+            polls: 0,
+            work_units: 0,
+            reserved_output_bytes: 0,
+            peak_live_bytes: 0,
+            identity_bytes_hashed: 0,
+            termination: None,
+            error_estimate: None,
+            diagnostic_records: 0,
+            terminal: false,
+            published: false,
+            disposition: StreamlineDisposition::Refused,
+            artifact_identity: None,
+        }
+    }
+}
+
+/// Atomically published streamline points and their exact terminal report.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamlineOutput {
+    points: Vec<Vec2>,
+    report: StreamlineReport,
+}
+
+impl StreamlineOutput {
+    /// Published points in integration order, including the seed.
+    #[must_use]
+    pub fn points(&self) -> &[Vec2] {
+        &self.points
+    }
+
+    /// Final resource, termination, cancellation, and identity report.
+    #[must_use]
+    pub const fn report(&self) -> &StreamlineReport {
+        &self.report
+    }
+
+    /// Consume the wrapper into its point vector and report.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<Vec2>, StreamlineReport) {
+        (self.points, self.report)
+    }
+}
+
+/// Scoped streamline failure plus the terminal no-publication report.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StreamlineRunError {
+    /// Typed root refusal.
+    pub error: StreamlineError,
+    /// Terminal counters and checked plan, when constructible.
+    pub report: StreamlineReport,
+}
+
+impl core::fmt::Display for StreamlineRunError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            formatter,
+            "{} (steps={}, calls={}, points={}, polls={}, published={})",
+            self.error,
+            self.report.completed_steps,
+            self.report.field_evaluations,
+            self.report.output_points,
+            self.report.polls,
+            self.report.published
+        )
+    }
+}
+
+impl std::error::Error for StreamlineRunError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+/// Typed refusal from fixed-step streamline admission or execution.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StreamlineError {
+    /// A seed component is non-finite.
+    NonFiniteSeed {
+        /// Cartesian component, `0..2`.
+        component: usize,
+        /// Rejected value.
+        value: f64,
+    },
+    /// `dt` must be finite and nonzero; negative finite values are supported.
+    InvalidStepSize {
+        /// Rejected signed step.
+        dt: f64,
+    },
+    /// The request names an unsupported method/receipt schema version.
+    UnsupportedMethodVersion {
+        /// Rejected version.
+        version: u32,
+    },
+    /// One optional domain axis is non-finite, empty, or reversed.
+    InvalidDomain {
+        /// Cartesian axis, `0..2`.
+        axis: usize,
+        /// Rejected inclusive lower bound.
+        lower: f64,
+        /// Rejected inclusive upper bound.
+        upper: f64,
+    },
+    /// The seed lies outside an otherwise valid closed domain.
+    SeedOutsideDomain {
+        /// Cartesian axis, `0..2`.
+        axis: usize,
+        /// Rejected seed coordinate.
+        seed: f64,
+        /// Inclusive lower bound.
+        lower: f64,
+        /// Inclusive upper bound.
+        upper: f64,
+    },
+    /// Polling requires a positive step/identity-point stride.
+    InvalidPollStride {
+        /// Rejected stride.
+        items_per_poll: usize,
+    },
+    /// Checked construction of the complete plan overflowed.
+    PlanOverflow {
+        /// Resource whose derivation was unrepresentable.
+        resource: StreamlineResource,
+    },
+    /// One checked requirement exceeds its caller limit.
+    OperationBudgetExceeded {
+        /// Refused resource.
+        resource: StreamlineResource,
+        /// Checked requirement.
+        required: u128,
+        /// Caller-provided limit.
+        limit: u128,
+    },
+    /// The ambient Cx cancellation/deadline/poll/cost contract refused.
+    ExecutionBudgetRefused {
+        /// Exact shared-accountant refusal.
+        refusal: BudgetRefusal,
+    },
+    /// Storage for the complete private point vector could not be reserved.
+    AllocationFailed {
+        /// Required point capacity.
+        required: usize,
+    },
+    /// The user callback unwound at a named RK4 stage; the panic was contained.
+    CallbackPanicked {
+        /// Zero-based attempted RK4 step.
+        step: usize,
+        /// Field-evaluation stage.
+        stage: StreamlineStage,
+    },
+    /// A field callback returned a non-finite component.
+    NonFiniteFieldValue {
+        /// Zero-based attempted RK4 step.
+        step: usize,
+        /// Field-evaluation stage.
+        stage: StreamlineStage,
+        /// Cartesian component, `0..2`.
+        component: usize,
+        /// Rejected value.
+        value: f64,
+    },
+    /// Finite inputs overflowed or otherwise produced non-finite RK4 geometry.
+    NonFiniteIntermediate {
+        /// Zero-based attempted RK4 step.
+        step: usize,
+        /// Arithmetic stage.
+        stage: StreamlineStage,
+        /// Cartesian component, `0..2`.
+        component: usize,
+        /// Rejected value.
+        value: f64,
+    },
+    /// A candidate left the closed domain under `RefuseExit`.
+    DomainExit {
+        /// Zero-based attempted RK4 step.
+        step: usize,
+        /// Exact candidate coordinate bits.
+        point_bits: [u64; 2],
+    },
+}
+
+impl core::fmt::Display for StreamlineError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NonFiniteSeed { component, value } => {
+                write!(
+                    formatter,
+                    "streamline seed component {component} is non-finite ({value})"
+                )
+            }
+            Self::InvalidStepSize { dt } => write!(
+                formatter,
+                "streamline step size must be finite and nonzero (got {dt})"
+            ),
+            Self::UnsupportedMethodVersion { version } => write!(
+                formatter,
+                "streamline method/receipt version {version} is unsupported"
+            ),
+            Self::InvalidDomain { axis, lower, upper } => write!(
+                formatter,
+                "streamline domain axis {axis} must be finite and increasing (got {lower}..{upper})"
+            ),
+            Self::SeedOutsideDomain {
+                axis,
+                seed,
+                lower,
+                upper,
+            } => write!(
+                formatter,
+                "streamline seed coordinate {seed} lies outside domain axis {axis} bounds {lower}..{upper}"
+            ),
+            Self::InvalidPollStride { items_per_poll } => write!(
+                formatter,
+                "streamline items-per-poll must be positive (got {items_per_poll})"
+            ),
+            Self::PlanOverflow { resource } => {
+                write!(formatter, "streamline {resource} plan overflowed")
+            }
+            Self::OperationBudgetExceeded {
+                resource,
+                required,
+                limit,
+            } => write!(
+                formatter,
+                "streamline requires {required} {resource}, exceeding the explicit limit {limit}"
+            ),
+            Self::ExecutionBudgetRefused { refusal } => {
+                write!(formatter, "streamline execution budget refused: {refusal}")
+            }
+            Self::AllocationFailed { required } => write!(
+                formatter,
+                "streamline could not reserve storage for {required} points"
+            ),
+            Self::CallbackPanicked { step, stage } => write!(
+                formatter,
+                "streamline callback panicked at step {step}, stage {stage:?}"
+            ),
+            Self::NonFiniteFieldValue {
+                step,
+                stage,
+                component,
+                value,
+            } => write!(
+                formatter,
+                "streamline callback returned non-finite component {component} ({value}) at step {step}, stage {stage:?}"
+            ),
+            Self::NonFiniteIntermediate {
+                step,
+                stage,
+                component,
+                value,
+            } => write!(
+                formatter,
+                "streamline arithmetic produced non-finite component {component} ({value}) at step {step}, stage {stage:?}"
+            ),
+            Self::DomainExit { step, point_bits } => write!(
+                formatter,
+                "streamline candidate at step {step} left the admitted domain (point bits {point_bits:?})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for StreamlineError {}
+
+/// Derive the exact conservative resource envelope for `request`.
+///
+/// # Errors
+/// Returns a typed request-validation or checked-arithmetic refusal.
+pub fn required_streamline_budget(
+    request: StreamlineRequest,
+) -> Result<StreamlineBudget, StreamlineError> {
+    let plan = streamline_requirements(request)?;
+    Ok(StreamlineBudget {
+        step_limit: plan.steps,
+        field_evaluation_limit: plan.field_evaluations,
+        output_point_limit: plan.output_points,
+        output_byte_limit: plan.output_bytes,
+        scratch_byte_limit: plan.scratch_bytes,
+        diagnostic_record_limit: plan.diagnostic_records,
+        diagnostic_byte_limit: plan.diagnostic_bytes,
+        live_byte_limit: plan.live_bytes,
+        identity_byte_limit: plan.identity_bytes,
+        poll_limit: plan.polls,
+        work_unit_limit: plan.work_units,
+    })
+}
+
+/// Build and admit the checked plan for an explicit streamline envelope.
+///
+/// # Errors
+/// Returns a typed request, arithmetic, or per-resource budget refusal.
+pub fn streamline_plan(
+    request: StreamlineRequest,
+    budget: StreamlineBudget,
+) -> Result<StreamlinePlan, StreamlineError> {
+    let plan = streamline_requirements(request)?;
+    admit_streamline_plan(plan, budget)?;
+    Ok(plan)
+}
+
+/// Run a fixed-step RK4 streamline under a caller-owned execution context.
+///
+/// The callback is invoked only after complete plan admission, the first Cx
+/// checkpoint, and private output reservation. A callback unwind is contained
+/// as a typed refusal; callback side effects remain the caller's responsibility.
+///
+/// # Errors
+/// Returns [`StreamlineRunError`] with structured terminal evidence. No error,
+/// cancellation, or unwind publishes a partial trajectory or identity.
+pub fn streamline_with_cx(
+    cx: &Cx<'_>,
+    mut field: impl FnMut(Vec2) -> Vec2,
+    request: StreamlineRequest,
+    budget: StreamlineBudget,
+) -> Result<StreamlineOutput, StreamlineRunError> {
+    run_streamline_with(
+        Some(cx),
+        &mut field,
+        request,
+        budget,
+        |_| {},
+        |points, required| points.try_reserve_exact(required).map_err(|_| ()),
+    )
+}
+
+/// No-authority compatibility wrapper for fixed-step RK4.
+///
+/// Valid finite requests preserve the original ordered seed-plus-step result.
+/// Any invalid request, checked overflow, allocation refusal, non-finite field
+/// result/arithmetic, domain refusal, or contained callback unwind returns an
+/// empty vector. It has no caller-owned cancellation, receipt, or error channel;
+/// authoritative callers must use [`streamline_with_cx`]. Negative finite `dt`
+/// is supported, zero `dt` is rejected, and zero steps returns the finite seed.
+#[must_use]
+pub fn streamline(
+    mut field: impl FnMut(Vec2) -> Vec2,
+    seed: Vec2,
+    dt: f64,
+    steps: usize,
+) -> Vec<Vec2> {
+    let request = StreamlineRequest::dimensionless_rk4(seed, dt, steps, usize::MAX);
+    let Ok(budget) = required_streamline_budget(request) else {
+        return Vec::new();
+    };
+    run_streamline_with(
+        None,
+        &mut field,
+        request,
+        budget,
+        |_| {},
+        |points, required| points.try_reserve_exact(required).map_err(|_| ()),
+    )
+    .map(|output| output.points)
+    .unwrap_or_default()
+}
+
+const STREAMLINE_IDENTITY_FIXED_PAYLOAD_BYTES: usize =
+    size_of::<u32>() + 7 * size_of::<u8>() + 13 * size_of::<u64>();
+const STREAMLINE_POINT_IDENTITY_BYTES: usize = 2 * size_of::<u64>();
+const STREAMLINE_POINT_IDENTITY_WORK_UNITS: u64 = 16;
+const STREAMLINE_RK4_FIELD_CALLS_PER_STEP: usize = 4;
+const STREAMLINE_RK4_ARITHMETIC_WORK_PER_STEP: usize = 4;
+
+fn checked_streamline_mul(
+    left: usize,
+    right: usize,
+    resource: StreamlineResource,
+) -> Result<usize, StreamlineError> {
+    left.checked_mul(right)
+        .ok_or(StreamlineError::PlanOverflow { resource })
+}
+
+fn checked_streamline_add(
+    left: usize,
+    right: usize,
+    resource: StreamlineResource,
+) -> Result<usize, StreamlineError> {
+    left.checked_add(right)
+        .ok_or(StreamlineError::PlanOverflow { resource })
+}
+
+fn checked_streamline_sum(
+    values: impl IntoIterator<Item = usize>,
+    resource: StreamlineResource,
+) -> Result<usize, StreamlineError> {
+    values.into_iter().try_fold(0usize, |sum, value| {
+        checked_streamline_add(sum, value, resource)
+    })
+}
+
+fn streamline_chunk_count(items: usize, items_per_poll: usize) -> Result<usize, StreamlineError> {
+    if items == 0 {
+        return Ok(0);
+    }
+    let preceding = items.checked_sub(1).ok_or(StreamlineError::PlanOverflow {
+        resource: StreamlineResource::Polls,
+    })?;
+    checked_streamline_add(preceding / items_per_poll, 1, StreamlineResource::Polls)
+}
+
+fn validate_streamline_request(request: StreamlineRequest) -> Result<(), StreamlineError> {
+    for (component, value) in request.seed.into_iter().enumerate() {
+        if !value.is_finite() {
+            return Err(StreamlineError::NonFiniteSeed { component, value });
+        }
+    }
+    if !request.dt.is_finite() || request.dt == 0.0 {
+        return Err(StreamlineError::InvalidStepSize { dt: request.dt });
+    }
+    if request.method_version != STREAMLINE_ARTIFACT_IDENTITY_VERSION {
+        return Err(StreamlineError::UnsupportedMethodVersion {
+            version: request.method_version,
+        });
+    }
+    if request.items_per_poll == 0 {
+        return Err(StreamlineError::InvalidPollStride {
+            items_per_poll: request.items_per_poll,
+        });
+    }
+    if let Some(domain) = request.domain {
+        for axis in 0..2 {
+            let extent = domain.upper[axis] - domain.lower[axis];
+            if !(domain.lower[axis].is_finite()
+                && domain.upper[axis].is_finite()
+                && domain.upper[axis] > domain.lower[axis]
+                && extent.is_finite())
+            {
+                return Err(StreamlineError::InvalidDomain {
+                    axis,
+                    lower: domain.lower[axis],
+                    upper: domain.upper[axis],
+                });
+            }
+            if request.seed[axis] < domain.lower[axis] || request.seed[axis] > domain.upper[axis] {
+                return Err(StreamlineError::SeedOutsideDomain {
+                    axis,
+                    seed: request.seed[axis],
+                    lower: domain.lower[axis],
+                    upper: domain.upper[axis],
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn streamline_requirements(request: StreamlineRequest) -> Result<StreamlinePlan, StreamlineError> {
+    validate_streamline_request(request)?;
+    u64::try_from(request.steps).map_err(|_| StreamlineError::PlanOverflow {
+        resource: StreamlineResource::Steps,
+    })?;
+    let output_points = checked_streamline_add(request.steps, 1, StreamlineResource::OutputPoints)?;
+    let field_evaluations = checked_streamline_mul(
+        request.steps,
+        STREAMLINE_RK4_FIELD_CALLS_PER_STEP,
+        StreamlineResource::FieldEvaluations,
+    )?;
+    u64::try_from(field_evaluations).map_err(|_| StreamlineError::PlanOverflow {
+        resource: StreamlineResource::FieldEvaluations,
+    })?;
+    u64::try_from(output_points).map_err(|_| StreamlineError::PlanOverflow {
+        resource: StreamlineResource::OutputPoints,
+    })?;
+    let input_bytes = checked_streamline_add(
+        size_of::<StreamlineRequest>(),
+        size_of::<StreamlineBudget>(),
+        StreamlineResource::LiveBytes,
+    )?;
+    let output_bytes = checked_streamline_mul(
+        output_points,
+        size_of::<Vec2>(),
+        StreamlineResource::OutputBytes,
+    )?;
+    let rk4_scratch_bytes = size_of::<[Vec2; 6]>();
+    let identity_scratch_bytes = checked_streamline_add(
+        size_of::<DomainHasher>(),
+        size_of::<u64>(),
+        StreamlineResource::ScratchBytes,
+    )?;
+    let scratch_bytes = rk4_scratch_bytes.max(identity_scratch_bytes);
+    let diagnostic_records = 1;
+    let diagnostic_bytes = size_of::<StreamlineOutput>().max(size_of::<StreamlineRunError>());
+    let point_identity_bytes = checked_streamline_mul(
+        output_points,
+        STREAMLINE_POINT_IDENTITY_BYTES,
+        StreamlineResource::IdentityBytes,
+    )?;
+    let identity_bytes = checked_streamline_sum(
+        [
+            STREAMLINE_ARTIFACT_IDENTITY_DOMAIN.len(),
+            STREAMLINE_IDENTITY_FIXED_PAYLOAD_BYTES,
+            point_identity_bytes,
+        ],
+        StreamlineResource::IdentityBytes,
+    )?;
+    let live_bytes = checked_streamline_sum(
+        [input_bytes, output_bytes, scratch_bytes, diagnostic_bytes],
+        StreamlineResource::LiveBytes,
+    )?;
+    let step_chunks = streamline_chunk_count(request.steps, request.items_per_poll)?;
+    let identity_chunks = streamline_chunk_count(output_points, request.items_per_poll)?;
+    let polls =
+        checked_streamline_sum([2, step_chunks, identity_chunks], StreamlineResource::Polls)?;
+    let arithmetic_work = checked_streamline_mul(
+        request.steps,
+        STREAMLINE_RK4_ARITHMETIC_WORK_PER_STEP,
+        StreamlineResource::WorkUnits,
+    )?;
+    let work_units_usize = checked_streamline_sum(
+        [
+            field_evaluations,
+            arithmetic_work,
+            request.steps,
+            1,
+            identity_bytes,
+            1,
+        ],
+        StreamlineResource::WorkUnits,
+    )?;
+    let work_units =
+        u64::try_from(work_units_usize).map_err(|_| StreamlineError::PlanOverflow {
+            resource: StreamlineResource::WorkUnits,
+        })?;
+
+    Ok(StreamlinePlan {
+        steps: request.steps,
+        field_evaluations,
+        output_points,
+        input_bytes,
+        output_bytes,
+        scratch_bytes,
+        diagnostic_records,
+        diagnostic_bytes,
+        identity_bytes,
+        live_bytes,
+        polls,
+        work_units,
+        items_per_poll: request.items_per_poll,
+    })
+}
+
+fn admit_streamline_plan(
+    plan: StreamlinePlan,
+    budget: StreamlineBudget,
+) -> Result<(), StreamlineError> {
+    let requirements = [
+        (
+            StreamlineResource::Steps,
+            usize_to_u128(plan.steps),
+            usize_to_u128(budget.step_limit),
+        ),
+        (
+            StreamlineResource::FieldEvaluations,
+            usize_to_u128(plan.field_evaluations),
+            usize_to_u128(budget.field_evaluation_limit),
+        ),
+        (
+            StreamlineResource::OutputPoints,
+            usize_to_u128(plan.output_points),
+            usize_to_u128(budget.output_point_limit),
+        ),
+        (
+            StreamlineResource::OutputBytes,
+            usize_to_u128(plan.output_bytes),
+            usize_to_u128(budget.output_byte_limit),
+        ),
+        (
+            StreamlineResource::ScratchBytes,
+            usize_to_u128(plan.scratch_bytes),
+            usize_to_u128(budget.scratch_byte_limit),
+        ),
+        (
+            StreamlineResource::DiagnosticRecords,
+            usize_to_u128(plan.diagnostic_records),
+            usize_to_u128(budget.diagnostic_record_limit),
+        ),
+        (
+            StreamlineResource::DiagnosticBytes,
+            usize_to_u128(plan.diagnostic_bytes),
+            usize_to_u128(budget.diagnostic_byte_limit),
+        ),
+        (
+            StreamlineResource::LiveBytes,
+            usize_to_u128(plan.live_bytes),
+            usize_to_u128(budget.live_byte_limit),
+        ),
+        (
+            StreamlineResource::IdentityBytes,
+            usize_to_u128(plan.identity_bytes),
+            usize_to_u128(budget.identity_byte_limit),
+        ),
+        (
+            StreamlineResource::Polls,
+            usize_to_u128(plan.polls),
+            usize_to_u128(budget.poll_limit),
+        ),
+        (
+            StreamlineResource::WorkUnits,
+            u128::from(plan.work_units),
+            u128::from(budget.work_unit_limit),
+        ),
+    ];
+    for (resource, required, limit) in requirements {
+        if required > limit {
+            return Err(StreamlineError::OperationBudgetExceeded {
+                resource,
+                required,
+                limit,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn terminal_streamline_error(
+    error: StreamlineError,
+    mut report: StreamlineReport,
+) -> StreamlineRunError {
+    report.diagnostic_records = 1;
+    report.terminal = true;
+    report.published = false;
+    report.artifact_identity = None;
+    report.disposition = if matches!(
+        error,
+        StreamlineError::ExecutionBudgetRefused {
+            refusal: BudgetRefusal::Cancelled { .. }
+        }
+    ) {
+        StreamlineDisposition::Cancelled
+    } else {
+        StreamlineDisposition::Refused
+    };
+    StreamlineRunError { error, report }
+}
+
+fn streamline_checkpoint<'clock, P>(
+    cx: Option<&Cx<'clock>>,
+    admitted: &mut Option<AdmittedBudget<'clock>>,
+    report: &mut StreamlineReport,
+    phase: &'static str,
+    before_checkpoint: &mut P,
+) -> Result<(), StreamlineError>
+where
+    P: FnMut(&StreamlineReport),
+{
+    let Some(cx) = cx else {
+        return Ok(());
+    };
+    before_checkpoint(report);
+    report.polls += 1;
+    let Some(admitted) = admitted.as_mut() else {
+        return Err(StreamlineError::PlanOverflow {
+            resource: StreamlineResource::WorkUnits,
+        });
+    };
+    admitted
+        .checkpoint(phase, cx)
+        .map_err(|refusal| StreamlineError::ExecutionBudgetRefused { refusal })
+}
+
+fn streamline_charge(
+    admitted: &mut Option<AdmittedBudget<'_>>,
+    pending_work: &mut u64,
+    phase: &'static str,
+) -> Result<(), StreamlineError> {
+    if *pending_work == 0 {
+        return Ok(());
+    }
+    if let Some(admitted) = admitted {
+        admitted
+            .charge_cost(phase, *pending_work)
+            .map_err(|refusal| StreamlineError::ExecutionBudgetRefused { refusal })?;
+    }
+    *pending_work = 0;
+    Ok(())
+}
+
+fn checked_streamline_intermediate(
+    point: Vec2,
+    step: usize,
+    stage: StreamlineStage,
+    report: &mut StreamlineReport,
+    pending_work: &mut u64,
+) -> Result<Vec2, StreamlineError> {
+    report.work_units += 1;
+    *pending_work += 1;
+    for (component, value) in point.into_iter().enumerate() {
+        if !value.is_finite() {
+            return Err(StreamlineError::NonFiniteIntermediate {
+                step,
+                stage,
+                component,
+                value,
+            });
+        }
+    }
+    Ok(point)
+}
+
+fn evaluate_streamline_field<F>(
+    field: &mut F,
+    point: Vec2,
+    step: usize,
+    stage: StreamlineStage,
+    report: &mut StreamlineReport,
+    pending_work: &mut u64,
+) -> Result<Vec2, StreamlineError>
+where
+    F: FnMut(Vec2) -> Vec2,
+{
+    report.field_evaluations += 1;
+    report.work_units += 1;
+    *pending_work += 1;
+    let value = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| field(point)))
+        .map_err(|_| StreamlineError::CallbackPanicked { step, stage })?;
+    for (component, value_component) in value.into_iter().enumerate() {
+        if !value_component.is_finite() {
+            return Err(StreamlineError::NonFiniteFieldValue {
+                step,
+                stage,
+                component,
+                value: value_component,
+            });
+        }
+    }
+    Ok(value)
+}
+
+fn rk4_streamline_step<F>(
+    field: &mut F,
+    point: Vec2,
+    dt: f64,
+    step: usize,
+    report: &mut StreamlineReport,
+    pending_work: &mut u64,
+) -> Result<Vec2, StreamlineError>
+where
+    F: FnMut(Vec2) -> Vec2,
+{
+    let k1 = evaluate_streamline_field(
+        field,
+        point,
+        step,
+        StreamlineStage::K1,
+        report,
+        pending_work,
+    )?;
+    let k2_point = checked_streamline_intermediate(
+        [point[0] + 0.5 * dt * k1[0], point[1] + 0.5 * dt * k1[1]],
+        step,
+        StreamlineStage::K2Input,
+        report,
+        pending_work,
+    )?;
+    let k2 = evaluate_streamline_field(
+        field,
+        k2_point,
+        step,
+        StreamlineStage::K2,
+        report,
+        pending_work,
+    )?;
+    let k3_point = checked_streamline_intermediate(
+        [point[0] + 0.5 * dt * k2[0], point[1] + 0.5 * dt * k2[1]],
+        step,
+        StreamlineStage::K3Input,
+        report,
+        pending_work,
+    )?;
+    let k3 = evaluate_streamline_field(
+        field,
+        k3_point,
+        step,
+        StreamlineStage::K3,
+        report,
+        pending_work,
+    )?;
+    let k4_point = checked_streamline_intermediate(
+        [point[0] + dt * k3[0], point[1] + dt * k3[1]],
+        step,
+        StreamlineStage::K4Input,
+        report,
+        pending_work,
+    )?;
+    let k4 = evaluate_streamline_field(
+        field,
+        k4_point,
+        step,
+        StreamlineStage::K4,
+        report,
+        pending_work,
+    )?;
+    checked_streamline_intermediate(
+        [
+            point[0] + dt / 6.0 * (k1[0] + 2.0 * k2[0] + 2.0 * k3[0] + k4[0]),
+            point[1] + dt / 6.0 * (k1[1] + 2.0 * k2[1] + 2.0 * k3[1] + k4[1]),
+        ],
+        step,
+        StreamlineStage::Advance,
+        report,
+        pending_work,
+    )
+}
+
+fn point_outside_streamline_domain(point: Vec2, domain: StreamlineDomain2) -> bool {
+    (0..2).any(|axis| point[axis] < domain.lower[axis] || point[axis] > domain.upper[axis])
+}
+
+fn same_streamline_point(left: Vec2, right: Vec2) -> bool {
+    left.map(f64::to_bits) == right.map(f64::to_bits)
+}
+
+fn streamline_identity_usize(
+    value: usize,
+    resource: StreamlineResource,
+) -> Result<u64, StreamlineError> {
+    u64::try_from(value).map_err(|_| StreamlineError::PlanOverflow { resource })
+}
+
+#[allow(clippy::too_many_lines)] // One transaction keeps callbacks, charging, and publication ordered.
+fn run_streamline_with<'clock, F, P, R>(
+    cx: Option<&Cx<'clock>>,
+    field: &mut F,
+    request: StreamlineRequest,
+    budget: StreamlineBudget,
+    mut before_checkpoint: P,
+    mut reserve_output: R,
+) -> Result<StreamlineOutput, StreamlineRunError>
+where
+    F: FnMut(Vec2) -> Vec2,
+    P: FnMut(&StreamlineReport),
+    R: FnMut(&mut Vec<Vec2>, usize) -> Result<(), ()>,
+{
+    let mut report = StreamlineReport::empty(request, budget);
+    let plan = match streamline_requirements(request) {
+        Ok(plan) => plan,
+        Err(error) => return Err(terminal_streamline_error(error, report)),
+    };
+    report.plan = Some(plan);
+    report.peak_live_bytes = plan.input_bytes + plan.diagnostic_bytes;
+    if let Err(error) = admit_streamline_plan(plan, budget) {
+        return Err(terminal_streamline_error(error, report));
+    }
+
+    let mut admitted = if let Some(cx) = cx {
+        match AdmittedBudget::admit_ambient(cx, plan.work_units) {
+            Ok(admitted) => Some(admitted),
+            Err(refusal) => {
+                return Err(terminal_streamline_error(
+                    StreamlineError::ExecutionBudgetRefused { refusal },
+                    report,
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    if let Err(error) = streamline_checkpoint(
+        cx,
+        &mut admitted,
+        &mut report,
+        "fs-viz.streamline.admission",
+        &mut before_checkpoint,
+    ) {
+        return Err(terminal_streamline_error(error, report));
+    }
+
+    let mut points = Vec::new();
+    if reserve_output(&mut points, plan.output_points).is_err() {
+        return Err(terminal_streamline_error(
+            StreamlineError::AllocationFailed {
+                required: plan.output_points,
+            },
+            report,
+        ));
+    }
+    let reserved_output_bytes = match points.capacity().checked_mul(size_of::<Vec2>()) {
+        Some(bytes) => bytes,
+        None => {
+            return Err(terminal_streamline_error(
+                StreamlineError::PlanOverflow {
+                    resource: StreamlineResource::OutputBytes,
+                },
+                report,
+            ));
+        }
+    };
+    report.reserved_output_bytes = reserved_output_bytes;
+    if points.capacity() < plan.output_points {
+        return Err(terminal_streamline_error(
+            StreamlineError::AllocationFailed {
+                required: plan.output_points,
+            },
+            report,
+        ));
+    }
+    if reserved_output_bytes > budget.output_byte_limit {
+        return Err(terminal_streamline_error(
+            StreamlineError::OperationBudgetExceeded {
+                resource: StreamlineResource::OutputBytes,
+                required: usize_to_u128(reserved_output_bytes),
+                limit: usize_to_u128(budget.output_byte_limit),
+            },
+            report,
+        ));
+    }
+    let non_output_live = plan.live_bytes - plan.output_bytes;
+    let actual_live_bytes = match non_output_live.checked_add(reserved_output_bytes) {
+        Some(bytes) => bytes,
+        None => {
+            return Err(terminal_streamline_error(
+                StreamlineError::PlanOverflow {
+                    resource: StreamlineResource::LiveBytes,
+                },
+                report,
+            ));
+        }
+    };
+    report.peak_live_bytes = actual_live_bytes;
+    if actual_live_bytes > budget.live_byte_limit {
+        return Err(terminal_streamline_error(
+            StreamlineError::OperationBudgetExceeded {
+                resource: StreamlineResource::LiveBytes,
+                required: usize_to_u128(actual_live_bytes),
+                limit: usize_to_u128(budget.live_byte_limit),
+            },
+            report,
+        ));
+    }
+
+    let mut pending_work = 1u64;
+    report.work_units = 1;
+    points.push(request.seed);
+    report.output_points = 1;
+    let mut steps_since_poll = plan.items_per_poll;
+    for step in 0..request.steps {
+        if steps_since_poll == plan.items_per_poll {
+            if let Err(error) = streamline_charge(
+                &mut admitted,
+                &mut pending_work,
+                "fs-viz.streamline.step-chunk",
+            ) {
+                return Err(terminal_streamline_error(error, report));
+            }
+            if let Err(error) = streamline_checkpoint(
+                cx,
+                &mut admitted,
+                &mut report,
+                "fs-viz.streamline.step-chunk",
+                &mut before_checkpoint,
+            ) {
+                return Err(terminal_streamline_error(error, report));
+            }
+            steps_since_poll = 0;
+        }
+
+        let point = points[points.len() - 1];
+        let candidate = match rk4_streamline_step(
+            field,
+            point,
+            request.dt,
+            step,
+            &mut report,
+            &mut pending_work,
+        ) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                if let Err(budget_error) = streamline_charge(
+                    &mut admitted,
+                    &mut pending_work,
+                    "fs-viz.streamline.step-refusal",
+                ) {
+                    return Err(terminal_streamline_error(budget_error, report));
+                }
+                return Err(terminal_streamline_error(error, report));
+            }
+        };
+
+        if let Some(domain) = request.domain
+            && point_outside_streamline_domain(candidate, domain)
+        {
+            match request.boundary_policy {
+                StreamlineBoundaryPolicy::RefuseExit => {
+                    if let Err(budget_error) = streamline_charge(
+                        &mut admitted,
+                        &mut pending_work,
+                        "fs-viz.streamline.domain-refusal",
+                    ) {
+                        return Err(terminal_streamline_error(budget_error, report));
+                    }
+                    return Err(terminal_streamline_error(
+                        StreamlineError::DomainExit {
+                            step,
+                            point_bits: candidate.map(f64::to_bits),
+                        },
+                        report,
+                    ));
+                }
+                StreamlineBoundaryPolicy::StopBeforeExit => {
+                    report.termination = Some(StreamlineTermination::DomainExit {
+                        attempted_step: step,
+                    });
+                    break;
+                }
+            }
+        }
+
+        if same_streamline_point(candidate, point)
+            && request.stagnation_policy == StreamlineStagnationPolicy::StopBeforeRepeat
+        {
+            report.termination = Some(StreamlineTermination::Stagnated {
+                attempted_step: step,
+            });
+            break;
+        }
+
+        points.push(candidate);
+        report.completed_steps += 1;
+        report.output_points = points.len();
+        report.work_units += 1;
+        pending_work += 1;
+        steps_since_poll += 1;
+    }
+    if report.termination.is_none() {
+        report.termination = Some(StreamlineTermination::StepsComplete);
+    }
+
+    if let Err(error) = streamline_charge(
+        &mut admitted,
+        &mut pending_work,
+        "fs-viz.streamline.step-finalize",
+    ) {
+        return Err(terminal_streamline_error(error, report));
+    }
+    if let Err(error) = streamline_checkpoint(
+        cx,
+        &mut admitted,
+        &mut report,
+        "fs-viz.streamline.identity",
+        &mut before_checkpoint,
+    ) {
+        return Err(terminal_streamline_error(error, report));
+    }
+
+    let requested_steps = match streamline_identity_usize(request.steps, StreamlineResource::Steps)
+    {
+        Ok(value) => value,
+        Err(error) => return Err(terminal_streamline_error(error, report)),
+    };
+    let completed_steps =
+        match streamline_identity_usize(report.completed_steps, StreamlineResource::Steps) {
+            Ok(value) => value,
+            Err(error) => return Err(terminal_streamline_error(error, report)),
+        };
+    let field_evaluations = match streamline_identity_usize(
+        report.field_evaluations,
+        StreamlineResource::FieldEvaluations,
+    ) {
+        Ok(value) => value,
+        Err(error) => return Err(terminal_streamline_error(error, report)),
+    };
+    let point_count =
+        match streamline_identity_usize(points.len(), StreamlineResource::OutputPoints) {
+            Ok(value) => value,
+            Err(error) => return Err(terminal_streamline_error(error, report)),
+        };
+    let termination = match report.termination {
+        Some(termination) => termination,
+        None => {
+            return Err(terminal_streamline_error(
+                StreamlineError::PlanOverflow {
+                    resource: StreamlineResource::IdentityBytes,
+                },
+                report,
+            ));
+        }
+    };
+    let termination_step = match streamline_identity_usize(
+        termination.identity_step(request.steps),
+        StreamlineResource::Steps,
+    ) {
+        Ok(value) => value,
+        Err(error) => return Err(terminal_streamline_error(error, report)),
+    };
+    let (domain_present, domain) = match request.domain {
+        Some(domain) => (1u8, domain),
+        None => (
+            0u8,
+            StreamlineDomain2 {
+                lower: [0.0; 2],
+                upper: [0.0; 2],
+            },
+        ),
+    };
+    let mut hasher = DomainHasher::new(STREAMLINE_ARTIFACT_IDENTITY_DOMAIN);
+    report.identity_bytes_hashed = STREAMLINE_ARTIFACT_IDENTITY_DOMAIN.len();
+    hasher.update(&STREAMLINE_ARTIFACT_IDENTITY_VERSION.to_le_bytes());
+    hasher.update(&[request.method.identity_tag()]);
+    hasher.update(&[request.units.identity_tag()]);
+    hasher.update(&[request.boundary_policy.identity_tag()]);
+    hasher.update(&[request.stagnation_policy.identity_tag()]);
+    for coordinate in request.seed {
+        hasher.update(&coordinate.to_bits().to_le_bytes());
+    }
+    hasher.update(&request.dt.to_bits().to_le_bytes());
+    hasher.update(&requested_steps.to_le_bytes());
+    hasher.update(&[domain_present]);
+    for coordinate in domain.lower.into_iter().chain(domain.upper) {
+        hasher.update(&coordinate.to_bits().to_le_bytes());
+    }
+    hasher.update(&[termination.identity_tag()]);
+    hasher.update(&termination_step.to_le_bytes());
+    hasher.update(&completed_steps.to_le_bytes());
+    hasher.update(&field_evaluations.to_le_bytes());
+    hasher.update(&point_count.to_le_bytes());
+    hasher.update(&[0]);
+    hasher.update(&0u64.to_le_bytes());
+    report.identity_bytes_hashed += STREAMLINE_IDENTITY_FIXED_PAYLOAD_BYTES;
+    let identity_header_work = match u64::try_from(report.identity_bytes_hashed) {
+        Ok(value) => value,
+        Err(_) => {
+            return Err(terminal_streamline_error(
+                StreamlineError::PlanOverflow {
+                    resource: StreamlineResource::WorkUnits,
+                },
+                report,
+            ));
+        }
+    };
+    report.work_units += identity_header_work;
+    pending_work += identity_header_work;
+
+    for (index, point) in points.iter().enumerate() {
+        if index > 0 && index % plan.items_per_poll == 0 {
+            if let Err(error) = streamline_charge(
+                &mut admitted,
+                &mut pending_work,
+                "fs-viz.streamline.identity-chunk",
+            ) {
+                return Err(terminal_streamline_error(error, report));
+            }
+            if let Err(error) = streamline_checkpoint(
+                cx,
+                &mut admitted,
+                &mut report,
+                "fs-viz.streamline.identity-chunk",
+                &mut before_checkpoint,
+            ) {
+                return Err(terminal_streamline_error(error, report));
+            }
+        }
+        hasher.update(&point[0].to_bits().to_le_bytes());
+        hasher.update(&point[1].to_bits().to_le_bytes());
+        report.identity_bytes_hashed += STREAMLINE_POINT_IDENTITY_BYTES;
+        report.work_units += STREAMLINE_POINT_IDENTITY_WORK_UNITS;
+        pending_work += STREAMLINE_POINT_IDENTITY_WORK_UNITS;
+    }
+    let identity = hasher.finalize();
+    report.work_units += 1;
+    pending_work += 1;
+    if let Err(error) = streamline_charge(
+        &mut admitted,
+        &mut pending_work,
+        "fs-viz.streamline.identity-finalize",
+    ) {
+        return Err(terminal_streamline_error(error, report));
+    }
+    if let Err(error) = streamline_checkpoint(
+        cx,
+        &mut admitted,
+        &mut report,
+        "fs-viz.streamline.publish",
+        &mut before_checkpoint,
+    ) {
+        return Err(terminal_streamline_error(error, report));
+    }
+
+    report.terminal = true;
+    report.published = true;
+    report.diagnostic_records = 1;
+    report.disposition = if termination == StreamlineTermination::StepsComplete {
+        StreamlineDisposition::Completed
+    } else {
+        StreamlineDisposition::Terminated
+    };
+    report.artifact_identity = Some(identity);
+    Ok(StreamlineOutput { points, report })
 }
 
 /// The Morse type of a critical point.
@@ -1743,7 +3259,7 @@ fn grid_axis_point(nodes: usize, lower: f64, upper: f64, index: usize) -> f64 {
 }
 
 #[cfg(test)]
-mod contour_fault_tests {
+mod viz_fault_tests {
     use super::*;
     use fs_exec::{Budget, CancelGate, ExecMode, StreamKey};
     use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -1772,6 +3288,95 @@ mod contour_fault_tests {
             point[0] + 0.25 * point[1] - 0.03
         })
         .expect("finite affine fixture")
+    }
+
+    fn streamline_fixture() -> (StreamlineRequest, StreamlineBudget) {
+        let request = StreamlineRequest::dimensionless_rk4([0.0; 2], 0.125, 8, 1);
+        let budget = required_streamline_budget(request).expect("checked streamline fixture");
+        (request, budget)
+    }
+
+    #[test]
+    fn g4_streamline_injected_allocation_refusal_precedes_callback_work() {
+        let (request, budget) = streamline_fixture();
+        let gate = CancelGate::new();
+        let calls = std::cell::Cell::new(0usize);
+        let refusal = with_cx(&gate, |cx| {
+            let mut field = |_| {
+                calls.set(calls.get() + 1);
+                [1.0, 0.0]
+            };
+            run_streamline_with(
+                Some(cx),
+                &mut field,
+                request,
+                budget,
+                |_| {},
+                |_, _| Err(()),
+            )
+            .expect_err("injected point reservation refusal")
+        });
+        assert_eq!(
+            refusal.error,
+            StreamlineError::AllocationFailed {
+                required: request.steps + 1,
+            }
+        );
+        assert_eq!(calls.get(), 0);
+        assert_eq!(refusal.report.field_evaluations, 0);
+        assert_eq!(refusal.report.output_points, 0);
+        assert_eq!(refusal.report.reserved_output_bytes, 0);
+        assert!(refusal.report.terminal && !refusal.report.published);
+    }
+
+    #[test]
+    fn g4_streamline_injected_midstage_cancellation_is_retryable() {
+        let (request, budget) = streamline_fixture();
+        let gate = CancelGate::new();
+        let mut requested = false;
+        let cancellation = with_cx(&gate, |cx| {
+            let mut field = |_| [1.0, -0.5];
+            run_streamline_with(
+                Some(cx),
+                &mut field,
+                request,
+                budget,
+                |report| {
+                    if !requested && report.completed_steps >= 2 {
+                        requested = true;
+                        gate.request();
+                    }
+                },
+                |points, required| points.try_reserve_exact(required).map_err(|_| ()),
+            )
+            .expect_err("injected midstage cancellation")
+        });
+        assert!(requested);
+        assert!(matches!(
+            cancellation.error,
+            StreamlineError::ExecutionBudgetRefused {
+                refusal: BudgetRefusal::Cancelled { .. }
+            }
+        ));
+        assert_eq!(cancellation.report.completed_steps, 2);
+        assert_eq!(
+            cancellation.report.disposition,
+            StreamlineDisposition::Cancelled
+        );
+        assert!(!cancellation.report.published);
+        assert!(cancellation.report.artifact_identity.is_none());
+
+        let retry_gate = CancelGate::new();
+        let retry = with_cx(&retry_gate, |cx| {
+            streamline_with_cx(cx, |_| [1.0, -0.5], request, budget)
+                .expect("retry after cancellation")
+        });
+        let direct_gate = CancelGate::new();
+        let direct = with_cx(&direct_gate, |cx| {
+            streamline_with_cx(cx, |_| [1.0, -0.5], request, budget)
+                .expect("direct after cancellation")
+        });
+        assert_eq!(retry, direct);
     }
 
     #[test]

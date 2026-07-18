@@ -3,12 +3,17 @@
 //! streamlines conserve xy, Hessian classification recovers the known Morse
 //! type, and a circle-SDF isocontour lies on the circle.
 
+use fs_blake3::DomainHasher;
 use fs_exec::{Budget, BudgetRefusal, CancelGate, Cx, ExecMode, StreamKey};
 use fs_viz::{
     CriticalKind, Grid2, Grid2Error, Grid3, Grid3Error, ISO_CONTOUR_ARTIFACT_IDENTITY_DOMAIN,
     IsoContourDisposition, IsoContourError, IsoContourResource, IsoSurfaceError,
-    SCALAR_FIELD3_ARTIFACT_KIND, SCALAR_FIELD3_SCHEMA_VERSION, ScalarField3, ScalarField3Error,
-    ScalarFieldSemantics, ScalarLayout3, classify_hessian, streamline,
+    SCALAR_FIELD3_ARTIFACT_KIND, SCALAR_FIELD3_SCHEMA_VERSION, STREAMLINE_ARTIFACT_IDENTITY_DOMAIN,
+    STREAMLINE_ARTIFACT_IDENTITY_VERSION, ScalarField3, ScalarField3Error, ScalarFieldSemantics,
+    ScalarLayout3, StreamlineBoundaryPolicy, StreamlineDisposition, StreamlineDomain2,
+    StreamlineError, StreamlineRequest, StreamlineResource, StreamlineStage,
+    StreamlineStagnationPolicy, StreamlineTermination, classify_hessian,
+    required_streamline_budget, streamline, streamline_plan, streamline_with_cx,
 };
 use std::cell::Cell;
 use std::mem::size_of;
@@ -84,6 +89,505 @@ fn a_saddle_field_conserves_the_hyperbola_invariant() {
     }
     // x grows, y shrinks (the saddle's unstable/stable manifolds).
     assert!(line.last().unwrap()[0] > 1.4 && line.last().unwrap()[1] < 0.7);
+}
+
+#[test]
+fn g0_streamline_zero_step_plan_and_receipt_are_exact() {
+    let request = StreamlineRequest::dimensionless_rk4([1.0, -2.0], 0.25, 0, 3);
+    let budget = required_streamline_budget(request).expect("zero-step plan is representable");
+    let plan = streamline_plan(request, budget).expect("exact budget admits zero-step plan");
+    assert_eq!(plan.steps, 0);
+    assert_eq!(plan.field_evaluations, 0);
+    assert_eq!(plan.output_points, 1);
+    assert_eq!(plan.output_bytes, size_of::<[f64; 2]>());
+    assert_eq!(plan.polls, 3);
+    let one_request = StreamlineRequest::dimensionless_rk4([1.0, -2.0], 0.25, 1, 3);
+    let one_budget = required_streamline_budget(one_request).expect("one-step exact budget");
+    let one_plan = streamline_plan(one_request, one_budget).expect("one-step exact plan");
+    assert_eq!(one_plan.field_evaluations, 4);
+    assert_eq!(one_plan.output_points, 2);
+
+    let gate = CancelGate::new();
+    let callback_calls = Cell::new(0usize);
+    let output = with_contour_cx(&gate, Budget::INFINITE, |cx| {
+        streamline_with_cx(
+            cx,
+            |_| {
+                callback_calls.set(callback_calls.get() + 1);
+                [0.0; 2]
+            },
+            request,
+            budget,
+        )
+        .expect("zero-step request publishes its seed")
+    });
+    assert_eq!(callback_calls.get(), 0);
+    assert_eq!(output.points(), &[[1.0, -2.0]]);
+    assert_eq!(output.report().request, request);
+    assert_eq!(output.report().operation_budget, Some(budget));
+    assert_eq!(output.report().plan, Some(plan));
+    assert_eq!(
+        output.report().termination,
+        Some(StreamlineTermination::StepsComplete)
+    );
+    assert_eq!(
+        output.report().disposition,
+        StreamlineDisposition::Completed
+    );
+    assert_eq!(output.report().field_evaluations, 0);
+    assert_eq!(output.report().output_points, 1);
+    assert_eq!(output.report().polls, plan.polls);
+    assert_eq!(output.report().work_units, plan.work_units);
+    assert_eq!(output.report().reserved_output_bytes, plan.output_bytes);
+    assert_eq!(output.report().peak_live_bytes, plan.live_bytes);
+    assert_eq!(output.report().identity_bytes_hashed, plan.identity_bytes);
+    assert_eq!(output.report().error_estimate, None);
+    assert!(output.report().terminal && output.report().published);
+    assert!(output.report().artifact_identity.is_some());
+    assert!(!STREAMLINE_ARTIFACT_IDENTITY_DOMAIN.is_empty());
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One admission matrix shares a callback-side-effect oracle.
+fn g0_streamline_invalid_requests_and_one_short_resources_fail_before_callbacks() {
+    assert!(matches!(
+        required_streamline_budget(StreamlineRequest::dimensionless_rk4(
+            [f64::NAN, 0.0],
+            0.1,
+            1,
+            1,
+        )),
+        Err(StreamlineError::NonFiniteSeed { component: 0, .. })
+    ));
+    assert_eq!(
+        required_streamline_budget(StreamlineRequest::dimensionless_rk4([0.0; 2], 0.0, 1, 1,)),
+        Err(StreamlineError::InvalidStepSize { dt: 0.0 })
+    );
+    assert_eq!(
+        required_streamline_budget(StreamlineRequest::dimensionless_rk4(
+            [0.0; 2],
+            f64::INFINITY,
+            1,
+            1,
+        )),
+        Err(StreamlineError::InvalidStepSize { dt: f64::INFINITY })
+    );
+    let mut unsupported_version = StreamlineRequest::dimensionless_rk4([0.0; 2], 0.1, 1, 1);
+    unsupported_version.method_version += 1;
+    assert_eq!(
+        required_streamline_budget(unsupported_version),
+        Err(StreamlineError::UnsupportedMethodVersion { version: 2 })
+    );
+    assert_eq!(
+        required_streamline_budget(StreamlineRequest::dimensionless_rk4([0.0; 2], 0.1, 1, 0,)),
+        Err(StreamlineError::InvalidPollStride { items_per_poll: 0 })
+    );
+    let mut invalid_domain = StreamlineRequest::dimensionless_rk4([0.0; 2], 0.1, 1, 1);
+    invalid_domain.domain = Some(StreamlineDomain2 {
+        lower: [-f64::MAX, -1.0],
+        upper: [f64::MAX, 1.0],
+    });
+    assert!(matches!(
+        required_streamline_budget(invalid_domain),
+        Err(StreamlineError::InvalidDomain { axis: 0, .. })
+    ));
+    let mut outside_domain = StreamlineRequest::dimensionless_rk4([2.0, 0.0], 0.1, 1, 1);
+    outside_domain.domain = Some(StreamlineDomain2 {
+        lower: [-1.0; 2],
+        upper: [1.0; 2],
+    });
+    assert!(matches!(
+        required_streamline_budget(outside_domain),
+        Err(StreamlineError::SeedOutsideDomain { axis: 0, .. })
+    ));
+    assert_eq!(
+        required_streamline_budget(StreamlineRequest::dimensionless_rk4(
+            [0.0; 2],
+            0.1,
+            usize::MAX,
+            1,
+        )),
+        Err(StreamlineError::PlanOverflow {
+            resource: StreamlineResource::OutputPoints
+        })
+    );
+    let wrapper_calls = Cell::new(0usize);
+    assert!(
+        streamline(
+            |_| {
+                wrapper_calls.set(wrapper_calls.get() + 1);
+                [1.0; 2]
+            },
+            [0.0; 2],
+            0.1,
+            usize::MAX,
+        )
+        .is_empty()
+    );
+    assert_eq!(wrapper_calls.get(), 0);
+    assert!(
+        streamline(|_| panic!("compatibility callback panic"), [0.0; 2], 0.1, 1,).is_empty(),
+        "the no-authority wrapper contains callback unwinds"
+    );
+
+    let request = StreamlineRequest::dimensionless_rk4([0.0; 2], 0.125, 8, 2);
+    let budget = required_streamline_budget(request).expect("finite exact request");
+    let mut cases = Vec::new();
+    macro_rules! one_short {
+        ($resource:expr, $field:ident) => {{
+            let mut limited = budget;
+            limited.$field -= 1;
+            cases.push(($resource, limited));
+        }};
+    }
+    one_short!(StreamlineResource::Steps, step_limit);
+    one_short!(StreamlineResource::FieldEvaluations, field_evaluation_limit);
+    one_short!(StreamlineResource::OutputPoints, output_point_limit);
+    one_short!(StreamlineResource::OutputBytes, output_byte_limit);
+    one_short!(StreamlineResource::ScratchBytes, scratch_byte_limit);
+    one_short!(
+        StreamlineResource::DiagnosticRecords,
+        diagnostic_record_limit
+    );
+    one_short!(StreamlineResource::DiagnosticBytes, diagnostic_byte_limit);
+    one_short!(StreamlineResource::LiveBytes, live_byte_limit);
+    one_short!(StreamlineResource::IdentityBytes, identity_byte_limit);
+    one_short!(StreamlineResource::Polls, poll_limit);
+    one_short!(StreamlineResource::WorkUnits, work_unit_limit);
+
+    for (resource, limited) in cases {
+        let calls = Cell::new(0usize);
+        let gate = CancelGate::new();
+        let refusal = with_contour_cx(&gate, Budget::INFINITE, |cx| {
+            streamline_with_cx(
+                cx,
+                |_| {
+                    calls.set(calls.get() + 1);
+                    [1.0, 0.0]
+                },
+                request,
+                limited,
+            )
+            .expect_err("one-short operation resource must refuse")
+        });
+        assert!(matches!(
+            refusal.error,
+            StreamlineError::OperationBudgetExceeded {
+                resource: rejected,
+                ..
+            } if rejected == resource
+        ));
+        assert_eq!(calls.get(), 0, "{resource} admitted a callback");
+        assert_eq!(refusal.report.polls, 0);
+        assert_eq!(refusal.report.output_points, 0);
+        assert!(!refusal.report.published);
+    }
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One G3 fixture shares exact constant-flow semantics.
+fn g3_streamline_reverse_time_scaling_domain_and_stagnation_policies() {
+    let forward_request = StreamlineRequest::dimensionless_rk4([0.0; 2], 0.25, 4, 2);
+    let forward_budget =
+        required_streamline_budget(forward_request).expect("forward constant-flow plan");
+    let forward_gate = CancelGate::new();
+    let forward = with_contour_cx(&forward_gate, Budget::INFINITE, |cx| {
+        streamline_with_cx(cx, |_| [1.0, -2.0], forward_request, forward_budget)
+            .expect("forward constant flow")
+    });
+    assert_eq!(forward.points().last().copied(), Some([1.0, -2.0]));
+
+    let reverse_request = StreamlineRequest::dimensionless_rk4([1.0, -2.0], -0.25, 4, 2);
+    let reverse_budget =
+        required_streamline_budget(reverse_request).expect("reverse constant-flow plan");
+    let reverse_gate = CancelGate::new();
+    let reverse = with_contour_cx(&reverse_gate, Budget::INFINITE, |cx| {
+        streamline_with_cx(cx, |_| [1.0, -2.0], reverse_request, reverse_budget)
+            .expect("negative dt is explicitly supported")
+    });
+    assert_eq!(reverse.points().last().copied(), Some([0.0, 0.0]));
+
+    let scaled_request = StreamlineRequest::dimensionless_rk4([0.0; 2], 0.25, 4, 2);
+    let scaled_budget =
+        required_streamline_budget(scaled_request).expect("scaled constant-flow plan");
+    let scaled_gate = CancelGate::new();
+    let scaled = with_contour_cx(&scaled_gate, Budget::INFINITE, |cx| {
+        streamline_with_cx(cx, |_| [2.0, -4.0], scaled_request, scaled_budget)
+            .expect("scaled constant flow")
+    });
+    for (base, doubled) in forward.points().iter().zip(scaled.points()) {
+        assert_eq!([2.0 * base[0], 2.0 * base[1]], *doubled);
+    }
+
+    let mut domain_request = StreamlineRequest::dimensionless_rk4([0.0; 2], 1.0, 4, 1);
+    domain_request.domain = Some(StreamlineDomain2 {
+        lower: [-1.0; 2],
+        upper: [1.5, 1.0],
+    });
+    domain_request.boundary_policy = StreamlineBoundaryPolicy::StopBeforeExit;
+    let domain_budget = required_streamline_budget(domain_request).expect("bounded-domain plan");
+    let domain_gate = CancelGate::new();
+    let stopped = with_contour_cx(&domain_gate, Budget::INFINITE, |cx| {
+        streamline_with_cx(cx, |_| [1.0, 0.0], domain_request, domain_budget)
+            .expect("declared boundary stop publishes the in-domain prefix")
+    });
+    assert_eq!(stopped.points(), &[[0.0, 0.0], [1.0, 0.0]]);
+    assert_eq!(
+        stopped.report().termination,
+        Some(StreamlineTermination::DomainExit { attempted_step: 1 })
+    );
+    assert_eq!(
+        stopped.report().disposition,
+        StreamlineDisposition::Terminated
+    );
+
+    let mut refusing_request = domain_request;
+    refusing_request.boundary_policy = StreamlineBoundaryPolicy::RefuseExit;
+    let refusing_budget =
+        required_streamline_budget(refusing_request).expect("refusing-domain plan");
+    let refusing_gate = CancelGate::new();
+    let refusal = with_contour_cx(&refusing_gate, Budget::INFINITE, |cx| {
+        streamline_with_cx(cx, |_| [1.0, 0.0], refusing_request, refusing_budget)
+            .expect_err("RefuseExit cannot publish a prefix")
+    });
+    assert!(matches!(
+        refusal.error,
+        StreamlineError::DomainExit { step: 1, .. }
+    ));
+    assert!(!refusal.report.published);
+
+    let mut stagnating_request = StreamlineRequest::dimensionless_rk4([3.0, -4.0], 1.0, 8, 2);
+    stagnating_request.stagnation_policy = StreamlineStagnationPolicy::StopBeforeRepeat;
+    let stagnating_budget =
+        required_streamline_budget(stagnating_request).expect("stagnation plan");
+    let stagnating_gate = CancelGate::new();
+    let stagnated = with_contour_cx(&stagnating_gate, Budget::INFINITE, |cx| {
+        streamline_with_cx(cx, |_| [0.0; 2], stagnating_request, stagnating_budget)
+            .expect("declared stagnation publishes one unique point")
+    });
+    assert_eq!(stagnated.points(), &[[3.0, -4.0]]);
+    assert_eq!(
+        stagnated.report().termination,
+        Some(StreamlineTermination::Stagnated { attempted_step: 0 })
+    );
+    assert_eq!(streamline(|_| [0.0; 2], [3.0, -4.0], 1.0, 2).len(), 3);
+}
+
+#[test]
+fn g3_streamline_rk4_refinement_and_poll_chunking_preserve_claimed_semantics() {
+    let exact = [1.0_f64.cos(), 1.0_f64.sin()];
+    let coarse = streamline(|point| [-point[1], point[0]], [1.0, 0.0], 0.2, 5);
+    let fine = streamline(|point| [-point[1], point[0]], [1.0, 0.0], 0.1, 10);
+    let endpoint_error = |points: &[[f64; 2]]| {
+        let endpoint = points[points.len() - 1];
+        ((endpoint[0] - exact[0]).powi(2) + (endpoint[1] - exact[1]).powi(2)).sqrt()
+    };
+    assert!(
+        endpoint_error(&fine) < endpoint_error(&coarse) / 8.0,
+        "halving h should exhibit the declared fourth-order RK4 trend"
+    );
+
+    let request_one = StreamlineRequest::dimensionless_rk4([1.0, 0.0], 0.1, 10, 1);
+    let request_four = StreamlineRequest::dimensionless_rk4([1.0, 0.0], 0.1, 10, 4);
+    let budget_one = required_streamline_budget(request_one).expect("stride-one plan");
+    let budget_four = required_streamline_budget(request_four).expect("stride-four plan");
+    let gate_one = CancelGate::new();
+    let one = with_contour_cx(&gate_one, Budget::INFINITE, |cx| {
+        streamline_with_cx(cx, |point| [-point[1], point[0]], request_one, budget_one)
+            .expect("stride-one run")
+    });
+    let gate_four = CancelGate::new();
+    let four = with_contour_cx(&gate_four, Budget::INFINITE, |cx| {
+        streamline_with_cx(cx, |point| [-point[1], point[0]], request_four, budget_four)
+            .expect("stride-four run")
+    });
+    assert_eq!(one.points(), four.points());
+    assert_ne!(one.report().polls, four.report().polls);
+    assert_eq!(
+        one.report().artifact_identity,
+        four.report().artifact_identity,
+        "artifact identity is invariant to equivalent polling chunking"
+    );
+}
+
+#[test]
+fn g5_streamline_identity_has_fixed_little_endian_field_order() {
+    let mut request = StreamlineRequest::dimensionless_rk4([-0.0, 2.5], -0.125, 0, 7);
+    request.domain = Some(StreamlineDomain2 {
+        lower: [-1.0, -2.0],
+        upper: [3.0, 4.0],
+    });
+    request.boundary_policy = StreamlineBoundaryPolicy::StopBeforeExit;
+    request.stagnation_policy = StreamlineStagnationPolicy::StopBeforeRepeat;
+    let budget = required_streamline_budget(request).expect("fixed identity request");
+    let gate = CancelGate::new();
+    let output = with_contour_cx(&gate, Budget::INFINITE, |cx| {
+        streamline_with_cx(cx, |_| [0.0; 2], request, budget).expect("zero-step identity fixture")
+    });
+
+    let mut expected = DomainHasher::new(STREAMLINE_ARTIFACT_IDENTITY_DOMAIN);
+    expected.update(&STREAMLINE_ARTIFACT_IDENTITY_VERSION.to_le_bytes());
+    expected.update(&[1]); // RK4.
+    expected.update(&[1]); // Dimensionless.
+    expected.update(&[2]); // StopBeforeExit.
+    expected.update(&[2]); // StopBeforeRepeat.
+    for coordinate in request.seed {
+        expected.update(&coordinate.to_bits().to_le_bytes());
+    }
+    expected.update(&request.dt.to_bits().to_le_bytes());
+    expected.update(&0u64.to_le_bytes()); // Requested steps.
+    expected.update(&[1]); // Domain present.
+    for coordinate in [-1.0_f64, -2.0, 3.0, 4.0] {
+        expected.update(&coordinate.to_bits().to_le_bytes());
+    }
+    expected.update(&[1]); // StepsComplete.
+    expected.update(&0u64.to_le_bytes()); // Termination step.
+    expected.update(&0u64.to_le_bytes()); // Completed steps.
+    expected.update(&0u64.to_le_bytes()); // Field evaluations.
+    expected.update(&1u64.to_le_bytes()); // Published points.
+    expected.update(&[0]); // No embedded error estimate.
+    expected.update(&0u64.to_le_bytes());
+    for coordinate in request.seed {
+        expected.update(&coordinate.to_bits().to_le_bytes());
+    }
+
+    assert_eq!(output.report().artifact_identity, Some(expected.finalize()));
+    assert_eq!(
+        output.report().identity_bytes_hashed,
+        budget.identity_byte_limit
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One G4 matrix shares the same finite admitted request.
+fn g4_streamline_cancellation_budget_and_callback_faults_are_atomic() {
+    let request = StreamlineRequest::dimensionless_rk4([0.0; 2], 0.125, 8, 1);
+    let budget = required_streamline_budget(request).expect("finite cancellable plan");
+
+    let cancelled_gate = CancelGate::new();
+    cancelled_gate.request();
+    let cancelled = with_contour_cx(&cancelled_gate, Budget::INFINITE, |cx| {
+        streamline_with_cx(cx, |_| [1.0, 0.0], request, budget)
+            .expect_err("pre-requested cancellation must precede allocation/callbacks")
+    });
+    assert!(matches!(
+        cancelled.error,
+        StreamlineError::ExecutionBudgetRefused {
+            refusal: BudgetRefusal::Cancelled { .. }
+        }
+    ));
+    assert_eq!(
+        cancelled.report.disposition,
+        StreamlineDisposition::Cancelled
+    );
+    assert_eq!(cancelled.report.field_evaluations, 0);
+    assert_eq!(cancelled.report.reserved_output_bytes, 0);
+    assert!(!cancelled.report.published);
+
+    let cost_quota = budget.work_unit_limit - 1;
+    let cost_gate = CancelGate::new();
+    let cost_refusal = with_contour_cx(
+        &cost_gate,
+        Budget::INFINITE.with_cost_quota(cost_quota),
+        |cx| {
+            streamline_with_cx(cx, |_| [1.0, 0.0], request, budget)
+                .expect_err("ambient one-short cost plan refuses before callbacks")
+        },
+    );
+    assert!(matches!(
+        cost_refusal.error,
+        StreamlineError::ExecutionBudgetRefused {
+            refusal: BudgetRefusal::CostPlanExceedsQuota { .. }
+        }
+    ));
+    assert_eq!(cost_refusal.report.field_evaluations, 0);
+
+    let deadline_gate = CancelGate::new();
+    let missing_clock = with_contour_cx(&deadline_gate, Budget::with_deadline_at_ns(10), |cx| {
+        streamline_with_cx(cx, |_| [1.0, 0.0], request, budget)
+            .expect_err("deadline authority without a clock fails closed")
+    });
+    assert_eq!(
+        missing_clock.error,
+        StreamlineError::ExecutionBudgetRefused {
+            refusal: BudgetRefusal::DeadlineWithoutClock { deadline_ns: 10 }
+        }
+    );
+    assert_eq!(missing_clock.report.polls, 0);
+    assert_eq!(missing_clock.report.field_evaluations, 0);
+
+    let poll_gate = CancelGate::new();
+    let poll_refusal = with_contour_cx(&poll_gate, Budget::INFINITE.with_poll_quota(1), |cx| {
+        streamline_with_cx(cx, |_| [1.0, 0.0], request, budget)
+            .expect_err("second checkpoint exhausts the ambient quota")
+    });
+    assert!(matches!(
+        poll_refusal.error,
+        StreamlineError::ExecutionBudgetRefused {
+            refusal: BudgetRefusal::PollsExhausted { quota: 1, .. }
+        }
+    ));
+    assert_eq!(poll_refusal.report.field_evaluations, 0);
+    assert!(!poll_refusal.report.published);
+
+    let panic_gate = CancelGate::new();
+    let panicked = with_contour_cx(&panic_gate, Budget::INFINITE, |cx| {
+        streamline_with_cx(cx, |_| panic!("injected callback panic"), request, budget)
+            .expect_err("callback unwind is contained")
+    });
+    assert_eq!(
+        panicked.error,
+        StreamlineError::CallbackPanicked {
+            step: 0,
+            stage: StreamlineStage::K1,
+        }
+    );
+    assert_eq!(panicked.report.field_evaluations, 1);
+    assert!(!panicked.report.published);
+
+    let nonfinite_gate = CancelGate::new();
+    let nonfinite = with_contour_cx(&nonfinite_gate, Budget::INFINITE, |cx| {
+        streamline_with_cx(cx, |_| [f64::INFINITY, 0.0], request, budget)
+            .expect_err("non-finite callback evidence refuses")
+    });
+    assert!(matches!(
+        nonfinite.error,
+        StreamlineError::NonFiniteFieldValue {
+            step: 0,
+            component: 0,
+            ..
+        }
+    ));
+    assert_eq!(nonfinite.report.field_evaluations, 1);
+    assert!(!nonfinite.report.published);
+
+    let overflow_request = StreamlineRequest::dimensionless_rk4([0.0; 2], f64::MAX, 1, 1);
+    let overflow_budget =
+        required_streamline_budget(overflow_request).expect("finite extreme request admits");
+    let overflow_gate = CancelGate::new();
+    let overflow = with_contour_cx(&overflow_gate, Budget::INFINITE, |cx| {
+        streamline_with_cx(cx, |_| [f64::MAX, 0.0], overflow_request, overflow_budget)
+            .expect_err("finite stage arithmetic overflow refuses")
+    });
+    assert!(matches!(
+        overflow.error,
+        StreamlineError::NonFiniteIntermediate {
+            step: 0,
+            component: 0,
+            ..
+        }
+    ));
+    assert!(!overflow.report.published);
+
+    let replay_gate = CancelGate::new();
+    let replay = with_contour_cx(&replay_gate, Budget::INFINITE, |cx| {
+        streamline_with_cx(cx, |_| [1.0, -0.5], request, budget).expect("finite replay")
+    });
+    let direct_gate = CancelGate::new();
+    let direct = with_contour_cx(&direct_gate, Budget::INFINITE, |cx| {
+        streamline_with_cx(cx, |_| [1.0, -0.5], request, budget).expect("finite direct run")
+    });
+    assert_eq!(replay, direct);
 }
 
 #[test]

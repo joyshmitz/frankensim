@@ -4,14 +4,23 @@ Scientific visualization: the verifiable topological-summary primitives.
 
 ## Purpose and layer
 
-Layer L5 (LUMEN). Safe Rust; the scoped contour path consumes L0 `fs-exec::Cx`
-and the dependency-neutral `fs-blake3` content-identity owner.
+Layer L5 (LUMEN). Safe Rust; the scoped streamline and contour paths consume L0
+`fs-exec::Cx` and the dependency-neutral `fs-blake3` content-identity owner.
 
 ## Public types and semantics
 
 - `Vec2` — a 2-D point/vector.
-- `streamline(field, seed, dt, steps) -> Vec<Vec2>` — RK4 integration of a flow
-  field into an ordered polyline (seed included).
+- `streamline(field, seed, dt, steps) -> Vec<Vec2>` — explicitly no-authority
+  RK4 compatibility wrapper: valid finite work returns the ordered seed-plus-step
+  polyline, while any invalidity/refusal/contained callback unwind returns empty.
+- `StreamlineRequest` / `StreamlineBudget` / `StreamlinePlan` — explicit
+  dimensionless units, RK4 method/version, finite signed step, optional closed
+  domain, boundary/stagnation policies, polling stride, and checked limits for
+  steps, field calls, points, bytes, diagnostics, identity, polls, and work.
+- `streamline_with_cx(cx, field, request, budget) -> Result<StreamlineOutput,
+  StreamlineRunError>` — caller-owned cancellation and ambient deadline/poll/cost
+  enforcement, contained callback unwinds, private staging, structured terminal
+  evidence, declared early termination, and a domain-separated BLAKE3 identity.
 - `CriticalKind` (`Minimum`/`Saddle`/`Maximum`/`Degenerate`), `CriticalPoint {
   kind, morse_index }`, `classify_hessian(hessian, tol)` — the Morse type + index
   (number of negative Hessian eigenvalues) of a critical point.
@@ -53,6 +62,23 @@ and the dependency-neutral `fs-blake3` content-identity owner.
 
 - STREAMLINES honor the flow: a rotation field `(-y, x)` conserves the radius (a
   circle); a saddle field `(x, -y)` conserves `xy` (a hyperbola).
+- Scoped streamline admission validates the first non-finite seed component,
+  finite nonzero signed `dt`, positive poll stride, finite increasing optional
+  domain, and in-domain seed before allocation or callback work. Negative `dt`
+  is reverse time; zero steps publishes exactly the finite seed; RK4 performs
+  exactly four callback attempts per completed step. Every field result and
+  constructed stage/state is finite or the operation refuses atomically.
+- The complete worst-case plan uses checked arithmetic for `steps + 1`, four
+  calls per step, output and peak live bytes, fixed scratch/diagnostics,
+  identity bytes, polls, and work. Output capacity is reserved once and checked
+  against the allocator-reported capacity before callbacks. `StopBeforeExit`
+  and `StopBeforeRepeat` publish only the valid prefix with typed termination;
+  `RefuseExit` publishes nothing. Retained repeated points are explicit policy.
+- Scoped streamline work polls before allocation, at deterministic complete-step
+  chunks, at deterministic identity-point chunks, and immediately before
+  publication. Its identity binds method/version, units, seed/dt/step bits,
+  domain/termination policies, actual termination/counters, and every point bit
+  under `org.frankensim.fs-viz.streamline-rk4.v1`.
 - `classify_hessian` recovers the known Morse type: `x²+y²`→min (index 0),
   `x²−y²`/`xy`→saddle (index 1), `−(x²+y²)`→max (index 2); a zero eigenvalue is
   degenerate.
@@ -97,7 +123,7 @@ and the dependency-neutral `fs-blake3` content-identity owner.
   replay-deterministic. Byte/sample budgets are checked before allocation;
   dimensions, layout, world geometry, quantity/units, byte length, and sample
   finiteness are validated before any downstream visualization claim.
-- All primitives are deterministic.
+- All primitives are deterministic when caller callbacks are deterministic.
 
 ## Error model
 
@@ -107,6 +133,14 @@ non-representable axis coordinate, the first non-finite x-fastest sample, and
 allocation refusal. All layout and budget checks precede callback evaluation;
 a panic raised by the caller's field closure remains a caller panic rather than
 a `Grid2Error`.
+`StreamlineError` distinguishes non-finite seed, invalid signed step, invalid
+method version, domain/seed placement, invalid polling, plan overflow, every one-short operation
+resource, ambient Cx refusal, allocation refusal, contained callback unwind,
+the first non-finite field/stage component, and refused domain exit.
+`StreamlineRunError` retains the exact request, caller envelope, checked plan,
+completed steps, callback attempts, staged points, requested/peak bytes, polls,
+work, termination/refusal disposition, and no-publication state. Callback panic
+payloads are not retained; user callback side effects cannot be rolled back.
 `Grid2::at` and `Grid2::point` require admitted in-range node indices and panic
 on caller indexing errors; they cannot expose extrapolated coordinates.
 `IsoContourError` distinguishes non-finite levels, zero/exceeded crossing
@@ -136,7 +170,10 @@ values, allocation refusal, and node/cell layout mismatch.
 
 ## Determinism class
 
-Fully deterministic: RK4, classification, and contouring are pure functions.
+Fully deterministic for deterministic callbacks: RK4, classification, and
+contouring use fixed operation/traversal order. Streamline reports and identities
+are bit-stable for the same request and callback results; negative-time and
+declared early-termination semantics are identity-bound.
 Grid2 sampling is row-major/x-fastest; crossing traversal is row-major with the
 positive-x edge before positive-y, and shared exact nodes use the statically
 derived first-incident edge, retaining first-encounter order without mutable
@@ -149,6 +186,13 @@ Scalar-field artifacts use fixed little-endian IEEE-754 f64 bits and fixed
 length-prefixed UTF-8 semantics; their bytes are cross-ISA stable.
 
 ## Cancellation behavior
+
+`streamline_with_cx` observes the caller-owned `Cx` before allocation, between
+bounded groups of complete RK4 steps, between bounded identity-point groups,
+and at final publication. Each RK4 step is indivisible and contains four field
+calls. Completed chunks are charged to the ambient admitted cost plan; any
+cancellation/budget refusal drops the private vector and returns terminal
+no-publication evidence. The compatibility wrapper has no cancellation authority.
 
 `isocontour_crossings_with_cx` observes the caller-owned `Cx` before allocation,
 at bounded edge/identity chunks, and at the final publication cutoff. It admits
@@ -169,7 +213,13 @@ None.
 ## Conformance tests
 
 `tests/viz.rs`: a rotation field streams along a circle; a saddle
-field conserves the hyperbola invariant; Hessian classification recovers the
+field conserves the hyperbola invariant; scoped streamline zero-step/exact-plan
+receipts, request overflow/invalidity, every one-short operation resource,
+negative-time, coordinate-scaling, RK4-refinement, and polling-chunk
+metamorphisms, boundary/stagnation policy,
+pre-requested and injected cancellation, ambient deadline/cost/poll refusal, callback
+panic/non-finite results, arithmetic overflow, allocation fault, and identical
+retry; Hessian classification recovers the
 Morse type; a circle-SDF isocontour lies on the circle (+ empty out-of-range);
 2-D grid sampling/addressing; fail-before-sampling dimension, budget, bounds,
 overflow, coordinate-collapse, and non-finite-value admission; non-finite-level
@@ -213,6 +263,14 @@ truncation, semantic validation, and non-finite payload rejection.
   is sequentially tiled; it does not yet claim parallel speedup or the
   reference-hardware 200-microsecond wall-clock cancellation target without a
   retained measurement.
+- Fixed-step streamline RK4 v1 has no embedded local-error estimator (the
+  structured `error_estimate` is explicitly `None`), adaptive step control,
+  dense output, event root localization, stiffness claim, physical unit
+  conversion, or callback-purity enforcement. Only dimensionless units are
+  admitted in v1. Cancellation latency excludes time spent inside one caller
+  callback; callback side effects and panic-hook output are caller concerns.
+  Callback panic containment requires Rust unwinding and cannot intercept a
+  process configured to abort on panic.
 - `IsoMesh3` is the piecewise-linear isosurface of trilinearly sampled node
   data under a fixed tetrahedralization. It does not claim topology recovery
   below grid resolution, sharp-feature preservation, Hermite normals,
