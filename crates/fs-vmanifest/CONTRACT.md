@@ -807,8 +807,8 @@ atomic authority-head advancement grant that separately governed authority.
   requirement set, shard partition, two-store transfer, service/store/global
   releases, successor active set and governor head, and exact 582-byte
   settlement receipt. Catastrophe additionally requires the exact all-four-
-  route ledger and 601-byte catastrophe evidence; any Pending or Succeeded
-  route forbids catastrophe. Every arm is copied into the separately
+  route ledger and exact 633-byte V3 catastrophe evidence; any Pending or
+  Succeeded route forbids catastrophe. Every arm is copied into the separately
   pre-reserved control-plane settlement ledger. The exact order is H0 -> append
   branch evidence E -> H1 -> append the signed 280-byte marker -> H2 -> commit
   the 582-byte global settlement receipt binding H2 and the marker -> append
@@ -1482,9 +1482,11 @@ atomic authority-head advancement grant that separately governed authority.
   one framed row for each registered route. Each V3 failure inventory has scope
   `Global|Primary|Emergency` and exact size `44 + 74*failure_count`; a fetched
   receipt must byte-equal that scope and occurs in exactly one inventory.
-  Catastrophe evidence is exactly 601
-  bytes and additionally binds the global failure inventory, route registry,
-  and admissible universe. It accepts only all-four Exhausted/Inapplicable
+  Catastrophe evidence is exactly 633 bytes: its 505-byte predecessor form
+  substitutes the V3 `PreEvidenceSurvivors` set root and then appends four
+  `raw32` digests for the global failure inventory, terminal replay-route
+  registry, admissible route universe, and V3 append-phase closure sum. It
+  accepts only all-four Exhausted/Inapplicable
   outcomes, each failure in exactly one scope inventory, all capabilities
   quiesced, and no success. Any DurablePrefixOnly result forces
   DurablePrefixRecovery and retention of every surviving prefix byte. A fifth
@@ -1567,8 +1569,8 @@ atomic authority-head advancement grant that separately governed authority.
   physical copies were both lost is proved through role-6 failure evidence; it
   cannot require the unavailable artifact and thereby make catastrophe
   unrepresentable. The pre-evidence set excludes not-yet-existing quiescence/
-  catastrophe evidence; after the exact 601-byte
-  catastrophe evidence exists, the transfer adds role 9 and a role-10 singleton
+  catastrophe evidence; after the exact 633-byte V3 catastrophe evidence
+  exists, the transfer adds role 9 and a role-10 singleton
   source set containing that evidence. No role may name the eventual transfer
   or settlement receipt and create a hash cycle.
 
