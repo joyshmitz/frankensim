@@ -964,6 +964,7 @@ version = "0.0.1"
 dependencies = [
  "asupersync",
  "fs-alloc",
+ "fs-evidence",
  "fs-exec",
  "fs-ga",
  "fs-geom",

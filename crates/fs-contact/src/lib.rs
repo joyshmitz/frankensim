@@ -679,3 +679,111 @@ pub fn refine_possible_windows(
         max_defect,
     })
 }
+
+// ── SDF-obstacle window pruning (bead tqag, SDF route) ─────────────────────
+
+use fs_geom::{Chart, TraceStepClaim};
+
+/// Refine possible-contact windows for a POLYTOPE body against a STATIC
+/// exact-distance obstacle chart (the SDF route of this bead's staging
+/// plan).
+///
+/// Soundness: an exact Euclidean signed-distance function is 1-Lipschitz
+/// (the [`TraceStepClaim::ExactDistance`] theorem carried by the chart —
+/// charts with weaker claims refuse at entry). The swept body over a
+/// window is contained in the ball around any center `c` with radius
+/// `r = max |corner − c|` over the swept-vertex-hull corners, so
+/// `φ(q) ≥ φ_lo(c) − r` for every swept point `q`; when that bound is
+/// positive the whole window is PROVEN clear of the obstacle with a
+/// certified gap. The radius computation is inflated multiplicatively
+/// (documented in-line) to cover its own f64 rounding; the center choice
+/// affects tightness only, never soundness.
+///
+/// # Errors
+/// [`ContactError::MissingCapability`] (stable name
+/// `"exact-distance-chart"`) when the obstacle's trace claim is weaker;
+/// [`ContactError::InvalidSupport`]/[`ContactError::TooManyBodies`] on
+/// vertex-set refusals; motion refusals pass through typed;
+/// [`ContactError::Query`] wrapping an unusable chart enclosure;
+/// [`ContactError::Cancelled`] per vertex and window.
+pub fn refine_windows_against_sdf(
+    vertices: &[fs_geom::Point3],
+    tube: &CertifiedMotorTube,
+    obstacle: &dyn Chart,
+    windows: &[Interval],
+    cx: &Cx<'_>,
+) -> Result<CcdRefinement, ContactError> {
+    if obstacle.trace_step_claim() != TraceStepClaim::ExactDistance {
+        return Err(ContactError::MissingCapability {
+            body_a: 0,
+            body_b: 1,
+            capability: "exact-distance-chart",
+        });
+    }
+    if vertices.is_empty() {
+        return Err(ContactError::InvalidSupport { body: 0 });
+    }
+    if vertices.len() > MAX_CCD_VERTICES {
+        return Err(ContactError::TooManyBodies {
+            bodies: vertices.len(),
+            max: MAX_CCD_VERTICES,
+        });
+    }
+    let mut out = Vec::with_capacity(windows.len());
+    let mut max_defect = 0.0f64;
+    for &window in windows {
+        if cx.checkpoint().is_err() {
+            return Err(ContactError::Cancelled);
+        }
+        let (hull, defect) = swept_vertex_hull(vertices, tube, window, cx)?;
+        max_defect = max_defect.max(defect);
+        // Center: component-wise corner mean. Any finite center is sound;
+        // the radius below is measured from THIS center.
+        #[allow(clippy::cast_precision_loss)]
+        let n = hull.corners.len() as f64;
+        let (mut sx, mut sy, mut sz) = (0.0f64, 0.0f64, 0.0f64);
+        for corner in &hull.corners {
+            sx += corner.x;
+            sy += corner.y;
+            sz += corner.z;
+        }
+        let center = fs_geom::Point3::new(sx / n, sy / n, sz / n);
+        let mut radius = 0.0f64;
+        for corner in &hull.corners {
+            let dx = corner.x - center.x;
+            let dy = corner.y - center.y;
+            let dz = corner.z - center.z;
+            radius = radius.max((dx * dx + dy * dy + dz * dz).sqrt());
+        }
+        // ≤ 6 rounded f64 ops per corner distance at ≤ 1 ulp each: an
+        // 8-eps multiplicative inflation strictly covers the rounding.
+        let radius = (radius * (1.0 + 8.0 * f64::EPSILON)).next_up();
+
+        let sample = obstacle.eval(center, cx);
+        if cx.checkpoint().is_err() {
+            return Err(ContactError::Cancelled);
+        }
+        let enclosure = obstacle.trace_value_enclosure(center, &sample, cx);
+        let usable = matches!(
+            enclosure.kind,
+            fs_evidence::NumericalKind::Exact | fs_evidence::NumericalKind::Enclosure
+        ) && enclosure.lo.is_finite()
+            && enclosure.hi.is_finite()
+            && enclosure.lo <= enclosure.hi;
+        if !usable {
+            return Err(ContactError::Query(QueryError::InvalidPointSample {
+                at: [center.x, center.y, center.z],
+            }));
+        }
+        let gap = (enclosure.lo.next_down() - radius).next_down();
+        if gap > 0.0 {
+            out.push(RefinedWindow::Pruned { window, gap });
+        } else {
+            out.push(RefinedWindow::Retained { window });
+        }
+    }
+    Ok(CcdRefinement {
+        windows: out,
+        max_defect,
+    })
+}
