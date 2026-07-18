@@ -375,6 +375,11 @@ pub enum ColorEvidenceIdentityError {
     /// Two parents presented the same typed ID with different retained-byte
     /// observations. Neither observation wins.
     ParentObservationConflict,
+    /// The bounded canonical color buffer could not reserve its exact size.
+    ColorBufferAllocationFailed {
+        /// Exact preflighted payload bytes requested from the allocator.
+        requested_bytes: u64,
+    },
     /// Canonical framing, resource admission, or cancellation refused.
     Canonical(CanonicalError),
 }
@@ -439,6 +444,10 @@ impl fmt::Display for ColorEvidenceIdentityError {
             Self::ParentObservationConflict => formatter.write_str(
                 "color-evidence composition refused one typed parent ID backed by different byte observations",
             ),
+            Self::ColorBufferAllocationFailed { requested_bytes } => write!(
+                formatter,
+                "color-evidence identity could not reserve its {requested_bytes}-byte canonical color buffer"
+            ),
             Self::Canonical(error) => write!(formatter, "color-evidence identity refused: {error}"),
         }
     }
@@ -451,7 +460,8 @@ impl std::error::Error for ColorEvidenceIdentityError {
             Self::Canonical(error) => Some(error),
             Self::EmptySourceDomain
             | Self::ZeroSourceSchemaVersion
-            | Self::ParentObservationConflict => None,
+            | Self::ParentObservationConflict
+            | Self::ColorBufferAllocationFailed { .. } => None,
         }
     }
 }
@@ -500,14 +510,66 @@ fn bounded_len(value: usize) -> Result<u64, CanonicalError> {
     u64::try_from(value).map_err(|_| CanonicalError::LengthOverflow)
 }
 
-fn push_color_len(output: &mut Vec<u8>, length: usize) {
-    let length = u64::try_from(length).expect("preflight proved the color length fits u64");
-    output.extend_from_slice(&length.to_le_bytes());
+fn poll_color_buffer_cancellation<C>(
+    output: &[u8],
+    cancellation: &mut C,
+) -> Result<(), CanonicalError>
+where
+    C: EvidenceIdentityCancellationProbe,
+{
+    if cancellation.is_cancelled() {
+        Err(CanonicalError::Cancelled {
+            absorbed_bytes: bounded_len(output.len())?,
+        })
+    } else {
+        Ok(())
+    }
 }
 
-fn push_color_field(output: &mut Vec<u8>, bytes: &[u8]) {
-    push_color_len(output, bytes.len());
-    output.extend_from_slice(bytes);
+fn append_color_bytes<C>(
+    output: &mut Vec<u8>,
+    bytes: &[u8],
+    cancellation_poll_bytes: usize,
+    cancellation: &mut C,
+) -> Result<(), CanonicalError>
+where
+    C: EvidenceIdentityCancellationProbe,
+{
+    for chunk in bytes.chunks(cancellation_poll_bytes) {
+        poll_color_buffer_cancellation(output, cancellation)?;
+        output.extend_from_slice(chunk);
+    }
+    Ok(())
+}
+
+fn push_color_len<C>(
+    output: &mut Vec<u8>,
+    length: usize,
+    cancellation_poll_bytes: usize,
+    cancellation: &mut C,
+) -> Result<(), CanonicalError>
+where
+    C: EvidenceIdentityCancellationProbe,
+{
+    append_color_bytes(
+        output,
+        &bounded_len(length)?.to_le_bytes(),
+        cancellation_poll_bytes,
+        cancellation,
+    )
+}
+
+fn push_color_field<C>(
+    output: &mut Vec<u8>,
+    bytes: &[u8],
+    cancellation_poll_bytes: usize,
+    cancellation: &mut C,
+) -> Result<(), CanonicalError>
+where
+    C: EvidenceIdentityCancellationProbe,
+{
+    push_color_len(output, bytes.len(), cancellation_poll_bytes, cancellation)?;
+    append_color_bytes(output, bytes, cancellation_poll_bytes, cancellation)
 }
 
 /// Normalize and identify one evidence-validity domain.
@@ -646,8 +708,8 @@ where
     Ok(IdentifiedValidityDomainV1 { domain, receipt })
 }
 
-/// Reproduce `Color::canonical_bytes` under a hard allocation ceiling and
-/// cancellation checks before every variable-sized row.
+/// Reproduce `Color::canonical_bytes` under a hard allocation ceiling, a
+/// fallible exact reservation, and byte-stride cancellation checks.
 fn bounded_color_bytes<C>(
     color: &Color,
     limits: EvidenceIdentityLimits,
@@ -656,11 +718,33 @@ fn bounded_color_bytes<C>(
 where
     C: EvidenceIdentityCancellationProbe,
 {
+    bounded_color_bytes_with_reservation(color, limits, cancellation, |output, capacity| {
+        output
+            .try_reserve_exact(capacity)
+            .map_err(|_| ColorBufferReservationError)
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ColorBufferReservationError;
+
+fn bounded_color_bytes_with_reservation<C, R>(
+    color: &Color,
+    limits: EvidenceIdentityLimits,
+    cancellation: &mut C,
+    reserve: R,
+) -> Result<Vec<u8>, ColorEvidenceIdentityError>
+where
+    C: EvidenceIdentityCancellationProbe,
+    R: FnOnce(&mut Vec<u8>, usize) -> Result<(), ColorBufferReservationError>,
+{
     if limits.cancellation_poll_bytes() == 0 {
         return Err(ColorEvidenceIdentityError::Canonical(
             CanonicalError::InvalidLimits("cancellation_poll_bytes must be positive"),
         ));
     }
+    let cancellation_poll_bytes = usize::try_from(limits.cancellation_poll_bytes())
+        .map_err(|_| ColorEvidenceIdentityError::Canonical(CanonicalError::LengthOverflow))?;
     poll_identity_cancellation(cancellation)?;
     let limit = limits
         .max_field_bytes()
@@ -711,32 +795,95 @@ where
 
     let capacity = usize::try_from(length)
         .map_err(|_| ColorEvidenceIdentityError::Canonical(CanonicalError::LengthOverflow))?;
-    let mut output = Vec::with_capacity(capacity);
-    output.push(COLOR_ALGEBRA_VERSION as u8);
+    let mut output = Vec::new();
+    reserve(&mut output, capacity).map_err(|ColorBufferReservationError| {
+        ColorEvidenceIdentityError::ColorBufferAllocationFailed {
+            requested_bytes: length,
+        }
+    })?;
     match color {
         Color::Verified { lo, hi } => {
-            output.push(0);
-            push_color_field(&mut output, &lo.to_bits().to_le_bytes());
-            push_color_field(&mut output, &hi.to_bits().to_le_bytes());
+            append_color_bytes(
+                &mut output,
+                &[COLOR_ALGEBRA_VERSION as u8, 0],
+                cancellation_poll_bytes,
+                cancellation,
+            )?;
+            push_color_field(
+                &mut output,
+                &lo.to_bits().to_le_bytes(),
+                cancellation_poll_bytes,
+                cancellation,
+            )?;
+            push_color_field(
+                &mut output,
+                &hi.to_bits().to_le_bytes(),
+                cancellation_poll_bytes,
+                cancellation,
+            )?;
         }
         Color::Validated { regime, dataset } => {
-            output.push(1);
-            push_color_field(&mut output, dataset.as_bytes());
-            push_color_len(&mut output, regime.bounds().len());
+            append_color_bytes(
+                &mut output,
+                &[COLOR_ALGEBRA_VERSION as u8, 1],
+                cancellation_poll_bytes,
+                cancellation,
+            )?;
+            push_color_field(
+                &mut output,
+                dataset.as_bytes(),
+                cancellation_poll_bytes,
+                cancellation,
+            )?;
+            push_color_len(
+                &mut output,
+                regime.bounds().len(),
+                cancellation_poll_bytes,
+                cancellation,
+            )?;
             for (axis, (lo, hi)) in regime.bounds() {
-                poll_identity_cancellation(cancellation)?;
-                push_color_field(&mut output, axis.as_bytes());
-                push_color_field(&mut output, &lo.to_bits().to_le_bytes());
-                push_color_field(&mut output, &hi.to_bits().to_le_bytes());
+                push_color_field(
+                    &mut output,
+                    axis.as_bytes(),
+                    cancellation_poll_bytes,
+                    cancellation,
+                )?;
+                push_color_field(
+                    &mut output,
+                    &lo.to_bits().to_le_bytes(),
+                    cancellation_poll_bytes,
+                    cancellation,
+                )?;
+                push_color_field(
+                    &mut output,
+                    &hi.to_bits().to_le_bytes(),
+                    cancellation_poll_bytes,
+                    cancellation,
+                )?;
             }
         }
         Color::Estimated {
             estimator,
             dispersion,
         } => {
-            output.push(2);
-            push_color_field(&mut output, estimator.as_bytes());
-            push_color_field(&mut output, &dispersion.to_bits().to_le_bytes());
+            append_color_bytes(
+                &mut output,
+                &[COLOR_ALGEBRA_VERSION as u8, 2],
+                cancellation_poll_bytes,
+                cancellation,
+            )?;
+            push_color_field(
+                &mut output,
+                estimator.as_bytes(),
+                cancellation_poll_bytes,
+                cancellation,
+            )?;
+            push_color_field(
+                &mut output,
+                &dispersion.to_bits().to_le_bytes(),
+                cancellation_poll_bytes,
+                cancellation,
+            )?;
         }
     }
     debug_assert_eq!(output.len(), capacity);
@@ -756,7 +903,7 @@ fn build_color_evidence_node_v1<C>(
     operation: ColorEvidenceOperationV1,
     source: Option<ColorEvidenceSourceIdV1>,
     output: &Color,
-    parents: &[ColorEvidenceNodeIdV1],
+    parents: Option<[ColorEvidenceNodeIdV1; 2]>,
     limits: EvidenceIdentityLimits,
     mut cancellation: C,
 ) -> Result<ColorEvidenceNodeReceiptV1, ColorEvidenceIdentityError>
@@ -764,12 +911,8 @@ where
     C: EvidenceIdentityCancellationProbe,
 {
     let output_bytes = bounded_color_bytes(output, limits, &mut cancellation)?;
-    let parent_count = bounded_len(parents.len())?;
-    let parent_rows: Vec<[u8; 65]> = parents
-        .iter()
-        .copied()
-        .map(parent_reference_bytes)
-        .collect();
+    let parent_count = if parents.is_some() { 2_u64 } else { 0 };
+    let parent_rows = parents.map(|parents| parents.map(parent_reference_bytes));
     let source_count: u64 = if source.is_some() { 1 } else { 0 };
     let kind = operation.kind();
     let parent_semantics = operation.parent_semantics();
@@ -792,7 +935,10 @@ where
             .ordered_bytes(
                 Field::new(6, "parents"),
                 parent_count,
-                parent_rows.iter().map(|row| row.as_slice()),
+                parent_rows
+                    .iter()
+                    .flat_map(|rows| rows.iter())
+                    .map(|row| row.as_slice()),
             )?
             .finish()?,
     )
@@ -852,7 +998,7 @@ where
         ColorEvidenceOperationV1::Source,
         Some(source.id()),
         &color,
-        &[],
+        None,
         limits,
         cancellation,
     )?;
@@ -909,11 +1055,44 @@ where
     poll_identity_cancellation(&mut cancellation)?;
     let node_operation = operation.node_operation();
     let parents = [first.id(), second.id()];
-    let receipt =
-        build_color_evidence_node_v1(node_operation, None, &color, &parents, limits, cancellation)?;
+    let receipt = build_color_evidence_node_v1(
+        node_operation,
+        None,
+        &color,
+        Some(parents),
+        limits,
+        cancellation,
+    )?;
     Ok(ColorEvidenceNodeV1 {
         color,
         receipt,
         operation: node_operation,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_buffer_allocation_refusal_is_typed() {
+        let mut cancellation = || false;
+        let result = bounded_color_bytes_with_reservation(
+            &Color::Verified { lo: 0.0, hi: 1.0 },
+            EvidenceIdentityLimits::new(4096, 1024, 32, 64, 16),
+            &mut cancellation,
+            |output, capacity| {
+                assert!(output.is_empty());
+                assert_eq!(capacity, 34);
+                Err(ColorBufferReservationError)
+            },
+        );
+
+        assert_eq!(
+            result,
+            Err(ColorEvidenceIdentityError::ColorBufferAllocationFailed {
+                requested_bytes: 34,
+            })
+        );
+    }
 }

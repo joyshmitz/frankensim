@@ -551,6 +551,25 @@ fn malformed_output_and_cancellation_publish_no_identity() {
         ))
     ));
 
+    let stride_limits = CanonicalLimits::new(4096, 1024, 32, 64, 16);
+    let stride_cancelled = identify_color_evidence_source_node_v1(
+        &source,
+        Color::Validated {
+            regime: ValidityDomain::unconstrained().with("x", 0.0, 1.0),
+            dataset: "d".repeat(64),
+        },
+        stride_limits,
+        CancelAfter {
+            successful_polls: 6,
+        },
+    );
+    assert_eq!(
+        stride_cancelled,
+        Err(ColorEvidenceIdentityError::Canonical(
+            CanonicalError::Cancelled { absorbed_bytes: 26 }
+        ))
+    );
+
     let mut regime = ValidityDomain::unconstrained();
     for index in 0..8 {
         regime = regime.with(format!("axis-{index}"), 0.0, 1.0);

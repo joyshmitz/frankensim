@@ -69,9 +69,12 @@ telemetry/legacy correlation.
   sorts parent IDs, preserves duplicates, recomputes the output with the current
   `IntervalOp` algebra, and then binds kind, operation, parent law,
   `COLOR_ALGEBRA_VERSION`, source/parents, and exact canonical output. Color
-  encoding is cancellation-polled and hard-capped at 1 MiB before allocation.
-  Construction returns only unanchored receipts: it neither authenticates
-  origin nor changes `Color`, `Certified<T>`, or `AdmittedColor` trust state.
+  encoding is hard-capped at 1 MiB, uses a fallible exact buffer reservation,
+  and polls cancellation at the caller's byte stride while copying. Binary
+  parent rows remain in fixed-size array storage rather than a fallible heap
+  collection. Construction returns only unanchored receipts: it neither
+  authenticates origin nor changes `Color`, `Certified<T>`, or `AdmittedColor`
+  trust state.
 - `identity` module (sj31i.52.2 tranche 2) —
   `ValidityDomainIdV1` is a low-level schema-shaped `SemanticId`; only the
   opaque `IdentifiedValidityDomainV1` proves helper validation of a normalized
@@ -236,9 +239,11 @@ telemetry/legacy correlation.
     source and exactly two descriptor-bound parent rows. Add/Mul/Hull normalize
     parent order before recomputing both the color and identity, without
     deduplicating multiplicity. Helper output agrees with an independent
-    canonical construction for every color variant. Raw frame-ID/receipt
-    aliases do not assert these helper-level semantic invariants. Legacy
-    `ProvenanceHash` has no conversion or rehash bridge into either typed role.
+    canonical construction for every color variant. Exact buffer-reservation
+    fault injection and cancellation after an absorbed byte prefix both refuse
+    without publishing a root. Raw frame-ID/receipt aliases do not assert these
+    helper-level semantic invariants. Legacy `ProvenanceHash` has no conversion
+    or rehash bridge into either typed role.
 14. Opaque helper-built validity domains (sj31i.52.2, G0/G3/G4) normalize
     insertion order through `BTreeMap`, preserve arbitrary exact UTF-8 axis
     bytes and signed-zero endpoint bits, and change identity for every
@@ -262,13 +267,13 @@ divergence.
 
 ## Cancellation behavior
 Core certificate/color algebra is bounded small synchronous work. Typed color
-and validity-domain identity helpers accept an explicit cancellation probe,
-poll before allocation and at variable-row boundaries, and consume their
-encoder on refusal. Falsifier allocation and history review iterate caller data
-without a `Cx`; allocation length and distinct history rows are defensively
-capped, but these diagnostic APIs are not P7 hot-kernel or
-cancellation-authoritative paths. Callers must not place large reviews inside
-latency-bounded tile loops.
+and validity-domain identity helpers accept an explicit cancellation probe;
+color payload copies poll at the configured byte stride, validity rows poll at
+stream chunks, and both consume their encoder on refusal. Falsifier allocation
+and history review iterate caller data without a `Cx`; allocation length and
+distinct history rows are defensively capped, but these diagnostic APIs are not
+P7 hot-kernel or cancellation-authoritative paths. Callers must not place large
+reviews inside latency-bounded tile loops.
 
 ## Unsafe boundary
 None. `unsafe_code` denied workspace-wide.
