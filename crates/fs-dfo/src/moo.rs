@@ -7,6 +7,7 @@
 //! fs-robust and is re-exported by the crate root. All randomness flows
 //! through fs-rand streams.
 
+use fs_obs::ident::{IdentityBuilder, ReplayIdentity};
 use fs_rand::StreamKey;
 
 /// One evaluated individual.
@@ -670,6 +671,64 @@ pub struct Nsga3NormalizationPolicy {
     pub retention_policy: &'static str,
     /// Non-finite-input behavior and no-claim boundary.
     pub nonfinite_policy: &'static str,
+}
+
+/// Domain-separated artifact kind for [`Nsga3NormalizationPolicy::replay_identity`].
+///
+/// This kind is part of the canonical preimage. Changing it deliberately
+/// re-keys every retained NSGA-III study, campaign, and golden that binds the
+/// policy as a typed child.
+pub const NSGA3_NORMALIZATION_POLICY_IDENTITY_KIND: &str = "fs-dfo-nsga3-normalization-policy-v1";
+
+impl Nsga3NormalizationPolicy {
+    /// Return the typed canonical identity of every normalization policy field.
+    ///
+    /// The exhaustive destructure is a provenance guard: adding a policy field
+    /// cannot compile until this canonical identity explicitly decides how to
+    /// encode it. `ReplayIdentity` supplies the outer `fsid` domain, identity
+    /// schema version, typed field framing, and versioned root; this method adds
+    /// the NSGA-III-policy-specific artifact kind and semantic field order.
+    #[must_use]
+    pub fn replay_identity(self) -> ReplayIdentity {
+        let Nsga3NormalizationPolicy {
+            schema_version,
+            variant,
+            asf_epsilon,
+            span_floor,
+            pivot_ratio_floor,
+            condition_error_limit,
+            residual_epsilon_multiplier,
+            max_objectives,
+            candidate_scope,
+            ideal_policy,
+            extreme_policy,
+            hyperplane_policy,
+            fallback_policy,
+            retention_policy,
+            nonfinite_policy,
+        } = self;
+
+        IdentityBuilder::new(NSGA3_NORMALIZATION_POLICY_IDENTITY_KIND)
+            .u64("policy-schema-version", u64::from(schema_version))
+            .str("variant", variant)
+            .f64_bits("asf-epsilon", asf_epsilon)
+            .f64_bits("span-floor", span_floor)
+            .f64_bits("pivot-ratio-floor", pivot_ratio_floor)
+            .f64_bits("condition-error-limit", condition_error_limit)
+            .f64_bits("residual-epsilon-multiplier", residual_epsilon_multiplier)
+            .u64(
+                "maximum-objectives",
+                u64::try_from(max_objectives).expect("NSGA-III policy objective cap must fit u64"),
+            )
+            .str("candidate-scope", candidate_scope)
+            .str("ideal-policy", ideal_policy)
+            .str("extreme-policy", extreme_policy)
+            .str("hyperplane-policy", hyperplane_policy)
+            .str("fallback-policy", fallback_policy)
+            .str("retention-policy", retention_policy)
+            .str("nonfinite-policy", nonfinite_policy)
+            .finish()
+    }
 }
 
 /// The normalization policy used by [`nsga3`].
@@ -1653,13 +1712,33 @@ mod tests {
 
     #[test]
     fn nsga3_normalization_one_row_swap_runs_through_intercept_production_path() {
-        let matrix = vec![vec![0.5, 1.0], vec![1.0, 0.5]];
+        // This nonsymmetric fixture is intentionally mutation-sensitive to RHS
+        // permutation. A*x=1 has unequal coefficients, while the independent
+        // nonuniform RHS below pins the solve itself and the analytic cond_1.
+        let matrix = vec![vec![0.5, 1.0], vec![1.0, 0.25]];
         let factorization = nsga3_factor_hyperplane(&matrix).expect("matrix is nonsingular");
         assert_eq!(factorization.swaps, vec![1, 1]);
 
+        let nonuniform_solution =
+            nsga3_lu_solve(&factorization.lu, &factorization.swaps, &[4.0, 2.75])
+                .expect("pivoted nonuniform solve");
+        for (actual, expected) in nonuniform_solution.iter().zip([2.0, 3.0]) {
+            assert!((actual - expected).abs() <= 8.0 * f64::EPSILON * expected);
+        }
+
+        // ||A||_1 = 3/2 and ||A^-1||_1 = 12/7, so cond_1(A) = 18/7.
+        // The production admission metric additionally multiplies by n*EPSILON.
+        let expected_condition_error = (36.0 / 7.0) * f64::EPSILON;
+        let condition_error =
+            nsga3_condition_error(&matrix, &factorization).expect("finite condition error");
+        assert!(
+            (condition_error - expected_condition_error).abs()
+                <= 32.0 * f64::EPSILON * expected_condition_error
+        );
+
         let coefficients = nsga3_solve_hyperplane(&matrix).expect("admissible solve");
-        for coefficient in &coefficients {
-            assert!((*coefficient - 2.0 / 3.0).abs() <= 8.0 * f64::EPSILON);
+        for (actual, expected) in coefficients.iter().zip([6.0 / 7.0, 4.0 / 7.0]) {
+            assert!((actual - expected).abs() <= 8.0 * f64::EPSILON);
         }
         let pop: Vec<Individual> = matrix
             .iter()
@@ -1670,8 +1749,94 @@ mod tests {
             .collect();
         let span = nsga3_hyperplane_span(&pop, &[0, 1], &[0.0, 0.0], &[1.0, 1.0])
             .expect("row-swapped production intercept");
-        for value in span {
-            assert!((value - 1.5).abs() <= 8.0 * f64::EPSILON);
+        for (actual, expected) in span.iter().zip([7.0 / 6.0, 7.0 / 4.0]) {
+            assert!((actual - expected).abs() <= 16.0 * f64::EPSILON);
+        }
+    }
+
+    #[test]
+    fn nsga3_normalization_policy_identity_moves_for_every_semantic_field() {
+        let base = NSGA3_NORMALIZATION_POLICY;
+        let base_identity = base.replay_identity();
+        assert_eq!(
+            base_identity.kind(),
+            NSGA3_NORMALIZATION_POLICY_IDENTITY_KIND
+        );
+
+        let mut mutations = Vec::new();
+
+        let mut policy = base;
+        policy.schema_version += 1;
+        mutations.push(("schema_version", policy));
+
+        let mut policy = base;
+        policy.variant = "frankensim-normalization-mutant";
+        mutations.push(("variant", policy));
+
+        let mut policy = base;
+        policy.asf_epsilon *= 2.0;
+        mutations.push(("asf_epsilon", policy));
+
+        let mut policy = base;
+        policy.span_floor *= 2.0;
+        mutations.push(("span_floor", policy));
+
+        let mut policy = base;
+        policy.pivot_ratio_floor *= 2.0;
+        mutations.push(("pivot_ratio_floor", policy));
+
+        let mut policy = base;
+        policy.condition_error_limit *= 2.0;
+        mutations.push(("condition_error_limit", policy));
+
+        let mut policy = base;
+        policy.residual_epsilon_multiplier *= 2.0;
+        mutations.push(("residual_epsilon_multiplier", policy));
+
+        let mut policy = base;
+        policy.max_objectives += 1;
+        mutations.push(("max_objectives", policy));
+
+        let mut policy = base;
+        policy.candidate_scope = "mutant-candidate-scope";
+        mutations.push(("candidate_scope", policy));
+
+        let mut policy = base;
+        policy.ideal_policy = "mutant-ideal-policy";
+        mutations.push(("ideal_policy", policy));
+
+        let mut policy = base;
+        policy.extreme_policy = "mutant-extreme-policy";
+        mutations.push(("extreme_policy", policy));
+
+        let mut policy = base;
+        policy.hyperplane_policy = "mutant-hyperplane-policy";
+        mutations.push(("hyperplane_policy", policy));
+
+        let mut policy = base;
+        policy.fallback_policy = "mutant-fallback-policy";
+        mutations.push(("fallback_policy", policy));
+
+        let mut policy = base;
+        policy.retention_policy = "mutant-retention-policy";
+        mutations.push(("retention_policy", policy));
+
+        let mut policy = base;
+        policy.nonfinite_policy = "mutant-nonfinite-policy";
+        mutations.push(("nonfinite_policy", policy));
+
+        for (field, policy) in mutations {
+            let mutant_identity = policy.replay_identity();
+            assert_ne!(
+                mutant_identity.canonical_bytes(),
+                base_identity.canonical_bytes(),
+                "{field} must move the canonical policy preimage"
+            );
+            assert_ne!(
+                mutant_identity.root(),
+                base_identity.root(),
+                "{field} must move the shared policy root"
+            );
         }
     }
 

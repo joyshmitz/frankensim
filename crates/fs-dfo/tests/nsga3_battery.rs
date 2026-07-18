@@ -6,6 +6,7 @@
 //! matched budget; bitwise replay; golden.
 
 use fs_dfo::{NsgaParams, das_dennis, hypervolume, mc_hypervolume, nsga2, nsga3};
+use fs_obs::ident::ReplayIdentity;
 
 const SUITE: &str = "fs-dfo-nsga3";
 const FIXED_INPUT_SEED: u64 = 0;
@@ -329,33 +330,37 @@ fn golden_feed_str(accumulator: &mut u64, value: &str) {
     golden_feed_bytes(accumulator, value.as_bytes());
 }
 
-fn golden_feed_normalization_policy(accumulator: &mut u64) {
-    let policy = fs_dfo::moo::NSGA3_NORMALIZATION_POLICY;
+fn golden_feed_normalization_policy_identity(accumulator: &mut u64, identity: &ReplayIdentity) {
     golden_feed_str(accumulator, "fs-dfo-nsga3-golden-v2");
-    golden_feed_u64(accumulator, u64::from(policy.schema_version));
-    golden_feed_str(accumulator, policy.variant);
-    golden_feed_u64(accumulator, policy.asf_epsilon.to_bits());
-    golden_feed_u64(accumulator, policy.span_floor.to_bits());
-    golden_feed_u64(accumulator, policy.pivot_ratio_floor.to_bits());
-    golden_feed_u64(accumulator, policy.condition_error_limit.to_bits());
-    golden_feed_u64(accumulator, policy.residual_epsilon_multiplier.to_bits());
-    golden_feed_u64(
-        accumulator,
-        u64::try_from(policy.max_objectives).expect("objective cap fits u64"),
+    golden_feed_u64(accumulator, u64::from(identity.version()));
+    golden_feed_u64(accumulator, identity.root());
+}
+
+#[test]
+fn nsga3_golden_preimage_consumes_shared_normalization_policy_root() {
+    let policy = fs_dfo::moo::NSGA3_NORMALIZATION_POLICY;
+    let current = policy.replay_identity();
+    let mut mutant_policy = policy;
+    mutant_policy.span_floor *= 2.0;
+    let mutant = mutant_policy.replay_identity();
+    assert_ne!(current.root(), mutant.root());
+
+    let mut current_accumulator = 0xcbf2_9ce4_8422_2325;
+    golden_feed_normalization_policy_identity(&mut current_accumulator, &current);
+    let mut mutant_accumulator = 0xcbf2_9ce4_8422_2325;
+    golden_feed_normalization_policy_identity(&mut mutant_accumulator, &mutant);
+    assert_ne!(
+        current_accumulator, mutant_accumulator,
+        "the retained golden preimage must consume the shared typed policy root"
     );
-    golden_feed_str(accumulator, policy.candidate_scope);
-    golden_feed_str(accumulator, policy.ideal_policy);
-    golden_feed_str(accumulator, policy.extreme_policy);
-    golden_feed_str(accumulator, policy.hyperplane_policy);
-    golden_feed_str(accumulator, policy.fallback_policy);
-    golden_feed_str(accumulator, policy.retention_policy);
-    golden_feed_str(accumulator, policy.nonfinite_policy);
 }
 
 #[test]
 fn nsga3_golden_hash() {
+    let normalization = fs_dfo::moo::NSGA3_NORMALIZATION_POLICY;
+    let normalization_identity = normalization.replay_identity();
     let mut acc: u64 = 0xcbf2_9ce4_8422_2325;
-    golden_feed_normalization_policy(&mut acc);
+    golden_feed_normalization_policy_identity(&mut acc, &normalization_identity);
     let dirs = das_dennis(3, 6);
     for d in dirs.iter().step_by(5) {
         for v in d {
@@ -380,14 +385,17 @@ fn nsga3_golden_hash() {
     let expected = GOLDEN_HASH_V2
         .map(|hash| format!("{hash:#018x}"))
         .unwrap_or_else(|| "pending-central-refresh".to_string());
-    let normalization = fs_dfo::moo::NSGA3_NORMALIZATION_POLICY;
     measurement(
         "nsga3-golden",
         format!(
             "{{\"identity_schema\":2,\"actual\":\"{acc:#018x}\",\"expected\":\"{expected}\",\
              \"input_seed\":{GOLDEN_INPUT_SEED},\"normalization_variant\":\"{}\",\
-             \"normalization_policy_schema\":{}}}",
-            normalization.variant, normalization.schema_version,
+             \"normalization_policy_schema\":{},\"normalization_identity_version\":{},\
+             \"normalization_identity_root\":\"0x{:016x}\"}}",
+            normalization.variant,
+            normalization.schema_version,
+            normalization_identity.version(),
+            normalization_identity.root(),
         ),
     );
     let Some(golden_hash) = GOLDEN_HASH_V2 else {

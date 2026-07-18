@@ -16,6 +16,7 @@
 #![deny(unsafe_code)]
 
 use fs_dfo::{NsgaParams, das_dennis, nsga3};
+use fs_obs::ident::ReplayIdentity;
 use fs_rand::StreamKey;
 use std::panic::catch_unwind;
 
@@ -266,23 +267,9 @@ fn push_u64_slice(bytes: &mut Vec<u8>, values: &[u64]) {
     }
 }
 
-fn push_normalization_policy(bytes: &mut Vec<u8>) {
-    let policy = fs_dfo::moo::NSGA3_NORMALIZATION_POLICY;
-    push_u64(bytes, u64::from(policy.schema_version));
-    push_str(bytes, policy.variant);
-    push_u64(bytes, policy.asf_epsilon.to_bits());
-    push_u64(bytes, policy.span_floor.to_bits());
-    push_u64(bytes, policy.pivot_ratio_floor.to_bits());
-    push_u64(bytes, policy.condition_error_limit.to_bits());
-    push_u64(bytes, policy.residual_epsilon_multiplier.to_bits());
-    push_len(bytes, policy.max_objectives);
-    push_str(bytes, policy.candidate_scope);
-    push_str(bytes, policy.ideal_policy);
-    push_str(bytes, policy.extreme_policy);
-    push_str(bytes, policy.hyperplane_policy);
-    push_str(bytes, policy.fallback_policy);
-    push_str(bytes, policy.retention_policy);
-    push_str(bytes, policy.nonfinite_policy);
+fn push_normalization_policy_identity(bytes: &mut Vec<u8>, identity: &ReplayIdentity) {
+    push_u64(bytes, u64::from(identity.version()));
+    push_u64(bytes, identity.root());
 }
 
 fn fnv1a64(bytes: &[u8]) -> u64 {
@@ -309,13 +296,13 @@ fn directions() -> Vec<Vec<f64>> {
     das_dennis(OBJECTIVES, DIRECTION_DIVISIONS)
 }
 
-fn config_bytes() -> Vec<u8> {
+fn config_bytes_with_normalization(identity: &ReplayIdentity) -> Vec<u8> {
     let directions = directions();
     assert_eq!(directions.len(), EXPECTED_DIRECTIONS);
     let mut bytes = b"fs-dfo-nsga3-study-config-v2".to_vec();
     push_str(&mut bytes, CASE);
     push_str(&mut bytes, "fs_dfo::nsga3");
-    push_normalization_policy(&mut bytes);
+    push_normalization_policy_identity(&mut bytes, identity);
     push_str(&mut bytes, "three-objective-polynomial-tradeoff-v1");
     push_str(&mut bytes, "dimensionless");
     push_len(&mut bytes, DIMENSION);
@@ -348,6 +335,11 @@ fn config_bytes() -> Vec<u8> {
         "no-convergence-direction-coverage-hypervolume-diversity-superiority-all-seed-all-config-cross-process-cross-ISA-Cx-persistence-auth-internal-history-performance-claim",
     );
     bytes
+}
+
+fn config_bytes() -> Vec<u8> {
+    let identity = fs_dfo::moo::NSGA3_NORMALIZATION_POLICY.replay_identity();
+    config_bytes_with_normalization(&identity)
 }
 
 fn tri_objective(decision: &[f64]) -> Vec<f64> {
@@ -564,6 +556,25 @@ fn panic_message(payload: &(dyn core::any::Any + Send)) -> String {
         .cloned()
         .or_else(|| payload.downcast_ref::<&str>().map(ToString::to_string))
         .unwrap_or_else(|| "non-string panic payload".to_string())
+}
+
+#[test]
+fn nsga3_study_config_consumes_shared_normalization_policy_root() {
+    let policy = fs_dfo::moo::NSGA3_NORMALIZATION_POLICY;
+    let current = policy.replay_identity();
+    let mut mutant_policy = policy;
+    mutant_policy.condition_error_limit *= 2.0;
+    let mutant = mutant_policy.replay_identity();
+    assert_ne!(current.root(), mutant.root());
+
+    let current_config = config_bytes_with_normalization(&current);
+    let mutant_config = config_bytes_with_normalization(&mutant);
+    assert_ne!(current_config, mutant_config);
+    assert_ne!(
+        fnv1a64(&current_config),
+        fnv1a64(&mutant_config),
+        "the retained study configuration must consume the shared typed policy root"
+    );
 }
 
 #[test]

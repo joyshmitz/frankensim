@@ -28,7 +28,11 @@ the fs-opt problem IR is a wiring bead once that crate stabilizes
   condition-error limit (`1e-8`), residual multiplier (`512`), 64-objective
   intercept cap, current-generation candidate/ideal/extreme policies,
   row-oriented column-scaled LU policy, exact fallback, retention, and
-  non-finite-input no-claim strings for downstream configuration identities.
+  non-finite-input no-claim strings. Its public `replay_identity()` is the one
+  domain-separated typed policy identity consumed by downstream retained
+  configurations: an exhaustive, no-`..` source destructure makes every added
+  policy field a compile-time identity-schema decision, and field-by-field
+  mutation coverage requires every current field to move the shared root.
 - `cmaes(f, x0, CmaParams, seed) -> CmaReport` — full-covariance CMA-ES
   with the standard Hansen couplings (log-rank weights, rank-µ + rank-1
   covariance updates, cumulative step-size adaptation): the natural-
@@ -307,7 +311,7 @@ hypervolume's malformed-point ignore policy, empty dimension returns
 zero, and zero samples are rejected; bounded archive — dominated
 inserts are no-ops, dominating inserts evict, over-capacity eviction
 removes the TRUE least contributor (verified against brute-force
-keep-(k−1) subset enumeration); tests/nsga3_battery.rs (11 cases):
+keep-(k−1) subset enumeration); tests/nsga3_battery.rs (12 tests):
 Das–Dennis counts
 (C(p+m−1, m−1) exact: 91 at (3,12), 70 at (5,4)) and on-simplex
 membership; public guards reject zero-division directions, invalid
@@ -318,6 +322,10 @@ replay remain executable gates. The earlier `0.0238`/98%, `6.51` vs `4.39`, and
 `2.7457` vs `2.7775` observations belong to the pre-extension maxima-normalized
 lane; they are historical context, not measurements of the named
 scale-equilibrated v1 variant. Its policy-bound golden schema is v2 and
+binds the version and root of the single typed normalization-policy identity;
+the full-study replay configuration binds that same versioned root rather than
+maintaining a second policy-field encoder. Caller mutation tests require both
+retained preimages to move when the shared policy root moves. The golden
 deliberately retains `GOLDEN_HASH_V2=None` until the central runtime selector
 emits and reviewers approve the actual hash; the former
 `0xd912_6c49_f1b1_6897` hash is not relabeled as current evidence.
@@ -330,8 +338,10 @@ front extreme, the output-reconstructed scaled-sphere identity over deterministi
 probes, a wrong-center transformation mutant, exact evaluation accounting, front
 distance, Das-Dennis direction coverage, exact 3D hypervolume, and complete
 ordered-front bitwise replay. Its v2 canonical configuration identity binds units,
-seed plus stream kernel/tile, algorithm constants, every field of
-`NSGA3_NORMALIZATION_POLICY`, budgets, gates, versions, and capabilities.
+seed plus stream kernel/tile, algorithm constants, the versioned typed child
+root produced from every field of `NSGA3_NORMALIZATION_POLICY`, budgets, gates,
+versions, and capabilities. A caller mutation test requires the campaign root
+to move when that child root moves.
 Separate original/replay front children bind every retained decision
 and objective bit; the result child binds both roots, actual transform samples,
 all metrics and verdicts, and the first differing component/bit when replay fails.
@@ -658,10 +668,11 @@ remain assertion-only and silent.
   componentwise minimum over the current environmental-selection considered
   set, current rank-zero translated maxima equilibrate the ASF, distinct ASF
   extremes form the rows of a column-scaled hyperplane system, and positive
-  finite intercepts become association spans. FIRST-front maxima floored at
-  `1e-30` are only the exact refusal fallback for duplicate extremes, unsupported
-  objective count, non-finite inputs, singular/ill-conditioned/tiny-pivot/high-
-  residual solves, or invalid coefficients/intercepts. This is not canonical
+  finite intercepts become association spans. The same rank-zero maxima floored
+  at `1e-30` become the final association spans only on exact refusal for
+  duplicate extremes, unsupported objective count, non-finite inputs,
+  singular/ill-conditioned/tiny-pivot/high-residual solves, or invalid
+  coefficients/intercepts. This is not canonical
   Deb--Jain normalization and makes no cross-generation ideal/extreme retention
   claim. On non-finite objective input the fallback is a deterministic return
   path, not authority that its spans or downstream distances are finite or

@@ -326,8 +326,10 @@ fn first_front_mismatch(left: &[Individual], right: &[Individual]) -> Option<Str
     None
 }
 
-fn campaign_identity(direction_count: usize) -> ReplayIdentity {
-    let normalization = fs_dfo::moo::NSGA3_NORMALIZATION_POLICY;
+fn campaign_identity_with_normalization(
+    direction_count: usize,
+    normalization: &ReplayIdentity,
+) -> ReplayIdentity {
     IdentityBuilder::new("fs-dfo-wfg4-nsga3-config-v2")
         .str("problem", "WFG4-normalized")
         .str("source", "Huband-et-al-EMO-2005-corrected-WFG-toolkit")
@@ -360,51 +362,7 @@ fn campaign_identity(direction_count: usize) -> ReplayIdentity {
         .str("distance-reduction", "equal-rSum-over-4..24")
         .str("shape", "WFG-concave-M3")
         .str("optimizer", "fs-dfo-nsga3")
-        .u64(
-            "normalization-policy-schema-version",
-            u64::from(normalization.schema_version),
-        )
-        .str("normalization-variant", normalization.variant)
-        .f64_bits("normalization-asf-epsilon", normalization.asf_epsilon)
-        .f64_bits("normalization-span-floor", normalization.span_floor)
-        .f64_bits(
-            "normalization-pivot-ratio-floor",
-            normalization.pivot_ratio_floor,
-        )
-        .f64_bits(
-            "normalization-condition-error-limit",
-            normalization.condition_error_limit,
-        )
-        .f64_bits(
-            "normalization-residual-epsilon-multiplier",
-            normalization.residual_epsilon_multiplier,
-        )
-        .u64(
-            "normalization-maximum-objectives",
-            usize_u64(normalization.max_objectives),
-        )
-        .str(
-            "normalization-candidate-scope",
-            normalization.candidate_scope,
-        )
-        .str("normalization-ideal-policy", normalization.ideal_policy)
-        .str("normalization-extreme-policy", normalization.extreme_policy)
-        .str(
-            "normalization-hyperplane-policy",
-            normalization.hyperplane_policy,
-        )
-        .str(
-            "normalization-fallback-policy",
-            normalization.fallback_policy,
-        )
-        .str(
-            "normalization-retention-policy",
-            normalization.retention_policy,
-        )
-        .str(
-            "normalization-nonfinite-policy",
-            normalization.nonfinite_policy,
-        )
+        .child("normalization-policy", normalization)
         .u64("input-seed", INPUT_SEED)
         .u64("optimizer-stream-kernel", u64::from(NSGA3_STREAM_KERNEL))
         .u64("optimizer-stream-tile", u64::from(NSGA3_STREAM_TILE))
@@ -451,6 +409,11 @@ fn campaign_identity(direction_count: usize) -> ReplayIdentity {
         .str("fs-rand-version", fs_rand::VERSION)
         .str("fs-obs-version", fs_obs::VERSION)
         .finish()
+}
+
+fn campaign_identity(direction_count: usize) -> ReplayIdentity {
+    let normalization = fs_dfo::moo::NSGA3_NORMALIZATION_POLICY.replay_identity();
+    campaign_identity_with_normalization(direction_count, &normalization)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -655,6 +618,26 @@ fn emit_receipt(
     let line = event.to_jsonl();
     fs_obs::validate_line(&line).expect("WFG4 receipt must use the fs-obs wire schema");
     println!("{line}");
+}
+
+#[test]
+fn wfg4_campaign_consumes_shared_normalization_policy_root() {
+    let policy = fs_dfo::moo::NSGA3_NORMALIZATION_POLICY;
+    let current = policy.replay_identity();
+    let mut mutant_policy = policy;
+    mutant_policy.hyperplane_policy = "mutant-hyperplane-policy";
+    let mutant = mutant_policy.replay_identity();
+    assert_ne!(current.root(), mutant.root());
+
+    let current_campaign =
+        campaign_identity_with_normalization(EXPECTED_REFERENCE_DIRECTIONS, &current);
+    let mutant_campaign =
+        campaign_identity_with_normalization(EXPECTED_REFERENCE_DIRECTIONS, &mutant);
+    assert_ne!(
+        current_campaign.root(),
+        mutant_campaign.root(),
+        "the retained WFG4 campaign must bind the shared typed policy child"
+    );
 }
 
 #[test]
