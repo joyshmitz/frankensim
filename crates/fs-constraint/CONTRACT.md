@@ -49,10 +49,18 @@ what the constraints MEAN.
   MINIMAL (dropping any member restores feasibility). Repairs
   (relax-bound at graded slacks; drop-soft for soft members) come
   RANKED by Monte-Carlo feasible-volume estimates.
+  Domain admission precedes solver allocation and evaluation: exactly
+  one `Rn` variable, one range per point coordinate, finite ordered
+  endpoints, and a finite span. Equal endpoints are valid fixed
+  coordinates.
 - `serialize_specs`/`parse_specs`: canonical line form (floats as bit
   patterns), identical round-trips, line-numbered refusals.
 - `ConstraintEvidence::to_ledger_row` and `Diagnosis::to_json`: the
-  Rev S ledger row and the agent-facing diagnosis payload.
+  Rev S ledger row and the agent-facing diagnosis payload. All string
+  fields receive complete JSON escaping; non-finite public numeric
+  fields serialize as `null` rather than malformed JSON numbers. A
+  caller-constructed core index missing from the supplied spec table is
+  represented by `null`, never an invented constraint name.
 
 ## Invariants
 
@@ -78,12 +86,19 @@ what the constraints MEAN.
    drop actions, and estimates are CALIBRATED against exact
    enumeration (worst gap < 0.05 on the worked mass/strength
    example); the diagnosis payload ships through fs-obs (fscon-006).
+7. Malformed elastic domains refuse before allocation/evaluation,
+   while fixed axes remain admissible; hostile constraint/repair text
+   cannot escape its JSON string and every emitted payload remains
+   valid JSON.
 
 ## Error model
 
 `ConError` teaching errors: `NotScalar`, `Eval` (fs-opt errors carried
 through), `NotProvable{why}` (an honest gap with escalation advice,
-not a failure), `BadParam`, `Parse{line, what}`. The interval engine's
+not a failure), `BadParam`, `InvalidDomain(DomainError)`,
+`Parse{line, what}`. `DomainError` distinguishes host variable count and
+manifold, point-dimension representation, range-count mismatch, and an
+axis-specific `InvalidRange` reason. The interval engine's
 `IvalError` names each refusal reason, including the aggregate cap name,
 observed count, and enforced limit.
 
@@ -125,7 +140,10 @@ aggregate assertion. Seeded LCG randomness follows the mapping above.
 The object-shaped Custom companions for ledger rows and the full
 diagnosis payload remain wire-validated and printed, alongside G4
 shared-DAG/work and exact/max+1 depth-boundary fixtures for interval
-evaluation. Any reimplementation must pass the suite unchanged.
+evaluation. Adversarial fixed cases cover malformed domain
+bounds/dimensions, fixed axes, hostile JSON text, missing core names,
+and non-finite public numeric payloads. Any reimplementation must pass
+the suite unchanged.
 
 ## No-claim boundaries
 

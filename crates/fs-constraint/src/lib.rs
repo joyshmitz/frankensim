@@ -34,10 +34,32 @@ pub use diagnose::{
 pub use ival::{Iv, IvalError, interval_eval};
 
 use fs_evidence::{NumericalCertificate, StatisticalCertificate};
-use fs_opt::{NodeId, Problem};
+use fs_opt::{Manifold, NodeId, Problem};
 
 /// Crate version, re-exported for provenance stamping.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+pub(crate) fn push_json_string(out: &mut String, value: &str) {
+    use core::fmt::Write as _;
+
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{0008}' => out.push_str("\\b"),
+            '\u{000c}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            control if control <= '\u{001f}' => {
+                let _ = write!(out, "\\u{:04x}", u32::from(control));
+            }
+            printable => out.push(printable),
+        }
+    }
+    out.push('"');
+}
 
 /// How a chance constraint's probability is estimated.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -258,9 +280,12 @@ pub struct ConstraintEvidence {
 }
 
 impl ConstraintEvidence {
-    /// Canonical ledger row (Rev S table shape).
+    /// Canonical ledger row (Rev S table shape). Dynamic text is escaped and
+    /// non-finite public numeric fields use JSON `null` sentinels.
     #[must_use]
     pub fn to_ledger_row(&self) -> String {
+        use core::fmt::Write as _;
+
         let status = match &self.status {
             Status::Satisfied => "satisfied".to_string(),
             Status::Active => "active".to_string(),
@@ -269,11 +294,26 @@ impl ConstraintEvidence {
             Status::Proven => "proven".to_string(),
             Status::BoundNotCleared { .. } => "bound-not-cleared".to_string(),
         };
-        format!(
-            "{{\"constraint\":\"{}\",\"kind\":\"{}\",\"status\":\"{}\",\
-             \"violation\":{:.6e},\"penalty\":{:.6e}}}",
-            self.name, self.kind, status, self.violation, self.penalty
-        )
+        let mut row = "{\"constraint\":".to_string();
+        push_json_string(&mut row, &self.name);
+        row.push_str(",\"kind\":");
+        push_json_string(&mut row, self.kind);
+        row.push_str(",\"status\":");
+        push_json_string(&mut row, &status);
+        row.push_str(",\"violation\":");
+        if self.violation.is_finite() {
+            let _ = write!(row, "{:.6e}", self.violation);
+        } else {
+            row.push_str("null");
+        }
+        row.push_str(",\"penalty\":");
+        if self.penalty.is_finite() {
+            let _ = write!(row, "{:.6e}", self.penalty);
+        } else {
+            row.push_str("null");
+        }
+        row.push('}');
+        row
     }
 }
 
@@ -299,6 +339,8 @@ pub enum ConError {
         /// Value.
         value: f64,
     },
+    /// The elastic solver's host/domain contract was not admitted.
+    InvalidDomain(DomainError),
     /// Serialized text failed to parse.
     Parse {
         /// 1-based line.
@@ -324,10 +366,101 @@ impl core::fmt::Display for ConError {
             ConError::BadParam { what, value } => {
                 write!(f, "`{what}` = {value} is outside its valid range")
             }
+            ConError::InvalidDomain(error) => write!(f, "invalid elastic domain: {error}"),
             ConError::Parse { line, what } => write!(f, "parse error at line {line}: {what}"),
         }
     }
 }
+
+/// Allocation-free admission failures for an elastic-solve domain.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DomainError {
+    /// The v1 elastic solver requires exactly one host variable.
+    HostVariableCount {
+        /// Number of variables declared by the host problem.
+        got: usize,
+    },
+    /// The sole host variable is not Euclidean `Rn`.
+    HostVariableManifold {
+        /// Supplied manifold descriptor.
+        got: Manifold,
+    },
+    /// The declared `Rn` dimension cannot be represented on this target.
+    PointDimensionUnrepresentable {
+        /// Raw dimension from the manifold descriptor.
+        declared: u32,
+    },
+    /// The caller supplied the wrong number of component ranges.
+    DimensionMismatch {
+        /// Point dimension declared by the sole `Rn` variable.
+        expected: usize,
+        /// Number of ranges supplied by the caller.
+        got: usize,
+    },
+    /// One component range failed interval admission.
+    InvalidRange {
+        /// Zero-based component index.
+        axis: usize,
+        /// Supplied lower endpoint.
+        lo: f64,
+        /// Supplied upper endpoint.
+        hi: f64,
+        /// Exact range rule that failed.
+        reason: DomainRangeError,
+    },
+}
+
+/// Why one elastic-domain component range was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DomainRangeError {
+    /// At least one endpoint is NaN or infinite.
+    NonFiniteEndpoint,
+    /// The lower endpoint exceeds the upper endpoint.
+    Reversed,
+    /// Finite ordered endpoints have an unrepresentable difference.
+    UnrepresentableSpan,
+}
+
+impl core::fmt::Display for DomainError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            DomainError::HostVariableCount { got } => {
+                write!(f, "host declares {got} variables; expected exactly one")
+            }
+            DomainError::HostVariableManifold { got } => {
+                write!(f, "host variable uses {got:?}; expected Rn")
+            }
+            DomainError::PointDimensionUnrepresentable { declared } => write!(
+                f,
+                "Rn point dimension {declared} is not representable on this target"
+            ),
+            DomainError::DimensionMismatch { expected, got } => write!(
+                f,
+                "received {got} component ranges; the Rn variable needs {expected}"
+            ),
+            DomainError::InvalidRange {
+                axis,
+                lo,
+                hi,
+                reason,
+            } => write!(f, "axis {axis} has {reason} (lo={lo}, hi={hi})"),
+        }
+    }
+}
+
+impl core::fmt::Display for DomainRangeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            DomainRangeError::NonFiniteEndpoint => f.write_str("a non-finite endpoint"),
+            DomainRangeError::Reversed => f.write_str("lower endpoint above upper endpoint"),
+            DomainRangeError::UnrepresentableSpan => {
+                f.write_str("finite endpoints with an unrepresentable span")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DomainError {}
 
 impl std::error::Error for ConError {}
 

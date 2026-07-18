@@ -14,14 +14,16 @@
 //! feasibility — a property the conformance battery checks against
 //! brute-force enumeration.
 
-use crate::{ConError, ConstraintSpec, scalar_at};
+use crate::{ConError, ConstraintSpec, DomainError, DomainRangeError, push_json_string, scalar_at};
 use fs_exec::Cx;
-use fs_opt::Problem;
+use fs_opt::{Manifold, Problem};
 
 /// Per-component design-domain box.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DomainBox {
-    /// (lo, hi) per component of the (single, Rn) design variable.
+    /// `(lo, hi)` per component of the sole `Rn` design variable. Admission
+    /// requires exact dimension, finite ordered endpoints, and finite spans;
+    /// `lo == hi` denotes a valid fixed coordinate.
     pub ranges: Vec<(f64, f64)>,
 }
 
@@ -64,12 +66,63 @@ pub(crate) const FEAS_TOL: f64 = 1e-6;
 /// away from it (a raw `NaN.max(0.0)` would DROP the NaN and count it as 0).
 const NONFINITE_PENALTY: f64 = 1e30;
 
+fn validate_domain(problem: &Problem, domain: &DomainBox) -> Result<usize, ConError> {
+    if problem.vars().len() != 1 {
+        return Err(ConError::InvalidDomain(DomainError::HostVariableCount {
+            got: problem.vars().len(),
+        }));
+    }
+    let variable = &problem.vars()[0];
+    let Manifold::Rn { dim } = variable.manifold else {
+        return Err(ConError::InvalidDomain(DomainError::HostVariableManifold {
+            got: variable.manifold,
+        }));
+    };
+    let expected = usize::try_from(dim).map_err(|_| {
+        ConError::InvalidDomain(DomainError::PointDimensionUnrepresentable { declared: dim })
+    })?;
+    if domain.ranges.len() != expected {
+        return Err(ConError::InvalidDomain(DomainError::DimensionMismatch {
+            expected,
+            got: domain.ranges.len(),
+        }));
+    }
+    for (axis, &(lo, hi)) in domain.ranges.iter().enumerate() {
+        if !lo.is_finite() || !hi.is_finite() {
+            return Err(ConError::InvalidDomain(DomainError::InvalidRange {
+                axis,
+                lo,
+                hi,
+                reason: DomainRangeError::NonFiniteEndpoint,
+            }));
+        }
+        if lo > hi {
+            return Err(ConError::InvalidDomain(DomainError::InvalidRange {
+                axis,
+                lo,
+                hi,
+                reason: DomainRangeError::Reversed,
+            }));
+        }
+        if !(hi - lo).is_finite() {
+            return Err(ConError::InvalidDomain(DomainError::InvalidRange {
+                axis,
+                lo,
+                hi,
+                reason: DomainRangeError::UnrepresentableSpan,
+            }));
+        }
+    }
+    Ok(expected)
+}
+
 /// Minimize `Σ max(gᵢ(x), 0)` over the box: multi-start projected
 /// subgradient descent (deterministic). Small-fixture machinery — the
 /// production restoration solver is a later ASCENT bead.
 ///
 /// # Errors
-/// Evaluation teaching errors carried through; cancellation polls.
+/// [`ConError::InvalidDomain`] before allocation/evaluation, evaluation
+/// teaching errors carried through, or cancellation at a restart poll.
 pub fn elastic_solve(
     problem: &Problem,
     specs: &[ConstraintSpec],
@@ -77,7 +130,7 @@ pub fn elastic_solve(
     skip: &[usize],
     cx: &Cx<'_>,
 ) -> Result<ElasticReport, ConError> {
-    let n = domain.ranges.len();
+    let n = validate_domain(problem, domain)?;
     let active: Vec<usize> = (0..specs.len()).filter(|i| !skip.contains(i)).collect();
     let mut evals = 0u64;
     let total = |x: &[f64], evals: &mut u64| -> Result<f64, ConError> {
@@ -219,30 +272,44 @@ pub struct Diagnosis {
 }
 
 impl Diagnosis {
-    /// Canonical JSON payload for the ledger/session surface.
+    /// Canonical JSON payload for the ledger/session surface. Dynamic text is
+    /// escaped; non-finite public numbers and missing spec references use
+    /// explicit JSON `null` sentinels.
     #[must_use]
     pub fn to_json(&self, specs: &[ConstraintSpec]) -> String {
         use std::fmt::Write as _;
-        let mut s = format!(
-            "{{\"feasible\":{},\"total_violation\":{:.3e},\"core\":[",
-            self.feasible, self.elastic.total_violation
-        );
+
+        let mut s = format!("{{\"feasible\":{},\"total_violation\":", self.feasible);
+        if self.elastic.total_violation.is_finite() {
+            let _ = write!(s, "{:.3e}", self.elastic.total_violation);
+        } else {
+            s.push_str("null");
+        }
+        s.push_str(",\"core\":[");
         for (k, &i) in self.core.iter().enumerate() {
             if k > 0 {
                 s.push(',');
             }
-            let _ = write!(s, "\"{}\"", specs[i].name);
+            if let Some(spec) = specs.get(i) {
+                push_json_string(&mut s, &spec.name);
+            } else {
+                s.push_str("null");
+            }
         }
         s.push_str("],\"repairs\":[");
         for (k, r) in self.repairs.iter().enumerate() {
             if k > 0 {
                 s.push(',');
             }
-            let _ = write!(
-                s,
-                "{{\"action\":\"{}\",\"est_feasible\":{:.2}}}",
-                r.description, r.feasibility_estimate
-            );
+            s.push_str("{\"action\":");
+            push_json_string(&mut s, &r.description);
+            s.push_str(",\"est_feasible\":");
+            if r.feasibility_estimate.is_finite() {
+                let _ = write!(s, "{:.2}", r.feasibility_estimate);
+            } else {
+                s.push_str("null");
+            }
+            s.push('}');
         }
         s.push_str("]}");
         s

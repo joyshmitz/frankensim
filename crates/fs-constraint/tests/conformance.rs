@@ -11,8 +11,9 @@
 
 use asupersync::types::Budget;
 use fs_constraint::{
-    ChanceEstimator, ConError, ConstraintKind, ConstraintSpec, Diagnosis, DomainBox, PenaltyLaw,
-    ProofKind, Status, Treatment, diagnose_infeasibility, evaluate, interval_eval, parse_specs,
+    ChanceEstimator, ConError, ConstraintKind, ConstraintSpec, Diagnosis, DomainBox, DomainError,
+    DomainRangeError, ElasticReport, PenaltyLaw, ProofKind, RepairAction, RepairKind, Status,
+    Treatment, diagnose_infeasibility, elastic_solve, evaluate, interval_eval, parse_specs,
     prove_interval, serialize_specs,
 };
 use fs_exec::{CancelGate, Cx, ExecMode, StreamKey};
@@ -699,6 +700,208 @@ fn fscon_006_repairs_calibrated() {
             FIXED_INPUT_SEED,
         );
     });
+}
+
+#[test]
+fn elastic_domain_admission_refuses_malformed_ranges_before_solving() {
+    with_cx(|cx| {
+        let host = linear_host(&[(1.0, 0.0, 1.0)]);
+        let specs = [hard("cap", host.nodes[0])];
+
+        for (domain, expected_axis, expected_reason) in [
+            (
+                DomainBox {
+                    ranges: vec![(f64::NAN, 1.0), (0.0, 1.0)],
+                },
+                0,
+                DomainRangeError::NonFiniteEndpoint,
+            ),
+            (
+                DomainBox {
+                    ranges: vec![(0.0, 1.0), (0.0, f64::INFINITY)],
+                },
+                1,
+                DomainRangeError::NonFiniteEndpoint,
+            ),
+            (
+                DomainBox {
+                    ranges: vec![(f64::NEG_INFINITY, 1.0), (0.0, 1.0)],
+                },
+                0,
+                DomainRangeError::NonFiniteEndpoint,
+            ),
+            (
+                DomainBox {
+                    ranges: vec![(1.0, -1.0), (0.0, 1.0)],
+                },
+                0,
+                DomainRangeError::Reversed,
+            ),
+            (
+                DomainBox {
+                    ranges: vec![(-f64::MAX, f64::MAX), (0.0, 1.0)],
+                },
+                0,
+                DomainRangeError::UnrepresentableSpan,
+            ),
+        ] {
+            for active_specs in [&specs[..], &[]] {
+                assert!(matches!(
+                    elastic_solve(&host.problem, active_specs, &domain, &[], cx),
+                    Err(ConError::InvalidDomain(DomainError::InvalidRange {
+                        axis,
+                        reason,
+                        ..
+                    })) if axis == expected_axis && reason == expected_reason
+                ));
+            }
+            assert!(matches!(
+                elastic_solve(&host.problem, &specs, &domain, &[0], cx),
+                Err(ConError::InvalidDomain(DomainError::InvalidRange { .. }))
+            ));
+        }
+
+        for got in [1, 3] {
+            let domain = DomainBox {
+                ranges: vec![(0.0, 1.0); got],
+            };
+            assert_eq!(
+                elastic_solve(&host.problem, &specs, &domain, &[], cx).unwrap_err(),
+                ConError::InvalidDomain(DomainError::DimensionMismatch { expected: 2, got })
+            );
+        }
+
+        let mut multi_builder = ProblemBuilder::new();
+        let x = multi_builder
+            .var("x", Manifold::Rn { dim: 1 }, Dims::NONE)
+            .expect("x");
+        multi_builder
+            .var("y", Manifold::Rn { dim: 1 }, Dims::NONE)
+            .expect("y");
+        let x_ref = multi_builder.var_ref(x).expect("x ref");
+        let objective = multi_builder.norm_sq(x_ref).expect("objective");
+        multi_builder
+            .objective(objective, fs_opt::Sense::Minimize, 1.0)
+            .expect("objective entry");
+        let multi_problem = multi_builder.finish();
+        assert_eq!(
+            elastic_solve(
+                &multi_problem,
+                &[],
+                &DomainBox {
+                    ranges: vec![(0.0, 1.0)],
+                },
+                &[],
+                cx,
+            )
+            .unwrap_err(),
+            ConError::InvalidDomain(DomainError::HostVariableCount { got: 2 })
+        );
+
+        let mut sphere_builder = ProblemBuilder::new();
+        let sphere = sphere_builder
+            .var("sphere", Manifold::Sphere { ambient: 2 }, Dims::NONE)
+            .expect("sphere");
+        let sphere_ref = sphere_builder.var_ref(sphere).expect("sphere ref");
+        let objective = sphere_builder.norm_sq(sphere_ref).expect("objective");
+        sphere_builder
+            .objective(objective, fs_opt::Sense::Minimize, 1.0)
+            .expect("objective entry");
+        let sphere_problem = sphere_builder.finish();
+        assert_eq!(
+            elastic_solve(
+                &sphere_problem,
+                &[],
+                &DomainBox {
+                    ranges: vec![(0.0, 1.0), (0.0, 1.0)],
+                },
+                &[],
+                cx,
+            )
+            .unwrap_err(),
+            ConError::InvalidDomain(DomainError::HostVariableManifold {
+                got: Manifold::Sphere { ambient: 2 },
+            })
+        );
+
+        let forged = [hard("forged", NodeId(u32::MAX))];
+        let invalid = DomainBox {
+            ranges: vec![(1.0, -1.0), (0.0, 1.0)],
+        };
+        assert!(matches!(
+            elastic_solve(&host.problem, &forged, &invalid, &[], cx),
+            Err(ConError::InvalidDomain(DomainError::InvalidRange { .. }))
+        ));
+
+        let fixed = DomainBox {
+            ranges: vec![(0.0, 0.0), (1.0, 1.0)],
+        };
+        let report = elastic_solve(&host.problem, &specs, &fixed, &[], cx)
+            .expect("zero-width axes are valid fixed coordinates");
+        assert_eq!(report.x, vec![0.0, 1.0]);
+        assert!(report.total_violation <= 1e-6);
+    });
+}
+
+#[test]
+fn json_surfaces_escape_untrusted_text_and_nonfinite_numbers() {
+    let hostile = "name\"\\\n\r\t\u{0008}\u{000c}\u{0001}";
+    let host = linear_host(&[(1.0, 0.0, 1.0)]);
+    let spec = hard(hostile, host.nodes[0]);
+    let mut evidence = evaluate(&host.problem, &spec, &[0.0, 0.0], None).expect("evidence");
+    evidence.violation = f64::NAN;
+    evidence.penalty = f64::INFINITY;
+    let row = evidence.to_ledger_row();
+    assert!(row.contains("\\\""));
+    assert!(row.contains("\\\\"));
+    assert!(row.contains("\\n"));
+    assert!(row.contains("\\r"));
+    assert!(row.contains("\\t"));
+    assert!(row.contains("\\b"));
+    assert!(row.contains("\\f"));
+    assert!(row.contains("\\u0001"));
+    assert!(row.contains("\"violation\":null,\"penalty\":null"));
+    assert!(!row.chars().any(|ch| ch <= '\u{001f}'));
+
+    let diagnosis = Diagnosis {
+        feasible: false,
+        witness: None,
+        core: vec![0, usize::MAX],
+        repairs: vec![RepairAction {
+            description: hostile.to_string(),
+            kind: RepairKind::RelaxBound {
+                index: 0,
+                slack: 0.0,
+            },
+            feasibility_estimate: f64::NEG_INFINITY,
+        }],
+        elastic: ElasticReport {
+            x: Vec::new(),
+            total_violation: f64::NAN,
+            violations: Vec::new(),
+            evals: 0,
+        },
+    };
+    let payload = diagnosis.to_json(&[spec]);
+    assert!(payload.contains("\"total_violation\":null"));
+    assert!(payload.contains(",null],\"repairs\""));
+    assert!(payload.contains("\"est_feasible\":null"));
+    assert!(!payload.chars().any(|ch| ch <= '\u{001f}'));
+
+    for (name, json) in [("hostile-ledger", row), ("hostile-diagnosis", payload)] {
+        let mut emitter = fs_obs::Emitter::new("fs-constraint/conformance", name);
+        let line = emitter
+            .emit(
+                fs_obs::Severity::Info,
+                fs_obs::EventKind::Custom {
+                    name: name.to_string(),
+                    json,
+                },
+                None,
+            )
+            .to_jsonl();
+        fs_obs::validate_line(&line).expect("hostile JSON payload remains valid");
+    }
 }
 
 const _: () = {
