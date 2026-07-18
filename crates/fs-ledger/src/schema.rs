@@ -33,10 +33,13 @@
 //! bind runtime bytes to exact law, parameter, schema, and implementation
 //! identities. Schema v13 adds immutable strong-identity migration receipts:
 //! exact legacy and canonical bytes remain distinct from raw content IDs,
-//! typed semantic IDs, legacy FNV replay tokens, and authority state.
+//! typed semantic IDs, legacy FNV replay tokens, and authority state. Schema
+//! v14 gives every artifact an exact typed content-identity companion row;
+//! migration backfills existing hashes and a trigger dual-writes later rows
+//! without guessing a semantic schema.
 
 /// The schema version this crate writes and reads.
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 /// Storage chunk length for large artifacts (bytes). Artifacts strictly
 /// larger than this are stored as `artifact_chunks` rows of at most this
@@ -45,7 +48,8 @@ pub const STORAGE_CHUNK_LEN: usize = 4 * 1024 * 1024;
 
 /// Migration ladder: `MIGRATIONS[i]` migrates a database at `user_version`
 /// `i` to `i + 1`. Append-only; never edit a shipped batch.
-pub(crate) const MIGRATIONS: &[&[&str]] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13];
+pub(crate) const MIGRATIONS: &[&[&str]] =
+    &[V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14];
 
 /// v1: the six core tables (Appendix D), chunk storage, and the Rev S
 /// extension tables (sparse in v0 but present EARLY so downstream crates can
@@ -1013,7 +1017,51 @@ pub const V13: &[&str] = &[
      END",
 ];
 
-/// Every table the CURRENT schema owns (v1 set + v2 through v13 additions); the
+/// v14: typed content identity for every artifact compatibility hash.
+///
+/// `artifacts.hash` remains the compatibility key used by schema-v1 readers.
+/// The companion table names the same exact digest as a raw-byte `ContentId`;
+/// equality is enforced in SQL, not inferred by readers. The backfill copies
+/// no semantic identity or authority. An `AFTER INSERT` trigger makes writes
+/// from already-open old handles dual-write once this migration commits.
+pub const V14: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS artifact_content_identities(
+        artifact_hash BLOB NOT NULL PRIMARY KEY
+            REFERENCES artifacts(hash) ON DELETE CASCADE
+            CHECK(length(artifact_hash) = 32),
+        content_id BLOB NOT NULL CHECK(length(content_id) = 32),
+        row_schema_version INTEGER NOT NULL CHECK(row_schema_version = 1),
+        CHECK(content_id = artifact_hash)
+    ) STRICT",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_artifact_content_identity_content
+     ON artifact_content_identities(content_id)",
+    "INSERT OR IGNORE INTO artifact_content_identities(
+         artifact_hash, content_id, row_schema_version
+     )
+     SELECT hash, hash, 1 FROM artifacts",
+    "CREATE TRIGGER IF NOT EXISTS trg_artifact_content_identity_dual_write
+     AFTER INSERT ON artifacts
+     BEGIN
+       INSERT INTO artifact_content_identities(
+           artifact_hash, content_id, row_schema_version
+       ) VALUES (NEW.hash, NEW.hash, 1);
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_artifact_content_identity_immutable_update
+     BEFORE UPDATE ON artifact_content_identities
+     BEGIN
+       SELECT RAISE(ABORT, 'artifact content identity is immutable');
+     END",
+    "CREATE TRIGGER IF NOT EXISTS trg_artifact_content_identity_guard_delete
+     BEFORE DELETE ON artifact_content_identities
+     WHEN EXISTS(
+         SELECT 1 FROM artifacts WHERE hash = OLD.artifact_hash
+     )
+     BEGIN
+       SELECT RAISE(ABORT, 'artifact content identity is retained with its artifact');
+     END",
+];
+
+/// Every table the CURRENT schema owns (v1 set + v2 through v14 additions); the
 /// `table_count`/lint whitelist.
 pub const ALL_TABLES: &[&str] = &[
     "artifacts",
@@ -1046,4 +1094,5 @@ pub const ALL_TABLES: &[&str] = &[
     "qty_dimension_crosswalks",
     "semantic_state_checkpoint_receipts",
     "identity_migration_receipts",
+    "artifact_content_identities",
 ];

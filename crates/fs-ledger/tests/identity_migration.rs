@@ -3,7 +3,8 @@ use fs_blake3::identity::{
     IdentityReceipt, SemanticId, TrustState, WireType, legacy::LegacyProvenanceV1,
 };
 use fs_ledger::{
-    IdentityMigrationClaim, Ledger, LedgerError, MAX_IDENTITY_MIGRATION_PAYLOAD_BYTES,
+    ARTIFACT_CONTENT_IDENTITY_ROW_VERSION, IdentityMigrationClaim, Ledger, LedgerError,
+    MAX_IDENTITY_MIGRATION_PAYLOAD_BYTES,
 };
 
 const LIMITS: CanonicalLimits = CanonicalLimits::new(64 * 1024, 16 * 1024, 8, 16, 4096);
@@ -59,7 +60,7 @@ fn claim<'a>(
 
 #[test]
 fn receipt_identity_binds_exact_bytes_schema_and_audit_state() {
-    let ledger = Ledger::open(":memory:").expect("fresh v13 ledger");
+    let ledger = Ledger::open(":memory:").expect("fresh v14 ledger");
     let legacy = br#"{"legacy":"shape-a","provenance":1}"#;
     let canonical = br#"{"schema":1,"shape":"a"}"#;
     let semantic = semantic_receipt(b"shape-a");
@@ -134,7 +135,7 @@ fn receipt_identity_binds_exact_bytes_schema_and_audit_state() {
 
 #[test]
 fn typed_projection_refuses_a_different_schema() {
-    let ledger = Ledger::open(":memory:").expect("fresh v13 ledger");
+    let ledger = Ledger::open(":memory:").expect("fresh v14 ledger");
     let semantic = semantic_receipt(b"typed-subject");
     let write = ledger
         .record_identity_migration(claim(semantic, b"legacy", b"canonical", "demo-v0-to-v1"))
@@ -152,7 +153,7 @@ fn typed_projection_refuses_a_different_schema() {
 
 #[test]
 fn ambiguous_legacy_candidates_are_bounded_and_never_selected() {
-    let ledger = Ledger::open(":memory:").expect("fresh v13 ledger");
+    let ledger = Ledger::open(":memory:").expect("fresh v14 ledger");
     let legacy = b"same-legacy-source";
     let semantic = semantic_receipt(b"same-subject");
     let first = ledger
@@ -184,7 +185,7 @@ fn ambiguous_legacy_candidates_are_bounded_and_never_selected() {
 
 #[test]
 fn payload_limit_refuses_before_any_row_is_published() {
-    let ledger = Ledger::open(":memory:").expect("fresh v13 ledger");
+    let ledger = Ledger::open(":memory:").expect("fresh v14 ledger");
     let oversized = vec![0xA5; MAX_IDENTITY_MIGRATION_PAYLOAD_BYTES + 1];
     let semantic = semantic_receipt(b"bounded-subject");
     assert!(matches!(
@@ -199,5 +200,39 @@ fn payload_limit_refuses_before_any_row_is_published() {
     assert_eq!(
         ledger.table_count("identity_migration_receipts").unwrap(),
         0
+    );
+}
+
+#[test]
+fn artifact_writes_dual_write_an_exact_typed_content_identity() {
+    let ledger = Ledger::open(":memory:").expect("fresh v14 ledger");
+    let bytes = b"artifact identity dual-write fixture";
+    let write = ledger
+        .put_artifact("identity-fixture", bytes, None)
+        .expect("store exact artifact");
+
+    let identity = ledger
+        .artifact_content_identity(&write.hash)
+        .expect("verify artifact content identity")
+        .expect("stored artifact has a sidecar");
+    assert_eq!(identity.artifact_hash(), write.hash);
+    assert_eq!(identity.content_id(), ContentId::of_bytes(bytes));
+    assert_eq!(
+        identity.row_schema_version(),
+        ARTIFACT_CONTENT_IDENTITY_ROW_VERSION
+    );
+    assert_eq!(
+        ledger.table_count("artifact_content_identities").unwrap(),
+        1
+    );
+
+    let retry = ledger
+        .put_artifact("identity-fixture", bytes, None)
+        .expect("dedupe exact artifact");
+    assert!(retry.deduped);
+    assert_eq!(
+        ledger.table_count("artifact_content_identities").unwrap(),
+        1,
+        "artifact dedupe must not duplicate typed identity rows"
     );
 }

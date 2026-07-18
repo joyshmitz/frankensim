@@ -22,7 +22,10 @@ use fs_blake3::identity::{
 };
 use fsqlite::SqliteValue;
 
-use crate::{Ledger, LedgerError, blob_param, now_wall_ns, sql_err};
+use crate::{ContentHash, Ledger, LedgerError, blob_param, now_wall_ns, sql_err};
+
+/// Schema version of one artifact compatibility-hash to typed-content-ID row.
+pub const ARTIFACT_CONTENT_IDENTITY_ROW_VERSION: u32 = 1;
 
 /// Identity schema version for immutable migration receipts.
 pub const IDENTITY_MIGRATION_RECEIPT_VERSION: u32 = 1;
@@ -432,6 +435,39 @@ pub struct IdentityMigrationCandidates {
     truncated: bool,
 }
 
+/// Independently verified typed content identity for one retained artifact.
+///
+/// `artifact_hash` is the schema-v1 compatibility key. `content_id` is the
+/// non-confusable raw-byte identity type introduced by the v14 sidecar. Their
+/// digest bytes must be exactly equal; neither field carries semantic meaning
+/// or authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArtifactContentIdentity {
+    artifact_hash: ContentHash,
+    content_id: ContentId,
+    row_schema_version: u32,
+}
+
+impl ArtifactContentIdentity {
+    /// Compatibility hash still used by legacy artifact and edge rows.
+    #[must_use]
+    pub const fn artifact_hash(self) -> ContentHash {
+        self.artifact_hash
+    }
+
+    /// Typed plain-BLAKE3 identity of the exact retained artifact bytes.
+    #[must_use]
+    pub const fn content_id(self) -> ContentId {
+        self.content_id
+    }
+
+    /// Exact sidecar row schema version.
+    #[must_use]
+    pub const fn row_schema_version(self) -> u32 {
+        self.row_schema_version
+    }
+}
+
 impl IdentityMigrationCandidates {
     /// Deterministic receipt-ID prefix in bytewise order.
     #[must_use]
@@ -450,6 +486,16 @@ fn invalid(field: &str, problem: impl Into<String>) -> LedgerError {
     LedgerError::Invalid {
         field: field.to_string(),
         problem: problem.into(),
+    }
+}
+
+fn artifact_identity_corrupt(
+    artifact_hash: &ContentHash,
+    detail: impl Into<String>,
+) -> LedgerError {
+    LedgerError::Corrupt {
+        hash_hex: artifact_hash.to_hex(),
+        detail: detail.into(),
     }
 }
 
@@ -876,6 +922,177 @@ fn optional_fixed_param(value: Option<[u8; 32]>) -> SqliteValue {
 }
 
 impl Ledger {
+    /// Return the typed raw-byte identity sidecar for a retained artifact.
+    ///
+    /// The read fails closed unless the compatibility hash, typed content ID,
+    /// row version, and independently re-hashed artifact bytes all agree.
+    /// The result deliberately contains no semantic identity or authority.
+    ///
+    /// # Errors
+    /// [`LedgerError::Corrupt`] when a retained artifact lacks an exact v14
+    /// sidecar or either identity disagrees with its bytes; storage failures
+    /// otherwise.
+    pub fn artifact_content_identity(
+        &self,
+        artifact_hash: &ContentHash,
+    ) -> Result<Option<ArtifactContentIdentity>, LedgerError> {
+        let rows = self
+            .conn
+            .query_with_params(
+                "SELECT i.artifact_hash, i.content_id, i.row_schema_version \
+                 FROM artifacts AS a \
+                 LEFT JOIN artifact_content_identities AS i \
+                   ON i.artifact_hash = a.hash \
+                 WHERE a.hash = ?1 LIMIT 2",
+                &[blob_param(artifact_hash.as_bytes())],
+            )
+            .map_err(|error| sql_err("artifact content identity read", &error))?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        if rows.len() != 1 {
+            return Err(artifact_identity_corrupt(
+                artifact_hash,
+                "one artifact compatibility hash selected multiple identity sidecars",
+            ));
+        }
+        let row = rows.first().expect("non-empty row set checked above");
+        let stored_hash = match row.first() {
+            Some(SqliteValue::Blob(bytes)) => ContentHash::from_slice(bytes),
+            _ => None,
+        }
+        .ok_or_else(|| {
+            artifact_identity_corrupt(
+                artifact_hash,
+                "retained artifact has no exact 32-byte content-identity sidecar",
+            )
+        })?;
+        if stored_hash != *artifact_hash {
+            return Err(artifact_identity_corrupt(
+                artifact_hash,
+                "sidecar compatibility hash differs from the requested artifact hash",
+            ));
+        }
+        let content_id = match row.get(1) {
+            Some(SqliteValue::Blob(bytes)) => ContentId::parse_slice(bytes),
+            _ => None,
+        }
+        .ok_or_else(|| {
+            artifact_identity_corrupt(
+                artifact_hash,
+                "artifact content_id is not an exact 32-byte typed content identity",
+            )
+        })?;
+        if content_id.as_bytes() != artifact_hash.as_bytes() {
+            return Err(artifact_identity_corrupt(
+                artifact_hash,
+                "typed content ID differs from the compatibility hash",
+            ));
+        }
+        let row_schema_version = match row.get(2) {
+            Some(SqliteValue::Integer(value)) => u32::try_from(*value).ok(),
+            _ => None,
+        }
+        .ok_or_else(|| {
+            artifact_identity_corrupt(
+                artifact_hash,
+                "artifact content-identity row version is not a u32 integer",
+            )
+        })?;
+        if row_schema_version != ARTIFACT_CONTENT_IDENTITY_ROW_VERSION {
+            return Err(artifact_identity_corrupt(
+                artifact_hash,
+                format!(
+                    "artifact content-identity row version {row_schema_version} differs from supported {}",
+                    ARTIFACT_CONTENT_IDENTITY_ROW_VERSION
+                ),
+            ));
+        }
+        if self
+            .read_artifact_chunks(artifact_hash, &mut |_| {})?
+            .is_none()
+        {
+            return Err(artifact_identity_corrupt(
+                artifact_hash,
+                "artifact disappeared while its typed content identity was being verified",
+            ));
+        }
+        Ok(Some(ArtifactContentIdentity {
+            artifact_hash: stored_hash,
+            content_id,
+            row_schema_version,
+        }))
+    }
+
+    /// Authenticate the complete v14 artifact backfill before its schema
+    /// marker commits. The migration transaction rolls every sidecar row and
+    /// trigger back if any source artifact is corrupt, missing, or divergent.
+    pub(crate) fn verify_artifact_content_identity_backfill(&self) -> Result<(), LedgerError> {
+        let integrity = self.verify_artifact_integrity()?;
+        if let Some(corrupt) = integrity.corrupted.first() {
+            return Err(LedgerError::Corrupt {
+                hash_hex: corrupt.clone(),
+                detail: "v14 artifact identity backfill source failed independent content re-hash"
+                    .to_string(),
+            });
+        }
+
+        let invalid_rows = self
+            .conn
+            .query(
+                "SELECT a.hash \
+                 FROM artifacts AS a \
+                 LEFT JOIN artifact_content_identities AS i \
+                   ON i.artifact_hash = a.hash \
+                 WHERE i.artifact_hash IS NULL \
+                    OR typeof(i.artifact_hash) != 'blob' \
+                    OR length(i.artifact_hash) != 32 \
+                    OR i.artifact_hash != a.hash \
+                    OR typeof(i.content_id) != 'blob' \
+                    OR length(i.content_id) != 32 \
+                    OR i.content_id != a.hash \
+                    OR typeof(i.row_schema_version) != 'integer' \
+                    OR i.row_schema_version != 1 \
+                 LIMIT 1",
+            )
+            .map_err(|error| sql_err("verify artifact identity backfill", &error))?;
+        if let Some(row) = invalid_rows.first() {
+            let hash_hex = match row.first() {
+                Some(SqliteValue::Blob(bytes)) => ContentHash::from_slice(bytes)
+                    .map_or_else(|| "<malformed>".to_string(), |hash| hash.to_hex()),
+                _ => "<malformed>".to_string(),
+            };
+            return Err(LedgerError::Corrupt {
+                hash_hex,
+                detail: "v14 backfill did not produce one exact typed content identity for every artifact"
+                    .to_string(),
+            });
+        }
+
+        let orphan_rows = self
+            .conn
+            .query(
+                "SELECT i.artifact_hash \
+                 FROM artifact_content_identities AS i \
+                 LEFT JOIN artifacts AS a ON a.hash = i.artifact_hash \
+                 WHERE a.hash IS NULL LIMIT 1",
+            )
+            .map_err(|error| sql_err("verify artifact identity orphan", &error))?;
+        if let Some(row) = orphan_rows.first() {
+            let hash_hex = match row.first() {
+                Some(SqliteValue::Blob(bytes)) => ContentHash::from_slice(bytes)
+                    .map_or_else(|| "<malformed>".to_string(), |hash| hash.to_hex()),
+                _ => "<malformed>".to_string(),
+            };
+            return Err(LedgerError::Corrupt {
+                hash_hex,
+                detail: "v14 artifact content-identity sidecar has no retained artifact"
+                    .to_string(),
+            });
+        }
+        Ok(())
+    }
+
     fn stored_identity_migration(
         &self,
         receipt_id: IdentityMigrationReceiptId,
@@ -1299,9 +1516,21 @@ mod tests {
         }
     }
 
+    fn drop_v14_objects(ledger: &Ledger) {
+        for ddl in [
+            "DROP TRIGGER IF EXISTS trg_artifact_content_identity_guard_delete",
+            "DROP TRIGGER IF EXISTS trg_artifact_content_identity_immutable_update",
+            "DROP TRIGGER IF EXISTS trg_artifact_content_identity_dual_write",
+            "DROP INDEX IF EXISTS idx_artifact_content_identity_content",
+            "DROP TABLE IF EXISTS artifact_content_identities",
+        ] {
+            ledger.conn.execute(ddl).expect("remove v14 fixture object");
+        }
+    }
+
     #[test]
-    fn genuine_v12_and_stale_v13_markers_migrate_to_v13() {
-        let ledger = Ledger::open(":memory:").expect("fresh v13 ledger");
+    fn genuine_v12_and_stale_v13_markers_migrate_through_v14() {
+        let ledger = Ledger::open(":memory:").expect("fresh v14 ledger");
         drop_v13_objects(&ledger);
         ledger
             .conn
@@ -1332,7 +1561,7 @@ mod tests {
 
     #[test]
     fn divergent_early_v13_object_refuses_before_marker_advances() {
-        let ledger = Ledger::open(":memory:").expect("fresh v13 ledger");
+        let ledger = Ledger::open(":memory:").expect("fresh v14 ledger");
         drop_v13_objects(&ledger);
         ledger
             .conn
@@ -1353,11 +1582,83 @@ mod tests {
     }
 
     #[test]
-    fn migration_ladder_ends_with_v13() {
+    fn v14_backfills_v13_artifacts_and_replays_a_stale_marker() {
+        for preapply_v14 in [false, true] {
+            let ledger = Ledger::open(":memory:").expect("fresh v14 ledger");
+            drop_v14_objects(&ledger);
+            ledger
+                .conn
+                .execute("PRAGMA user_version = 13")
+                .expect("mark genuine v13 fixture");
+            let artifact = ledger
+                .put_artifact("v13-artifact", b"exact v13 artifact bytes", None)
+                .expect("store pre-v14 artifact");
+            if preapply_v14 {
+                for ddl in schema::V14 {
+                    ledger
+                        .conn
+                        .execute(ddl)
+                        .expect("preapply exact v14 migration batch");
+                }
+            }
+
+            ledger
+                .migrate_from_observed_version(13)
+                .expect("authenticate and backfill exact v13 artifact");
+            assert_eq!(ledger.schema_version().unwrap(), SCHEMA_VERSION);
+            let identity = ledger
+                .artifact_content_identity(&artifact.hash)
+                .unwrap()
+                .expect("backfilled identity exists");
+            assert_eq!(identity.artifact_hash(), artifact.hash);
+            assert_eq!(
+                identity.content_id(),
+                ContentId::of_bytes(b"exact v13 artifact bytes")
+            );
+            assert_eq!(
+                ledger.table_count("artifact_content_identities").unwrap(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn v14_corrupt_source_rolls_back_rows_objects_and_marker() {
+        let ledger = Ledger::open(":memory:").expect("fresh v14 ledger");
+        drop_v14_objects(&ledger);
+        ledger
+            .conn
+            .execute("PRAGMA user_version = 13")
+            .expect("mark genuine v13 fixture");
+        let artifact = ledger
+            .put_artifact("corrupt-v13-artifact", b"pre-migration bytes", None)
+            .expect("store pre-v14 artifact");
+        ledger
+            .corrupt_artifact_for_test(&artifact.hash)
+            .expect("inject source corruption");
+
+        assert!(matches!(
+            ledger.migrate_from_observed_version(13),
+            Err(LedgerError::Corrupt { .. })
+        ));
+        assert_eq!(ledger.schema_version().unwrap(), 13);
+        let objects = ledger
+            .conn
+            .query(
+                "SELECT name FROM sqlite_master \
+                 WHERE name = 'artifact_content_identities' LIMIT 1",
+            )
+            .expect("inspect rolled-back v14 schema");
+        assert!(objects.is_empty());
+    }
+
+    #[test]
+    fn migration_ladder_ends_with_v14() {
         assert_eq!(
             schema::MIGRATIONS.len(),
             usize::try_from(SCHEMA_VERSION).unwrap()
         );
-        assert_eq!(schema::MIGRATIONS.last(), Some(&schema::V13));
+        assert_eq!(schema::MIGRATIONS.get(12), Some(&schema::V13));
+        assert_eq!(schema::MIGRATIONS.last(), Some(&schema::V14));
     }
 }

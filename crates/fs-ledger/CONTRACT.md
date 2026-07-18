@@ -1,6 +1,6 @@
 # CONTRACT: fs-ledger
 
-> Status: ACTIVE (Design Ledger, schema v13). Owns the core schema + Rev S
+> Status: ACTIVE (Design Ledger, schema v14). Owns the core schema + Rev S
 > extension tables, BLAKE3 content addressing, the WAL/snapshot concurrency
 > contract, and — since schema v2 — forkable worlds, `at(t)` views,
 > `explain()`, the replay audit, and unreferenced-artifact GC (`travel`
@@ -255,6 +255,20 @@ and the lower-layer Franken crates declared in `Cargo.toml`, including
   deterministic, explicitly non-authoritative receipt-ID prefix with a
   truncation bit and never chooses a winner. Migration from v12 creates an
   empty table and infers no strong identity or authority from historical rows.
+- Artifact typed-content sidecars (`identity_migration`, schema v14): every
+  retained `artifacts.hash` has exactly one `artifact_content_identities` row
+  that stores the same 32 digest bytes as a typed raw-byte `ContentId` under
+  row schema v1. The migration copies only that exact compatibility hash; it
+  re-hashes every retained artifact and verifies the one-to-one mapping inside
+  the same transaction before advancing `user_version`. Any corrupt source or
+  partial mapping rolls back the table, triggers, rows, and marker together.
+  An `AFTER INSERT` trigger dual-writes future artifacts, including writes from
+  a handle opened before migration, while a conditional delete guard preserves
+  sidecars until normal artifact deletion cascades them. Reads independently
+  re-hash bytes and refuse missing, malformed, divergent, or future-version
+  sidecars. The sidecar carries no semantic ID, FNV value, verifier, anchor, or
+  authority; those require an exact typed migration receipt and are not guessed
+  from artifact kind or metadata.
 - Rev S extension tables (sparse v0, uniform `(name UNIQUE, body JSON)`
   shape): `put_extension`/`get_extension` over `requirements`, `model_cards`,
   `evidence`, `scenarios`, `constraints`, `capability_probes`, `imports`,
@@ -323,6 +337,12 @@ canonical-frame root and producer bounds remain distinct; and explicit
 trust/anchor/verifier/key-policy/no-claim fields obey one schema CHECK. Legacy,
 canonical, and semantic lookup indexes are non-unique by design. Update,
 delete, and same-receipt reinsertion are refused by attested triggers.
+Schema v14 adds `artifact_content_identities`, a one-to-one sidecar whose
+compatibility hash and typed content ID must be byte-identical, plus a named
+content-ID index and trigger-based dual-write. Its `INSERT OR IGNORE ... SELECT`
+backfill is idempotent, but marker advancement additionally requires a Rust
+full-content re-hash and complete mapping/orphan audit in the same migration
+transaction. No semantic schema or authority is inferred.
 
 - `tombstone` module (addendum Proposal E, bead lmp4.13): the TOMBSTONE
   LEDGER — swarm memory's cheap half. `Descriptor` (name + dimensioned
@@ -532,7 +552,11 @@ refusal, or verifier panic).
     Row presence and legacy lookup never select a semantic interpretation or
     confer authority; typed projection requires exact role and static schema
     agreement at the call site.
-16. The nightly writer publishes op + metric + benchmark event + terminal
+16. An artifact content-identity sidecar is valid only when its compatibility
+    hash and typed `ContentId` are the same exact 32 bytes, its row schema is
+    supported, and the retained artifact independently re-hashes to that
+    digest. Backfill and dual-write never infer a semantic identity or trust.
+17. The nightly writer publishes op + metric + benchmark event + terminal
     outcome in one explicit transaction. A write or commit failure is primary;
     rollback is always attempted, and a rollback failure is retained after the
     primary failure in a deterministic combined diagnostic. Cleanup failure
@@ -694,8 +718,11 @@ idempotency, nominal typed projection, wrong-schema refusal, bounded ambiguous
 legacy lookup with zero-cap existence probes, and payload cap+1 refusal before
 publication. Inline module regressions cover genuine-v12 migration, exact v13
 stale-marker healing, divergent early-object refusal, and migration-ladder
-placement. These code-first tests require the central batch-proof pass before
-their results may be cited as green evidence.
+placement. The same suite covers v14 trigger dual-write, typed content-ID
+projection, dedupe cardinality, genuine-v13 artifact backfill, exact preapplied
+stale-marker replay, independent source re-hash, and transactional rollback of
+objects, rows, and marker on corrupt input. These code-first tests require the
+central batch-proof pass before their results may be cited as green evidence.
 `tests/color_battery.rs` `col-018` freezes exact canonical-byte sentinels for
 positive/negative zero, infinite dispersion, infinite interval endpoints, a
 maximum-length identity, and validated/derived rows; it independently rehashes
@@ -904,12 +931,13 @@ The graph is the minting authority for `fs_evidence::AdmittedColor`:
   typed semantic receipt metadata, and the explicitly recorded authority
   state. It does not prove that the owner-defined semantic rule is scientifically
   correct, that legacy FNV named the supplied bytes, or that an admitted
-  authority is promotion authority. Generic historical artifact/evidence/op/
-  edge/cache/package rows are not auto-migrated or dual-written by this first
-  tranche; cross-surface database-wire-package parity, resumable fleet
-  backfill, concurrent old/new compatibility windows, cancellation/crash fault
-  injection, and rollback views remain required before the parent persistence
-  bead can close.
+  authority is promotion authority. Schema v14 migrates and dual-writes only
+  the exact raw content identity of artifact rows; it does not supply artifact
+  semantics. Historical evidence/op/edge/cache/package rows remain untouched;
+  cross-surface database-wire-package parity, resumable fleet backfill, a
+  declared multi-version compatibility window beyond already-open trigger
+  coverage, cancellation/crash fault injection, and rollback views remain
+  required before the parent persistence bead can close.
 - Safe std-only identity generation is implemented through `/dev/urandom` on
   Unix. Fresh identity creation on non-Unix targets is explicitly refused;
   existing v4+ ledgers remain readable when their persisted identity and

@@ -1361,12 +1361,13 @@ mod tests {
     }
 
     #[test]
-    fn migration_ladder_preserves_v12_before_the_v13_batch() {
+    fn migration_ladder_preserves_v12_and_v13_before_the_v14_batch() {
         assert_eq!(
             schema::MIGRATIONS.len(),
             usize::try_from(SCHEMA_VERSION).unwrap()
         );
         assert_eq!(schema::MIGRATIONS.get(11), Some(&schema::V12));
-        assert_eq!(schema::MIGRATIONS.last(), Some(&schema::V13));
+        assert_eq!(schema::MIGRATIONS.get(12), Some(&schema::V13));
+        assert_eq!(schema::MIGRATIONS.last(), Some(&schema::V14));
     }
 }
