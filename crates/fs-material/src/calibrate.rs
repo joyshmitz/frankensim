@@ -75,13 +75,23 @@ fn slope_se(pts: &[(f64, f64)], sse: f64, through_origin: bool) -> f64 {
 /// scanning every admissible breakpoint and keeping the least-SSE split.
 ///
 /// # Errors
-/// [`MaterialError::Calibration`] for fewer than 6 points or degenerate
-/// (non-increasing-strain) data.
+/// [`MaterialError::Calibration`] for fewer than 6 points, non-finite or
+/// non-increasing observations, non-finite fits, or segments whose yield
+/// intersection is unidentifiable.
 pub fn calibrate_bilinear(data: &[(f64, f64)]) -> Result<CalibrationFit, MaterialError> {
     if data.len() < 6 {
         return Err(MaterialError::Calibration {
             what: format!("need at least 6 points, got {}", data.len()),
         });
+    }
+    for (index, &(strain, stress)) in data.iter().enumerate() {
+        if !strain.is_finite() || !stress.is_finite() {
+            return Err(MaterialError::Calibration {
+                what: format!(
+                    "sample {index} must have finite strain and stress, got ({strain}, {stress})"
+                ),
+            });
+        }
     }
     if data.windows(2).any(|w| w[1].0 <= w[0].0) {
         return Err(MaterialError::Calibration {
@@ -93,21 +103,36 @@ pub fn calibrate_bilinear(data: &[(f64, f64)]) -> Result<CalibrationFit, Materia
         let (_, _, sse1) = fit_line(&data[..k], true);
         let (_, _, sse2) = fit_line(&data[k..], false);
         let total = sse1 + sse2;
-        if best.is_none_or(|(_, b)| total < b) {
+        if total.is_finite() && best.is_none_or(|(_, b)| total < b) {
             best = Some((k, total));
         }
     }
-    let (k, _) = best.expect("len >= 6 guarantees candidates");
+    let (k, _) = best.ok_or_else(|| MaterialError::Calibration {
+        what: "no finite bilinear fit candidate".to_string(),
+    })?;
     let seg1 = &data[..k];
     let seg2 = &data[k..];
     let (e, _, sse1) = fit_line(seg1, true);
     let (h, c, sse2) = fit_line(seg2, false);
     // Yield point: intersection of σ = E·ε with σ = h·ε + c.
-    let eps_y = c / (e - h);
+    let slope_gap = e - h;
+    if !e.is_finite()
+        || !h.is_finite()
+        || !c.is_finite()
+        || !sse1.is_finite()
+        || !sse2.is_finite()
+        || !slope_gap.is_finite()
+        || slope_gap == 0.0
+    {
+        return Err(MaterialError::Calibration {
+            what: "bilinear segments must have distinct finite slopes".to_string(),
+        });
+    }
+    let eps_y = c / slope_gap;
     let sigma_y = e * eps_y;
     let n = data.len() as f64;
     let rms = det::sqrt((sse1 + sse2) / n);
-    Ok(CalibrationFit {
+    let fit = CalibrationFit {
         youngs: e,
         youngs_se: slope_se(seg1, sse1, true),
         post_yield: h,
@@ -115,5 +140,21 @@ pub fn calibrate_bilinear(data: &[(f64, f64)]) -> Result<CalibrationFit, Materia
         yield_stress: sigma_y,
         rms_residual: rms,
         break_index: k,
-    })
+    };
+    if [
+        fit.youngs,
+        fit.youngs_se,
+        fit.post_yield,
+        fit.post_yield_se,
+        fit.yield_stress,
+        fit.rms_residual,
+    ]
+    .iter()
+    .any(|value| !value.is_finite())
+    {
+        return Err(MaterialError::Calibration {
+            what: "bilinear fit produced non-finite parameters".to_string(),
+        });
+    }
+    Ok(fit)
 }

@@ -431,9 +431,28 @@ fn mt_005_calibration_round_trip() {
     // Degenerate data refuses structurally.
     assert!(calibrate_bilinear(&data[..4]).is_err());
     assert!(calibrate_bilinear(&[(0.0, 0.0); 8]).is_err());
+    let exact_line: Vec<_> = (1..=8)
+        .map(|index| {
+            let strain = f64::from(index);
+            (strain, 2.0 * strain)
+        })
+        .collect();
+    let error = calibrate_bilinear(&exact_line)
+        .expect_err("equal segment slopes have no identifiable yield intersection");
+    assert!(
+        matches!(error, fs_material::MaterialError::Calibration { ref what } if what.contains("distinct finite slopes")),
+        "unexpected exact-line error: {error}"
+    );
+    let mut non_finite = data.clone();
+    non_finite[4].1 = f64::NAN;
+    let error = calibrate_bilinear(&non_finite).expect_err("non-finite observations must refuse");
+    assert!(
+        matches!(error, fs_material::MaterialError::Calibration { ref what } if what.contains("finite strain and stress")),
+        "unexpected non-finite error: {error}"
+    );
     verdict(
         "mt-005",
-        "bilinear calibration recovers (E, H, sigma_y) with truth in envelope",
+        "bilinear calibration recovers (E, H, sigma_y) and refuses degenerate fits",
     );
 }
 
