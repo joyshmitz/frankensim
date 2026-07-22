@@ -60,7 +60,10 @@ fn mq_001_end_to_end_objective_improves() {
     // Every iteration carries the full certificate.
     for rec in &report.iterations {
         assert!(rec.cert_dwr > 0.0, "the DWR component exists");
-        assert!(rec.cert_algebraic >= 0.0);
+        assert!(
+            rec.cert_algebraic.is_finite() && rec.cert_algebraic >= 0.0,
+            "the algebraic term comes from an admitted recomputed Euclidean residual"
+        );
         assert!(
             matches!(rec.color, fs_evidence::Color::Estimated { .. }),
             "the composed color is honest (DWR is estimated): {:?}",

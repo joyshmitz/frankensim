@@ -33,7 +33,9 @@ filesystem.
   compliance shape gradient `dJ/dr = −∮(∂u/∂n)²` — sign CAUGHT by the
   FD falsifier during development, the drill earning its keep — with an
   area-budget rescale projection), `IterRecord` (compliance, area,
-  gradient, the three certificate components, composed color, solver
+  gradient, the three certificate components, including an algebraic term
+  formed only from CutFEM's typed recomputed-Euclidean residual accessor,
+  composed color, solver
   iterations), `StudyReport.trace_hash` (the G5 replay witness).
 
 ## Invariants
@@ -57,7 +59,9 @@ fail-closed `Space::sample_scalar` (bead ay40): missing or non-finite
 active nodal evidence surfaces as `InvalidFemInput` instead of a
 plausible zero, and the only zero read without evidence is a
 certified-Outside classification, mapped explicitly to the homogeneous
-Dirichlet exterior value at the use site.
+Dirichlet exterior value at the use site. Marquee additionally refuses
+certificate composition if a future CutFEM solver returns anything other than
+a recomputed Euclidean residual.
 
 ## Determinism class
 
@@ -101,8 +105,10 @@ runner inputs are rejected before solver work starts.
   full-resolution nightly golden lane and both-ISA runs are the
   remaining P2 exit work, not claims here.
 - The composed certificate's headline color is ESTIMATED (DWR constants
-  and the CG-residual proxy are estimates; the refined-reference check
-  passes within a documented 4x effectivity band). Equilibrated 2-D
+  and the conversion from a recomputed Euclidean residual to a goal-error
+  contribution are estimates; the recurrence residual itself is never used.
+  The refined-reference check passes within a documented 4x effectivity band).
+  Equilibrated 2-D
   brackets would upgrade it to Verified — future work.
 - The FrankenScript-IR front end and the fs-report notebook are the
   gp3.10/fs-ir integration seams; the study exposes the runner they

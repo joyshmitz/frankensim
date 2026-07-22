@@ -7,7 +7,8 @@
 //! field — compliance is its own adjoint) → optimizer (projected
 //! gradient with an area-feasibility projection) → certificate (the
 //! COMPOSED per-iteration error ledger: exact geometry ⊗ DWR
-//! discretization estimate ⊗ algebraic residual, colored by the
+//! discretization estimate ⊗ recomputed Euclidean algebraic residual,
+//! colored by the
 //! weakest input) → replayable ledger events. The LEVEL-SET VARIANT
 //! the bead names: the design IS the zero set.
 //!
@@ -157,7 +158,8 @@ pub struct IterRecord {
     pub cert_geometry: f64,
     /// |DWR estimate| (discretization).
     pub cert_dwr: f64,
-    /// Algebraic residual bound proxy.
+    /// Estimated goal-error contribution derived from a recomputed Euclidean
+    /// algebraic residual (not CG's recursive residual estimate).
     pub cert_algebraic: f64,
     /// The composed color (weakest input).
     pub color: Color,
@@ -276,7 +278,13 @@ fn solve_and_grade(
         let circ = std::f64::consts::TAU * r / samples as f64;
         grads.push(-(acc * circ));
     }
-    let cert = [0.0, dwr.eta_abs, sol.rel_residual * j.abs().max(1.0)];
+    let euclidean_rel_residual =
+        sol.euclidean_rel_residual()
+            .ok_or_else(|| fs_cutfem::CutFemError::InvalidFemInput {
+                what: "marquee certificate requires a recomputed Euclidean solver residual"
+                    .to_string(),
+            })?;
+    let cert = [0.0, dwr.eta_abs, euclidean_rel_residual * j.abs().max(1.0)];
     Ok((j, grads, cert, sol.iters, nodal))
 }
 
@@ -307,7 +315,7 @@ pub fn run_study(
                 IntervalOp::Add,
             ),
             &Color::Estimated {
-                estimator: "cg-residual".to_string(),
+                estimator: "recomputed-euclidean-cg-residual".to_string(),
                 dispersion: cert[2],
             },
             IntervalOp::Add,
