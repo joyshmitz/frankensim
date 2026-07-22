@@ -151,6 +151,31 @@ workstream.
   `877790ab` during the lane without touching these owned files, so this is a
   passing dirty-worktree proof, not a same-HEAD receipt.
 
+### Post-checkpoint Level-A spherical-shell execution binding
+
+- Added a deterministic pole-free spherical-shell patch to `fs-conduction`.
+  The radial faces carry catalog-derived Dirichlet data; the conical and
+  azimuthal faces are adiabatic for the radial `1/r` solution, avoiding pole
+  and seam degeneracy while still exercising the 3-D conduction assembly.
+- Bound `thermal-a-sphere-shell` directly into the analytic solver battery.
+  The test checks second-order L2 refinement, a separate nodal envelope, and
+  heat-rate convergence after normalizing the patch by its analytic solid
+  angle. The focused remote probe observed a `3.962` L2 refinement ratio,
+  `0.005565 K` fine L2 error, `0.5942 K` fine nodal error, and `0.373%`
+  full-shell conductance error.
+- Raised aggregate Level-A execution coverage from 11/19 to 12/19. Seven gaps
+  remain: lumped transient conduction, radiation, contact resistance, P2
+  primal, combined anisotropic-nonlinear MMS, and the P1/P2 adjoint-order
+  ladders. This adds no retained comparison receipt or machine fingerprint;
+  registry authority remains `NoClaim`/`Estimated`.
+- Remote proof passed with
+  `RCH_REQUIRE_REMOTE=1 rch exec --no-self-healing -- env CARGO_TARGET_DIR="${RCH_TARGET_BASE:-${TMPDIR:-/tmp}}/rch_target_frankensim_test" cargo test -p fs-conduction --all-targets`:
+  40/40 tests (`2` adjoint, `8` analytic, `22` conformance, `8` MMS) on worker
+  `vmi1227854`, job `j-29943194691043361` (614.2 seconds total; 356.1 sync,
+  189.3 remote command, 2.1 artifact retrieval). Shared `main` advanced from
+  `22f2ab44` to `6a63d601` during the lane without touching these reserved
+  files, so this is passing dirty-worktree evidence, not a same-HEAD receipt.
+
 ### Post-checkpoint convection-correlation rung
 
 - Added `fs-convection`, an L3 library with 11 Nusselt relations spanning

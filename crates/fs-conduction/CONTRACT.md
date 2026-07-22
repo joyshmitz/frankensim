@@ -245,10 +245,10 @@ None. Everything here is `[S]` solid work on the default path.
   `fs_mms::OrderGate`, plus the declared `MmsMatrix` and a complete
   `fs-vvreg` Level-A target crosswalk whose gaps carry reasons.
 - `tests/analytic.rs` — slab (Dirichlet–Dirichlet), slab with a uniform source,
-  slab (Dirichlet–Robin), a rectangular affine patch, cylindrical shell, and
-  an adiabatic-tip straight fin, each with a declared envelope and a stated
-  reason for its size; a complete Level-A analytic crosswalk keeps unsupported
-  rows visible.
+  slab (Dirichlet–Robin), a rectangular affine patch, cylindrical shell,
+  spherical-shell patch, and an adiabatic-tip straight fin, each with a
+  declared envelope and a stated reason for its size; a complete Level-A
+  analytic crosswalk keeps unsupported rows visible.
 - `tests/adjoint.rs` — the linear IFT gradient against central differences
   through `fs_adjoint::verify_gradient`.
 
@@ -260,14 +260,14 @@ those batteries reproduces from its log line alone.
 ### Level-A registry binding is executable, not retained authority
 
 The analytic and MMS tests dev-depend on `fs-vvreg` and resolve canonical
-Level-A case rows at runtime. Six analytic cases use the catalog parameters and
-reference values directly: the two slab fluxes, uniform-source center rise,
-rectangular affine probe, cylindrical-shell conductance, and `mL=1` fin
-efficiency. Three P1 L2 ladders take their theoretical order and two-sided gate
-from the catalog: isotropic Dirichlet, mixed Neumann, and Robin. Both test files
-carry a complete crosswalk over their respective catalog partition, so adding,
-removing, or silently renaming a Level-A row fails the battery and every absent
-binding retains a reason.
+Level-A case rows at runtime. Seven analytic cases use the catalog parameters
+and reference values directly: the two slab fluxes, uniform-source center rise,
+rectangular affine probe, cylindrical- and spherical-shell conductances, and
+`mL=1` fin efficiency. Three P1 L2 ladders take their theoretical order and
+two-sided gate from the catalog: isotropic Dirichlet, mixed Neumann, and Robin.
+Both test files carry a complete crosswalk over their respective catalog
+partition, so adding, removing, or silently renaming a Level-A row fails the
+battery and every absent binding retains a reason.
 
 This is a **test-time execution binding**, not a corpus receipt. The catalog's
 `1e-12` analytic tolerance establishes reproduction of the closed-form
@@ -275,7 +275,9 @@ definition; it is not substituted for this solver's geometry, discretization,
 or model envelopes. The test verdicts label that distinction explicitly, and
 no ladder or machine fingerprint is persisted into `fs-vvreg`. Consequently
 the registry query remains numerical `NoClaim`, all Level-A physical caps
-remain `Estimated`, and the ten unbound rows are still reference/target-only.
+remain `Estimated`, and the nine rows not bound in this crate are still
+reference/target-only. Two of those nine Nusselt rows execute separately in
+`fs-convection`.
 
 ## No-claim boundaries
 
@@ -331,6 +333,11 @@ remain `Estimated`, and the ten unbound rows are still reference/target-only.
   the annulus is meshed as a polygon, so the solved surface sits a chord sagitta
   inside the true cylinder. Its L2 envelope (0.2% of the radial drop) is the
   discretization claim, and it is checked to shrink like `h²`.
+- The spherical case avoids coordinate singularities by solving a pole-free
+  patch with exactly adiabatic conical and azimuthal faces. Its heat rate is
+  normalized by the patch's analytic solid angle. The 1% conductance envelope
+  carries faceted-surface geometry error; the separate 0.1% L2 envelope is the
+  discretization claim and must shrink like `h²`.
 - The adjoint hook covers the LINEAR case only, and refuses a
   temperature-dependent material rather than silently linearizing. A verified
   gradient establishes consistency between the assembled `∂R/∂T`, the analytic

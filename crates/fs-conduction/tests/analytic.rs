@@ -9,6 +9,7 @@
 //! | slab with a uniform source | quadratic | nodally reproduced by P₁ on this mesh, so again round-off at the nodes; the `L2` envelope is the interpolation error |
 //! | slab, Dirichlet–Robin | linear in `x` | in the P₁ space; the envelope also pins the Robin heat rate against `k h ΔT/(k+h)` |
 //! | annulus, radial log profile | `ln r` | NOT in the P₁ space: a DISCRETIZATION envelope, checked to shrink like `h²` under refinement. Its CONDUCTANCE envelope is looser and geometry-dominated: the annulus is meshed as a polygon, so the solved surface sits a chord sagitta inside the true cylinder |
+//! | spherical shell, radial reciprocal profile | `1/r` | NOT in the P₁ space: a DISCRETIZATION envelope, checked to shrink like `h²` on a pole-free spherical patch. Its CONDUCTANCE envelope also carries the faceted-surface geometry error |
 //! | straight fin | 1-D fin equation | a MODEL comparison, not a discretization one: the envelope carries the fin model's own error, and the Biot number that bounds it is computed and printed |
 //!
 //! The fin row is the only one where "within envelope" includes a model
@@ -20,7 +21,10 @@ mod support;
 use fs_conduction::assemble::{assemble_operator, full_residual};
 use fs_conduction::bc::{ThermalBc, ThermalBoundary, ThermalBoundaryBuilder};
 use fs_conduction::field::ScalarField;
-use fs_conduction::fixtures::{annulus_sector, box_grid, cylindrical_radius, on_box_face};
+use fs_conduction::fixtures::{
+    annulus_sector, box_grid, cylindrical_radius, on_box_face, spherical_radius,
+    spherical_shell_patch,
+};
 use fs_conduction::material::ConductivityModel;
 use fs_conduction::mesh::ConductionMesh;
 use fs_conduction::solve::{
@@ -58,8 +62,8 @@ const LEVEL_A_ANALYTIC_BINDINGS: [(&str, Option<&str>, &str); 12] = [
     ),
     (
         "thermal-a-sphere-shell",
-        None,
-        "fs-conduction has no spherical-shell mesh fixture",
+        Some("tests/analytic.rs::spherical_shell_radial_profile"),
+        "a pole-free patch solve is normalized by its exact solid angle to the catalog full-shell conductance",
     ),
     (
         "thermal-a-fin-efficiency",
@@ -509,7 +513,7 @@ const R_IN: f64 = 0.05;
 const R_OUT: f64 = 0.1;
 const SWEEP: f64 = core::f64::consts::FRAC_PI_2;
 const HEIGHT: f64 = 1.0;
-const CYL_K: f64 = 15.0;
+const SHELL_K: f64 = 15.0;
 const T_IN: f64 = 400.0;
 const T_OUT: f64 = 300.0;
 
@@ -522,7 +526,7 @@ fn run_cylinder(refine: usize) -> (f64, f64, f64) {
     let counts = [4 * refine, 6 * refine, 2 * refine];
     let (complex, positions) = annulus_sector(counts, R_IN, R_OUT, SWEEP, HEIGHT);
     let mesh = ConductionMesh::new(complex, positions).expect("mesh");
-    let material = ConductivityModel::isotropic_declared(CYL_K).expect("material");
+    let material = ConductivityModel::isotropic_declared(SHELL_K).expect("material");
     let source = ScalarField::Uniform(0.0);
     // Classify by the VERTEX radii, not the face centroid: the mesh is a
     // faceted approximation of the cylinder, so a chord's midpoint sits
@@ -602,7 +606,7 @@ fn cylindrical_shell_radial_profile() {
     let drop = T_IN - T_OUT;
     let want_q = reference_conductance * drop * SWEEP / core::f64::consts::TAU;
     let formula_conductance =
-        core::f64::consts::TAU * CYL_K * HEIGHT / fs_math::det::ln(R_OUT / R_IN);
+        core::f64::consts::TAU * SHELL_K * HEIGHT / fs_math::det::ln(R_OUT / R_IN);
     assert!(
         (formula_conductance - reference_conductance).abs() <= 2.0e-14 * reference_conductance,
         "catalog conductance must reproduce from the solver fixture parameters"
@@ -658,6 +662,129 @@ fn cylindrical_shell_radial_profile() {
              G_reference={reference_conductance} Q_sector_fine={q_fine} \
              Q_sector_analytic={want_q} \
              rel={rel_fine:.5} envelopes=0.2%L2/1%nodal/0.5%Q(polygonal-boundary-dominated)"
+        ),
+    );
+}
+
+// ------------------------------------------------------ spherical shell
+
+const POLAR_MIN: f64 = core::f64::consts::FRAC_PI_4;
+const POLAR_MAX: f64 = 3.0 * core::f64::consts::FRAC_PI_4;
+
+fn sphere_exact(p: [f64; 3]) -> f64 {
+    let r = spherical_radius(p);
+    T_OUT + (T_IN - T_OUT) * (1.0 / r - 1.0 / R_OUT) / (1.0 / R_IN - 1.0 / R_OUT)
+}
+
+fn run_sphere(refine: usize) -> (f64, f64, f64) {
+    let counts = [4 * refine, 6 * refine, 6 * refine];
+    let (complex, positions) =
+        spherical_shell_patch(counts, R_IN, R_OUT, POLAR_MIN, POLAR_MAX, SWEEP);
+    let mesh = ConductionMesh::new(complex, positions).expect("mesh");
+    let material = ConductivityModel::isotropic_declared(SHELL_K).expect("material");
+    let source = ScalarField::Uniform(0.0);
+    let radii: Vec<f64> = mesh
+        .positions()
+        .iter()
+        .map(|&p| spherical_radius(p))
+        .collect();
+    let radii_in = radii.clone();
+    let radii_out = radii.clone();
+    let boundary = ThermalBoundaryBuilder::new(&mesh)
+        .region(
+            "inner",
+            |f| {
+                f.vertices
+                    .iter()
+                    .all(|&v| (radii_in[v as usize] - R_IN).abs() < 1e-9)
+            },
+            ThermalBc::dirichlet(T_IN).expect("bc"),
+        )
+        .expect("inner")
+        .region(
+            "outer",
+            |f| {
+                f.vertices
+                    .iter()
+                    .all(|&v| (radii_out[v as usize] - R_OUT).abs() < 1e-9)
+            },
+            ThermalBc::dirichlet(T_OUT).expect("bc"),
+        )
+        .expect("outer")
+        .adiabatic_remainder()
+        .finish()
+        .expect("boundary");
+    let solution = with_cx(|cx| {
+        solve(
+            cx,
+            ConductionProblem {
+                mesh: &mesh,
+                boundary: &boundary,
+                material: &material,
+                source: &source,
+            },
+            config(),
+        )
+        .expect("solve")
+    });
+    let l2 = l2_error(&mesh, &solution.temperature, &sphere_exact);
+    let nodal = max_nodal_error(&mesh, &solution.temperature, &sphere_exact);
+    let inflow = nodal_inflow(&mesh, &boundary, &material, &source, &solution);
+    let mut q_in = 0.0f64;
+    for (v, &r) in radii.iter().enumerate() {
+        if (r - R_IN).abs() < 1e-9 {
+            q_in += inflow[v];
+        }
+    }
+    (l2, nodal, q_in)
+}
+
+#[test]
+fn spherical_shell_radial_profile() {
+    let reference_conductance = level_a_reference("thermal-a-sphere-shell", "thermal-conductance");
+    let drop = T_IN - T_OUT;
+    let full_solid_angle = 4.0 * core::f64::consts::PI;
+    let patch_solid_angle = SWEEP * (fs_math::det::cos(POLAR_MIN) - fs_math::det::cos(POLAR_MAX));
+    let want_q = reference_conductance * drop * patch_solid_angle / full_solid_angle;
+    let formula_conductance = full_solid_angle * SHELL_K / (1.0 / R_IN - 1.0 / R_OUT);
+    assert!(
+        (formula_conductance - reference_conductance).abs() <= 2.0e-14 * reference_conductance,
+        "catalog conductance must reproduce from the spherical fixture parameters"
+    );
+    let (l2_coarse, _nodal_coarse, q_coarse) = run_sphere(1);
+    let (l2_fine, nodal_fine, q_fine) = run_sphere(2);
+    let ratio = l2_coarse / l2_fine;
+    assert!(
+        ratio > 3.2,
+        "spherical L2 error ratio {ratio:.3} under a 2x refinement is not second order ({l2_coarse:e} -> {l2_fine:e})"
+    );
+    assert!(
+        l2_fine / drop < 1.0e-3,
+        "fine-grid spherical L2 deviation {l2_fine:e} K is {:.5} of the {drop} K radial drop, above the declared 0.1% envelope",
+        l2_fine / drop
+    );
+    assert!(
+        nodal_fine / drop < 1.0e-2,
+        "fine-grid spherical nodal deviation {nodal_fine:e} K is above the declared 1% envelope"
+    );
+
+    let conductance_coarse = q_coarse / drop * full_solid_angle / patch_solid_angle;
+    let conductance_fine = q_fine / drop * full_solid_angle / patch_solid_angle;
+    let rel_coarse = (conductance_coarse - reference_conductance).abs() / reference_conductance;
+    let rel_fine = (conductance_fine - reference_conductance).abs() / reference_conductance;
+    assert!(
+        rel_fine < 1.0e-2,
+        "fine-grid full-sphere conductance {conductance_fine} deviates {rel_fine:.4} from the catalog reference {reference_conductance} (envelope 1%, including faceted-surface geometry); patch heat rate was {q_fine} W vs {want_q} W"
+    );
+    assert!(
+        rel_fine < rel_coarse,
+        "refinement must improve spherical conductance: {rel_coarse:.5} -> {rel_fine:.5}"
+    );
+    verdict(
+        "spherical-shell",
+        "thermal-a-sphere-shell",
+        &format!(
+            "l2_coarse={l2_coarse:e} l2_fine={l2_fine:e} ratio={ratio:.3} nodal_fine={nodal_fine:e} G_coarse={conductance_coarse} G_fine={conductance_fine} G_reference={reference_conductance} Q_patch_fine={q_fine} Q_patch_analytic={want_q} solid_angle={patch_solid_angle} rel_coarse={rel_coarse:.5} rel_fine={rel_fine:.5} envelopes=0.1%L2/1%nodal/1%Q(faceted-surface-dominated)"
         ),
     );
 }
@@ -792,7 +919,7 @@ fn level_a_analytic_binding_matrix_is_complete_and_gap_preserving() {
             .iter()
             .filter(|(_, test, _)| test.is_some())
             .count(),
-        6
+        7
     );
     for (id, test, basis) in LEVEL_A_ANALYTIC_BINDINGS {
         assert!(

@@ -6,8 +6,8 @@
 //! the index grid. Because the diagonals are chosen by index order (not
 //! geometry), the subdivision stays conforming under any injective,
 //! orientation-preserving mapping — which is how the same routine
-//! produces the unit cube, a rectangular fin, and a curved annular
-//! sector.
+//! produces the unit cube, a rectangular fin, a curved annular sector,
+//! and a pole-free spherical-shell patch.
 //!
 //! Generation is pure combinatorics plus the caller's mapping: no RNG,
 //! no floating-point branching, identical across runs. Trigonometry in
@@ -161,4 +161,58 @@ pub fn annulus_sector(
 #[must_use]
 pub fn cylindrical_radius(p: [f64; 3]) -> f64 {
     fs_math::det::sqrt(p[0].mul_add(p[0], p[1] * p[1]))
+}
+
+/// A pole-free spherical-shell patch with radius `r`, polar angle `phi`,
+/// and azimuth `theta` on an `nr × nphi × ntheta` Kuhn grid.
+///
+/// The radial faces carry the spherical-shell Dirichlet data. Constant-polar
+/// faces are conical and constant-azimuth faces are planar; both are exactly
+/// adiabatic for a radial solution. Excluding the poles keeps the coordinate
+/// map injective and every boundary face non-degenerate.
+///
+/// # Panics
+/// If any count is zero, the radii are not positive and ordered, the polar
+/// interval touches a pole or is not ordered, or the azimuth sweep is not in
+/// `(0, 2*pi)`.
+#[must_use]
+pub fn spherical_shell_patch(
+    counts: [usize; 3],
+    r_inner: f64,
+    r_outer: f64,
+    polar_min: f64,
+    polar_max: f64,
+    azimuth_sweep: f64,
+) -> (TetComplex, Vec<[f64; 3]>) {
+    assert!(
+        r_inner > 0.0
+            && r_outer > r_inner
+            && polar_min > 0.0
+            && polar_max > polar_min
+            && polar_max < core::f64::consts::PI
+            && azimuth_sweep > 0.0
+            && azimuth_sweep < core::f64::consts::TAU,
+        "spherical_shell_patch needs ordered radii, a pole-free polar interval, and a sweep strictly between 0 and 2*pi"
+    );
+    let [nr, nphi, ntheta] = counts;
+    let dr = (r_outer - r_inner) / nr as f64;
+    let dphi = (polar_max - polar_min) / nphi as f64;
+    let dtheta = azimuth_sweep / ntheta as f64;
+    structured_tets(counts, &|i, j, k| {
+        let r = r_inner + i as f64 * dr;
+        let phi = polar_min + j as f64 * dphi;
+        let theta = k as f64 * dtheta;
+        let sin_phi = fs_math::det::sin(phi);
+        [
+            r * sin_phi * fs_math::det::cos(theta),
+            r * sin_phi * fs_math::det::sin(theta),
+            r * fs_math::det::cos(phi),
+        ]
+    })
+}
+
+/// Euclidean radius — the classifier used by spherical-shell fixtures.
+#[must_use]
+pub fn spherical_radius(p: [f64; 3]) -> f64 {
+    fs_math::det::sqrt(p[0].mul_add(p[0], p[1].mul_add(p[1], p[2] * p[2])))
 }
