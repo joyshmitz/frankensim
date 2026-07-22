@@ -5,9 +5,11 @@ NeuroShapeCert — certified facts about a neural implicit shape. Layer L5
 
 ## Purpose and layer
 
-Composes `fs-rep-neural` (Lipschitz + IBP), `fs-viz` (isocontour + Hessian
-classification),
-`fs-evidence` (Verified). Deps point downward.
+Composes `fs-rep-neural` (Lipschitz + IBP + interval sign-margin safe step) and
+`fs-viz` (isocontour + Hessian classification). Deps point downward. The campaign
+no longer depends on `fs-evidence`: the only enclosed-component state it
+publishes is the typed `ComponentCountEvidence`, so there is no color left to
+mint here.
 
 ## Public types and semantics
 
@@ -16,7 +18,19 @@ classification),
 - `run_campaign(&MlpSdf, ring_r, inner) -> NeuroShapeReport` — certifies the
   Lipschitz bound, a no-tunnel sphere-trace radius, an interval topology
   certificate (inside box + a closed boundary frame), an origin-Hessian
-  curvature cross-check, and localizes the sampled zero set.
+  curvature cross-check, and localizes the sampled zero set. Panics on
+  inadmissible input.
+- `try_run_campaign(...) -> Result<NeuroShapeReport, CampaignError>` — the same
+  campaign with a structured, non-trapping refusal for untrusted boundaries:
+  a non-2-D network, or a non-finite / non-positive `ring_r` / negative `inner`.
+- `NeuroShapeReport::safe_step: SafeStepDerivation` — the replayable no-tunnel
+  step derivation from `fs_rep_neural::derive_safe_step`, carrying the origin
+  enclosure, the certified `magnitude_lower_bound` on `|f(0)|`, the Lipschitz
+  upper bound, the downward-rounded `radius`, and a `SafeStepStatus`.
+  `origin_value` remains alongside it as a nominal visualization value with no
+  certificate authority.
+- `NeuroShapeReport::field_identity` plus the activation/safe-step semantics
+  versions, names, and ULP budget — the arithmetic a replay must reproduce.
 - `CertifiedEnclosedComponentExists` — a private-field witness constructed only
   when the central box is interval-negative, all four strips of the closed frame
   are interval-positive, the intervals are finite and ordered, and the central
@@ -33,8 +47,16 @@ classification),
 
 ## Invariants
 
-- `safe_radius = |f|/L` under-estimates the distance to the NEAREST surface point
-  (sound sphere tracing — no tunneling).
+- SOUND SPHERE TRACING: `safe_step.radius()` under-estimates the distance to the
+  NEAREST surface point (no tunneling). Its authority is the INTERVAL sign margin
+  at the origin — `magnitude_lower_bound` is an endpoint of the degenerate IBP
+  enclosure `eval_interval([0,0], [0,0])`, hence a certified lower bound on
+  `|f(0)|` — divided by the certified Lipschitz upper bound `L` and rounded DOWN.
+  The nominal `origin_value` is NOT the certificate: `|origin_value|/L` is an
+  ordinary round-to-nearest forward pass whose own evaluation error is
+  unaccounted for, and it can exceed the true `|f(0)|/L`. An enclosure that does
+  not exclude zero yields `radius = 0` with a `SafeStepStatus` that says so; no
+  step is ever published without a certified sign margin.
 - TOPOLOGY: a certified-inside central box (`hi < 0`) enclosed by FOUR edge
   strips (`lo > 0`) that tile the box boundary into a CLOSED frame proves that
   the connected component meeting the central box exists and cannot cross the
@@ -44,9 +66,9 @@ classification),
   component count is at least one. This does not bound the whole negative set
   and does not exclude disconnected components either inside or outside the
   frame.
-- `component_enclosure_color` is `Verified` only when the typed witness exists;
-  the color describes the enclosure candidate and never an exact component
-  count. A too-small/open/invalid frame yields `Estimated` and typed `Unknown`.
+- `component_count_evidence` is `LowerBound(witness)` only when the typed
+  interval-frame witness exists, and it never carries an exact count. A
+  too-small/open/invalid frame yields typed `Unknown` with lower bound zero.
 - `boundary_frame_certified` says exactly that all four frame strips are
   certified positive. It replaces the ambiguous former field `bounded`.
 - A positive-definite finite-difference Hessian at the origin is curvature
@@ -57,6 +79,9 @@ classification),
 ## Error model
 
 Total on the demo net; `eval_interval`/`classify_hessian` are total.
+`try_run_campaign` returns a typed `CampaignError` for a wrong input dimension or
+a non-finite/out-of-range geometric parameter; `run_campaign` panics on the same
+inputs. Untrusted boundaries (the WASM export) must call the fallible form.
 
 ## Determinism class
 
@@ -76,11 +101,15 @@ None.
 
 ## Conformance tests
 
-`tests/neuroshape.rs` (4): G0 pins component-evidence schema version 1, typed
+`tests/neuroshape.rs` (5): G0 pins component-evidence schema version 1, typed
 lower-bound state, and the private witness payload for the certified frame,
-including explicit refusal to return an exact count; Lipschitz/safe-radius/
-enclosure checks; an open frame yields typed `Unknown`; G5 determinism includes
-the typed topology evidence.
+including explicit refusal to return an exact count; Lipschitz / interval
+sign-margin safe-step / enclosure checks, including that the published step
+derivation is the one derived from the origin enclosure and that the report's
+field identity is the net's; an open frame yields typed `Unknown`; admission
+refuses a non-2-D net and non-finite/out-of-range geometry; G5 determinism
+includes the field identity, the safe-step status/radius/margin bits, and the
+typed topology evidence.
 
 ## No-claim boundaries
 

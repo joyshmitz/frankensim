@@ -70,22 +70,45 @@ crates. Layer: **L6 HELM / interface surface**. The crate compiles as an
    conservative-check-exceedance/threshold-mismatch counts `[25..=31]`. The
    `0.02` offset admitted at local threshold `0.03` serializes the sound global
    certificate `0.04`; status remains independently explicit.
-9. NeuroShape preserves its 24-value header and field offsets while separating
-   enclosed-component existence from exact component counting. Its closed
-   interval boundary frame can certify only a component-count lower bound of
-   one. Header slot `[17]` is therefore always the JSON-safe `-1` exact-count
-   unknown sentinel in this tranche; `[20]` is `0` for unknown evidence or `1`
-   for a certified enclosed-component lower bound, and `[21]` carries that
-   lower bound. Reserved slot `[22]` now carries
-   `NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION = 1`; version-aware consumers
-   must refuse unsupported values before interpreting slots `[16]`, `[17]`,
-   `[20]`, or `[21]`. Slot `[23]` remains reserved zero. Legacy consumers that
-   ignored both reserved slots are not thereby made version-aware and must be
-   migrated explicitly. The positive-definite finite-difference Hessian at the
-   origin is curvature corroboration only; without a zero-gradient certificate
-   it is not a critical-point or minimum theorem. It and the sampled contour
-   crossings cannot promote these fields to an exact count.
-10. FlowCert is the `fs-flowcert-e2e` campaign, not a browser-local
+9. NeuroShape preserves the field offsets `[0..=21]` of its historical 24-value
+   header while separating enclosed-component existence from exact component
+   counting. Its closed interval boundary frame can certify only a
+   component-count lower bound of one. Header slot `[17]` is therefore always
+   the JSON-safe `-1` exact-count unknown sentinel in this tranche; `[20]` is
+   `0` for unknown evidence or `1` for a certified enclosed-component lower
+   bound, and `[21]` carries that lower bound. The positive-definite
+   finite-difference Hessian at the origin is curvature corroboration only;
+   without a zero-gradient certificate it is not a critical-point or minimum
+   theorem. It and the sampled contour crossings cannot promote these fields to
+   an exact count.
+10. NeuroShape wire version `NEUROSHAPE_SCHEMA_VERSION = 2` (header slot `[22]`,
+   header length 27) publishes a no-tunnel step whose authority is an INTERVAL
+   sign margin. Slot `[5]` is `fs_rep_neural::derive_safe_step`'s
+   downward-rounded `magnitude_lower_bound / L`, where the margin at `[23]` is
+   the inward endpoint of the degenerate IBP enclosure at the origin — a
+   certified lower bound on `|f(0)|` — and `[24]` is the derivation's typed
+   status (`1` sign-separated, `0` no finite sign margin, `2` malformed
+   enclosure, `3` invalid Lipschitz bound). `[5]` is `0` whenever `[24] != 1`.
+   The nominal forward pass stays at `[4]` as display data only: version `1`
+   published `|f(0)_nominal|/L` at `[5]` as a proven step, which overstated the
+   true `|f(0)|/L` because the forward pass's own evaluation error was
+   unaccounted for. Version `1` also carried
+   `NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION` in `[22]`; that value moved to
+   `[25]` and `[26]` is the remaining reserved zero, so a consumer that gated on
+   `[22] == 1` refuses this payload rather than re-reading `[5]` under the old
+   meaning. Version-aware consumers must refuse an unrecognized `[22]` before
+   interpreting any slot, and an unrecognized `[25]` before interpreting `[16]`,
+   `[17]`, `[20]`, or `[21]`. The export also runs the campaign through
+   `try_run_campaign`, so an inadmissible net or geometry serializes an empty
+   vector instead of trapping or publishing a partial header.
+11. FlutterCert slot `[8]` is the flag of `witness_decay_rate_color`, which names
+   exactly one quantity: the LARGEST eigenvalue real part of `A(witness_mu)`.
+   Its endpoints are `fs_flutter_e2e::spectral_abscissa_interval`'s
+   outward-rounded ones, not a round-to-nearest `−1 + √(μ−1)`, and they are not
+   an enclosure of the operator's spectrum — for `μ > 1` the second eigenvalue's
+   real part lies strictly below them. The endpoints are not serialized in this
+   layout, so the wire format is unchanged.
+12. FlowCert is the `fs-flowcert-e2e` campaign, not a browser-local
     transcription of it. `campaigns::flowcert` calls `run_campaign`, so every
     published headline — the MAP-Elites atlas statistics, `all_accurate`, and
     the `map_color_rank` in slot `[7]` — is the report's own, and each point's
@@ -161,10 +184,23 @@ threshold serializes typed refusals and cannot promote the headline.
 NeuroShape tests assert that the default closed-frame certificate serializes a
 lower bound of one but an unknown exact count, while an unenclosed case retains
 the same wire shape and claims neither an exact zero nor a positive lower
-bound. Both cases pin schema version 1 in slot `[22]` and retain zero in the
-remaining reserved slot `[23]`. A decoder-shaped conformance fixture accepts
-only the exact version-1 bit pattern and refuses legacy zero, future version 2,
-fractional, non-finite, and truncated headers before reading topology evidence.
+bound. Both cases pin payload schema version 2 in slot `[22]`, the
+component-evidence version in `[25]`, and zero in the remaining reserved slot
+`[26]`. A decoder-shaped conformance fixture accepts only the exact version-2
+bit pattern and refuses the legacy version-1 value, zero, future version 3,
+fractional, non-finite, and truncated headers before reading any evidence, and
+refuses an unrecognized component-evidence version in `[25]`. A safe-step test
+pins slots `[5]`/`[23]`/`[24]` bit-for-bit against the native campaign's
+`SafeStepDerivation` and requires the published step to be STRICTLY below the
+nominal `|origin_value|/L` that version 1 published, while still
+under-estimating the sampled nearest-surface radius; a companion case pins the
+`NoFiniteSignMargin` status of a zero-straddling field to the zero radius and
+the `0` wire code. A FlutterCert test drives the reaching input
+`fluttercert(1.2, 1.9, 8)` (whose witness has `μ > 1`, unlike the graceful
+default sweep) and pins slot `[8]` to a `witness_decay_rate_color` whose
+endpoints are `spectral_abscissa_interval`'s, strictly outward of the
+round-to-nearest abscissa, with the operator's second eigenvalue outside the
+claim.
 FlowCert tests pin the whole payload field-for-field against
 `fs_flowcert_e2e::run_campaign` (including that slot `[7]` is the rank of the
 report's own `credibility_color` and slot `[8]` the schema version), assert that
@@ -199,6 +235,12 @@ surface itself remains a build/smoke lane rather than a browser-E2E test suite.
   corroborating evidence only. No zero-gradient certificate is present, so the
   Hessian check does not establish a critical point or minimum, and the browser
   surface makes no exact component-count or full homeomorphism claim.
+- NeuroShape's safe step is a no-tunnel bound at the ORIGIN derived from that
+  point's enclosure and the global Lipschitz upper bound. It is not a Euclidean
+  distance to the zero set, not a bound at any other point, and slot `[6]`'s
+  sampled `nearest_surface_radius` is localization evidence, never the
+  certificate. The derivation is arithmetic conditional on its inputs: it
+  carries no field identity, issuer, or portable receipt on the wire.
 - The shared promotion gate gives native and browser code the same claim-strength
   rules, but cross-target endpoint bit identity remains unclaimed until a retained
   browser runner or WASM golden exists.

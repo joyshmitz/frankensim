@@ -23,8 +23,13 @@ diagnostics and upper bounds remain in-house.
   `input_dim`, `topology_hint`. The corresponding `try_eval`, `try_eval_grad`,
   and `try_eval_interval` entry points return a structured
   `InputDimensionError` instead of panicking at an untrusted boundary.
-- `safe_step_radius(value, lipschitz)` — `|value|/L`, the provably safe
-  sphere-tracing step.
+- `MlpSdf::identity()` — domain-separated BLAKE3 identity over the normalized
+  field bits, layer dimensions, Lipschitz bound, interval-policy version,
+  activation semantics/budget, and strict-math version/fingerprint.
+- `derive_safe_step(enclosure, lipschitz) -> SafeStepDerivation` — derive a
+  downward-rounded no-tunnel radius from an interval-certified sign margin,
+  with explicit status, inputs, and policy version. A nominal point value is
+  never accepted as certificate authority.
 - `TopologyHint::Unknown` — the only variant; topology is never inferred from
   the fit.
 
@@ -46,8 +51,16 @@ diagnostics and upper bounds remain in-house.
   everywhere. `eval_grad` is only a rounded central-finite-difference
   diagnostic: its coordinate secants use different line segments and it has no
   gradient-certificate authority.
-- A sphere-trace step of `safe_step_radius(f(x), L)` never tunnels: `f` cannot
-  change sign within that radius.
+- A sphere-trace step from `derive_safe_step(eval_interval(x,x), L)` never
+  tunnels: the inward interval endpoint is a lower bound on `|f(x)|`, and a
+  Lipschitz field cannot change sign within that bound divided by `L`. A
+  zero-straddling or malformed enclosure yields zero. For `L=0`, only a
+  sign-separated constant field yields infinite clearance; the zero field
+  yields zero.
+- Field identities bind `MLP_FIELD_IDENTITY_SCHEMA_VERSION=1`, ordered
+  normalized parameter bits, `MLP_ACTIVATION_SEMANTICS_VERSION`, the tanh ULP
+  budget, `INTERVAL_SEMANTICS_VERSION`, and fs-math's strict-core semantic
+  version plus retained golden fingerprint.
 - `topology_hint` is always `Unknown` (honest — never claimed from the loss).
 
 ## Error model
@@ -86,7 +99,9 @@ endpoint replay; exact point-evaluator binding to the interval certifier's
 deterministic `tanh`; short, long, and empty vectors across point, gradient, and
 both interval endpoints with exact structured diagnostics; deterministic
 finite-difference diagnostics with an explicitly non-authoritative generic
-bound; a certified sphere-trace step never tunnels; topology honestly unknown;
+bound; interval sign-margin step derivation across zero, malformed, zero-L,
+overflow, underflow, one-sided-infinite, scaling, and deterministic-replay
+cases; normalized-field identity mutations; topology honestly unknown;
 determinism.
 
 ## No-claim boundaries

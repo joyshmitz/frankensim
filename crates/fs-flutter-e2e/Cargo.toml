@@ -11,12 +11,17 @@ description = "FlutterCert: locate the flutter / added-mass instability boundary
 layer = "L4"
 
 [dependencies]
+fs-ivl = { path = "../fs-ivl" }
 fs-sos = { path = "../fs-sos" }
 fs-spectral = { path = "../fs-spectral" }
 fs-couple = { path = "../fs-couple" }
 fs-evidence = { path = "../fs-evidence" }
 
 [dev-dependencies]
+# The precision ladder's oracle rung: conformance checks compare the published
+# outward-rounded endpoints against a ~106-bit reference, never against another
+# round-to-nearest f64 evaluation of the same formula.
+fs-math = { path = "../fs-math" }
 
 [lints]
 workspace = true

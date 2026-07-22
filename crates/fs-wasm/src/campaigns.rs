@@ -40,7 +40,7 @@ use fs_fab::min_feature_size;
 use fs_grammar_e2e::{SimplificationSummary, assess_simplification};
 use fs_lbm::{Lbm, plan_scaling, poiseuille_analytic};
 use fs_neuroshape_e2e::{ComponentCountEvidence, NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION};
-use fs_rep_neural::{Layer, MlpSdf};
+use fs_rep_neural::{Layer, MlpSdf, SafeStepStatus};
 use fs_schedule_e2e::{ScheduleDisposition, Study};
 use fs_shapeprog::max_sdf_discrepancy;
 use fs_sparse::{Coo, Csr};
@@ -276,7 +276,13 @@ pub fn metamatcert(n: usize, points: usize, rmax: f64) -> Vec<f64> {
 /// - `[6]` — `aitken_beats_naive` (0/1).
 /// - `[7]` — `witness_mu` (`NaN` if none) — a μ where the proof holds, naive
 ///   fails, Aitken succeeds.
-/// - `[8]` — `witness_verified` (0/1).
+/// - `[8]` — `witness_decay_rate_verified` (0/1): the witness carries a
+///   `Verified` enclosure of ONE named quantity — the LARGEST eigenvalue real
+///   part of `A(witness_mu)`, the asymptotic decay rate — whose endpoints are
+///   `fs_flutter_e2e::spectral_abscissa_interval`'s outward-rounded ones. It is
+///   NOT an enclosure of the operator's spectrum: for `μ > 1` the second
+///   eigenvalue's real part `−1 − √(μ−1)` lies strictly below it. The endpoints
+///   themselves are not serialized in this layout.
 /// - then `S` blocks of 5: `[mu, lyapunov_stable, spectral_abscissa,
 ///   naive_converged, aitken_converged]`, where `spectral_abscissa` is the
 ///   largest real part of `A(μ)`'s actual eigenvalues (the independent
@@ -298,7 +304,10 @@ pub fn fluttercert(lo: f64, hi: f64, steps: usize) -> Vec<f64> {
     out.push(if report.aitken_beats_naive { 1.0 } else { 0.0 });
     out.push(report.witness_mu.map_or(f64::NAN, fon));
     out.push(
-        if matches!(report.witness_color, Some(Color::Verified { .. })) {
+        if matches!(
+            report.witness_decay_rate_color,
+            Some(Color::Verified { .. })
+        ) {
             1.0
         } else {
             0.0
@@ -1122,6 +1131,44 @@ const COMPONENT_COUNT_UNKNOWN: f64 = -1.0;
 const COMPONENT_EVIDENCE_UNKNOWN: f64 = 0.0;
 const COMPONENT_EVIDENCE_CERTIFIED_LOWER_BOUND: f64 = 1.0;
 
+/// Wire schema version of the whole NeuroShape payload, in header slot `[22]`.
+/// A consumer must refuse an unrecognized value there before reading any other
+/// slot.
+///
+/// Version `1` carried `NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION = 1` in
+/// that slot and published slot `[5]` as `safe_radius = |f(0)|/L`, where `f(0)`
+/// was an ordinary round-to-nearest forward pass: an ESTIMATED quantity
+/// published as a proven no-tunnel step, since the forward pass's own evaluation
+/// error was unaccounted for and the quotient could exceed the true `|f(0)|/L`.
+/// Version `2` keeps every version-1 field at its position and republishes `[5]`
+/// as the downward-rounded radius of `fs_rep_neural::derive_safe_step`, whose
+/// authority is the certified sign margin of the degenerate IBP enclosure at the
+/// origin. It adds that margin at `[23]`, the derivation's typed status at
+/// `[24]`, and moves the component-evidence semantics version to `[25]`, leaving
+/// `[26]` reserved. A version-1 consumer that gated on `[22] == 1` therefore
+/// refuses this payload instead of reading the new `[5]` under the old meaning.
+pub const NEUROSHAPE_SCHEMA_VERSION: u32 = 2;
+
+/// Length of the NeuroShape header preceding the SDF field.
+const NEUROSHAPE_HEADER_LEN: usize = 27;
+
+// Wire codes for `fs_rep_neural::SafeStepStatus` in slot `[24]`. `0` is the
+// no-claim code, matching `COMPONENT_EVIDENCE_UNKNOWN`'s convention.
+const SAFE_STEP_NO_FINITE_SIGN_MARGIN: f64 = 0.0;
+const SAFE_STEP_SIGN_SEPARATED: f64 = 1.0;
+const SAFE_STEP_INVALID_ENCLOSURE: f64 = 2.0;
+const SAFE_STEP_INVALID_LIPSCHITZ: f64 = 3.0;
+
+/// Wire code for a safe-step derivation status.
+fn safe_step_status_code(status: SafeStepStatus) -> f64 {
+    match status {
+        SafeStepStatus::SignSeparated => SAFE_STEP_SIGN_SEPARATED,
+        SafeStepStatus::NoFiniteSignMargin => SAFE_STEP_NO_FINITE_SIGN_MARGIN,
+        SafeStepStatus::InvalidEnclosure => SAFE_STEP_INVALID_ENCLOSURE,
+        SafeStepStatus::InvalidLipschitz => SAFE_STEP_INVALID_LIPSCHITZ,
+    }
+}
+
 /// Build the tunable blob SDF network. `MlpSdf::new` spectral-normalizes every
 /// layer to `√18`, so `L = 18`; the output bias `lift` raises the field
 /// (default 6.5 reproduces `blob_sdf_net()`).
@@ -1140,8 +1187,11 @@ fn neuro_net(lift: f64) -> MlpSdf {
 }
 
 /// **NeuroShapeCert**: certified facts about a neural implicit shape. A small spectral-
-/// normalized `tanh`-MLP SDF ([`fs_rep_neural`]) with certified Lipschitz
-/// constant `L = 18` gives a no-tunnel sphere-trace step `|f|/L`; sound
+/// normalized `tanh`-MLP SDF ([`fs_rep_neural`]) with certified Lipschitz upper
+/// bound `L = 18` gives a no-tunnel sphere-trace step: the degenerate IBP
+/// enclosure at the origin supplies a CERTIFIED lower bound on `|f(0)|` (an
+/// interval sign margin, not the nominal forward pass), and dividing it by `L`
+/// with the quotient rounded DOWN cannot overstate the clearance; sound
 /// Interval Bound Propagation proves a central box strictly inside (`hi < 0`)
 /// and the four boundary strips of a bounding box each strictly outside
 /// (`lo > 0`); tiled together (corners overlap) they wall off the interior into
@@ -1160,13 +1210,20 @@ fn neuro_net(lift: f64) -> MlpSdf {
 /// — boundary-frame half-width (clamped `1.0..=4.0`, default 2.5); `inner` —
 /// central box half-width (clamped `0.05..=1.0`, default 0.3).
 ///
-/// Output layout (length `24 + 4096`):
+/// Output layout, schema version [`NEUROSHAPE_SCHEMA_VERSION`] (length
+/// `27 + 4096`; empty on an admission refusal):
 /// - `[0]` — `grid_n` (64).
 /// - `[1]`,`[2]` — `win_lo`, `win_hi` (the render window `[win_lo, win_hi]²`,
 ///   `win_lo = -(ring_r+0.5)`).
-/// - `[3]` — `L` (certified Lipschitz constant, 18).
-/// - `[4]` — `origin_value`.
-/// - `[5]` — `safe_radius` (no-tunnel step `|f|/L`).
+/// - `[3]` — `L` (certified Lipschitz upper bound, 18).
+/// - `[4]` — `origin_value` — the NOMINAL round-to-nearest forward pass at the
+///   origin, for display only. It is not the safe step's certificate and
+///   `|origin_value|/L` must not be used as one.
+/// - `[5]` — `safe_step_radius`: the downward-rounded no-tunnel sphere-trace
+///   step, `magnitude_lower_bound / L` from `fs_rep_neural::derive_safe_step`.
+///   Exactly `0` whenever `[24] != 1`, i.e. whenever no certified sign margin
+///   was established; `NaN` in the (unreachable here, `L = 18`) case of an
+///   infinite clearance.
 /// - `[6]` — `nearest_surface_radius` (`NaN` if no crossings).
 /// - `[7]` — `max_crossing_radius`.
 /// - `[8]`,`[9]` — `inside_lo`, `inside_hi` (IBP enclosure over the central
@@ -1187,10 +1244,19 @@ fn neuro_net(lift: f64) -> MlpSdf {
 /// - `[20]` — `component_evidence_status` (`0` = unknown, `1` = certified
 ///   enclosed-component lower bound).
 /// - `[21]` — `component_count_lower_bound` (0 or 1).
-/// - `[22]` — `component_evidence_schema_version` (currently `1`; consumers
-///   must refuse unsupported versions before interpreting `[16]`, `[17]`,
-///   `[20]`, or `[21]`).
-/// - `[23]` — reserved (0).
+/// - `[22]` — `payload_schema_version` ([`NEUROSHAPE_SCHEMA_VERSION`],
+///   currently `2`; consumers must refuse unsupported versions before
+///   interpreting any other slot).
+/// - `[23]` — `safe_step_magnitude_lower_bound`: the CERTIFIED lower bound on
+///   `|f(0)|` taken from the inward endpoint of the origin enclosure, `0` when
+///   the enclosure does not exclude zero.
+/// - `[24]` — `safe_step_status` (`1` = sign-separated, the only code under
+///   which `[5]` is a certified step; `0` = no finite sign margin;
+///   `2` = malformed enclosure; `3` = invalid Lipschitz bound).
+/// - `[25]` — `component_evidence_schema_version`
+///   (`NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION`, currently `1`) — the
+///   topology-semantics version gating `[16]`, `[17]`, `[20]`, and `[21]`.
+/// - `[26]` — reserved (0).
 /// - then `64·64` SDF field row-major (`j` outer / y, `i` inner / x) over the
 ///   render window.
 pub fn neuroshape(lift: f64, ring_r: f64, inner: f64) -> Vec<f64> {
@@ -1200,7 +1266,11 @@ pub fn neuroshape(lift: f64, ring_r: f64, inner: f64) -> Vec<f64> {
     let grid_n = 64usize;
 
     let net = neuro_net(lift);
-    let report = fs_neuroshape_e2e::run_campaign(&net, ring_r, inner);
+    // The fallible admission path: a browser call must never trap, and a
+    // refusal must not be serialized as a campaign that ran.
+    let Ok(report) = fs_neuroshape_e2e::try_run_campaign(&net, ring_r, inner) else {
+        return Vec::new();
+    };
     let (component_evidence_status, component_count_lower_bound, enclosed_component_verified) =
         match &report.component_count_evidence {
             ComponentCountEvidence::LowerBound(_) => (
@@ -1224,13 +1294,16 @@ pub fn neuroshape(lift: f64, ring_r: f64, inner: f64) -> Vec<f64> {
         return Vec::new();
     };
 
-    let mut out = Vec::with_capacity(24 + grid_n * grid_n);
+    let mut out = Vec::with_capacity(NEUROSHAPE_HEADER_LEN + grid_n * grid_n);
     out.push(grid_n as f64);
     out.push(win_lo);
     out.push(win_hi);
     out.push(fon(report.lipschitz));
     out.push(fon(report.origin_value));
-    out.push(fon(report.safe_radius));
+    // `derive_safe_step` already fails closed to a zero radius for every status
+    // other than `SignSeparated`, so `fon` only folds the infinite-clearance
+    // case (`L = 0`, unreachable through this fixed net) to NaN.
+    out.push(fon(report.safe_step.radius()));
     out.push(fon(report.nearest_surface_radius));
     out.push(fon(report.max_crossing_radius));
     out.push(fon(report.inside_interval.0));
@@ -1256,6 +1329,9 @@ pub fn neuroshape(lift: f64, ring_r: f64, inner: f64) -> Vec<f64> {
     out.extend_from_slice(&[
         component_evidence_status,
         component_count_lower_bound,
+        f64::from(NEUROSHAPE_SCHEMA_VERSION),
+        fon(report.safe_step.magnitude_lower_bound()),
+        safe_step_status_code(report.safe_step.status()),
         f64::from(NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION),
         0.0,
     ]);
@@ -1801,14 +1877,19 @@ mod tests {
     use super::*;
     use fs_grammar_e2e::SimplificationCheckStatus;
 
-    fn require_supported_neuroshape_component_evidence_schema(
-        encoded: &[f64],
-    ) -> Result<(), &'static str> {
-        if encoded.len() < 24 {
-            return Err("NeuroShape payload is shorter than its 24-value header");
+    /// A decoder-shaped reader: refuse an unrecognized payload version before
+    /// reading any slot, exactly as a browser consumer must.
+    fn require_supported_neuroshape_schema(encoded: &[f64]) -> Result<(), &'static str> {
+        if encoded.len() < NEUROSHAPE_HEADER_LEN {
+            return Err("NeuroShape payload is shorter than its 27-value header");
         }
         let version = encoded[22];
-        if version.to_bits() != f64::from(NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION).to_bits() {
+        if version.to_bits() != f64::from(NEUROSHAPE_SCHEMA_VERSION).to_bits() {
+            return Err("unsupported NeuroShape payload schema");
+        }
+        if encoded[25].to_bits()
+            != f64::from(NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION).to_bits()
+        {
             return Err("unsupported NeuroShape component-evidence schema");
         }
         Ok(())
@@ -1849,6 +1930,38 @@ mod tests {
         assert_eq!(v[3], 1.0, "boundaries_agree");
         assert!((v[1] - v[2]).abs() < 1e-9, "lyapunov ~ spectral");
         assert!(v[1] > 1.7 && v[1] < 2.05, "lyapunov_boundary {}", v[1]);
+    }
+
+    /// Regression for bead `frankensim-extreal-program-f85xj.2.34` at the WASM
+    /// boundary. Slot `[8]` is the flag of a color that now names ONE quantity —
+    /// the largest eigenvalue real part at `witness_mu` — and whose endpoints
+    /// come from an outward-rounded interval evaluation, not from the
+    /// round-to-nearest `spectral_abscissa`. The bead's reaching input is
+    /// `fluttercert(1.2, 1.9, 8)`, whose witness has `μ > 1` (the default sweep
+    /// is the graceful fixture).
+    #[test]
+    fn fluttercert_witness_flag_tracks_the_named_outward_rounded_decay_rate() {
+        let v = fluttercert(1.2, 1.9, 8);
+        let native = fs_flutter_e2e::run_campaign(1.2, 1.9, 8);
+        let mu = native.witness_mu.expect("the bead's repro has a witness");
+        assert_eq!(v[7].to_bits(), mu.to_bits(), "witness_mu");
+        assert!(mu > 1.0, "the reaching input must be on the real branch");
+
+        let Some(Color::Verified { lo, hi }) = native.witness_decay_rate_color else {
+            panic!("expected a Verified decay-rate enclosure");
+        };
+        assert_eq!(v[8], 1.0, "witness_decay_rate_verified");
+        let enclosure = fs_flutter_e2e::spectral_abscissa_interval(mu);
+        assert_eq!(lo.to_bits(), enclosure.lo().to_bits());
+        assert_eq!(hi.to_bits(), enclosure.hi().to_bits());
+        // The endpoints are outward of the nearest-rounded diagnostic, and the
+        // second eigenvalue is deliberately outside the named claim.
+        let nearest = fs_flutter_e2e::spectral_abscissa(mu);
+        assert!(lo < nearest && nearest < hi, "[{lo}, {hi}] vs {nearest}");
+        assert!(
+            -1.0 - (mu - 1.0).sqrt() < lo,
+            "second eigenvalue inside claim"
+        );
     }
 
     #[test]
@@ -1972,10 +2085,7 @@ mod tests {
     #[test]
     fn neuroshape_defaults() {
         let v = neuroshape(6.5, 2.5, 0.3);
-        assert_eq!(
-            require_supported_neuroshape_component_evidence_schema(&v),
-            Ok(())
-        );
+        assert_eq!(require_supported_neuroshape_schema(&v), Ok(()));
         assert_eq!(v[0], 64.0, "grid_n");
         assert!((v[3] - 18.0).abs() < 1e-6, "L {}", v[3]);
         assert_eq!(v[13], 1.0, "boundary_frame_certified");
@@ -1986,30 +2096,129 @@ mod tests {
         assert_eq!(v[21], 1.0, "component-count lower bound");
         assert_eq!(
             v[22],
+            f64::from(NEUROSHAPE_SCHEMA_VERSION),
+            "payload schema version"
+        );
+        assert_eq!(
+            v[25],
             f64::from(NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION),
             "component-evidence schema version"
         );
-        assert_eq!(v[23], 0.0, "reserved header slot");
-        assert_eq!(v.len(), 24 + 64 * 64, "total length");
+        assert_eq!(v[26], 0.0, "reserved header slot");
+        assert_eq!(v.len(), NEUROSHAPE_HEADER_LEN + 64 * 64, "total length");
+    }
+
+    /// Regression for bead `frankensim-extreal-program-f85xj.2.39`.
+    ///
+    /// Slot `[5]` used to be `next_down(|origin_value| / L)` — a nominal
+    /// round-to-nearest forward pass divided by `L`, published as a proven
+    /// no-tunnel step. It must now be the campaign's interval-derived
+    /// derivation, bit for bit, and it must be STRICTLY below the old nominal
+    /// quotient for this net (the nominal magnitude overstates the certified
+    /// sign margin by 35 ulps here).
+    #[test]
+    fn neuroshape_safe_step_is_the_interval_sign_margin_not_the_nominal_quotient() {
+        let v = neuroshape(6.5, 2.5, 0.3);
+        assert_eq!(require_supported_neuroshape_schema(&v), Ok(()));
+        let net = neuro_net(6.5);
+        let native = fs_neuroshape_e2e::run_campaign(&net, 2.5, 0.3);
+
+        assert_eq!(native.safe_step.status(), SafeStepStatus::SignSeparated);
+        assert_eq!(v[24], SAFE_STEP_SIGN_SEPARATED, "safe-step status code");
+        assert_eq!(
+            v[23].to_bits(),
+            native.safe_step.magnitude_lower_bound().to_bits(),
+            "published margin is the campaign's certified |f(0)| lower bound"
+        );
+        assert_eq!(
+            v[5].to_bits(),
+            native.safe_step.radius().to_bits(),
+            "published step is the campaign's downward-rounded radius"
+        );
+        assert_eq!(v[4].to_bits(), native.origin_value.to_bits());
+
+        // The certified margin can only be tighter than the nominal magnitude,
+        // and the published step can only be shorter than the nominal quotient.
+        let origin_enclosure = net.eval_interval(&[0.0, 0.0], &[0.0, 0.0]);
+        assert_eq!(native.safe_step.enclosure(), origin_enclosure);
+        assert!(
+            v[23] < v[4].abs(),
+            "certified margin {} must be below the nominal magnitude {}",
+            v[23],
+            v[4].abs()
+        );
+        let nominal_quotient = v[4].abs() / v[3];
+        assert!(
+            v[5] < nominal_quotient,
+            "published step {} must be below the nominal |f|/L {nominal_quotient}",
+            v[5]
+        );
+        // ... and it still under-estimates the sampled distance to the surface.
+        assert!(
+            v[5] > 0.0 && v[5] < v[6],
+            "step {} vs nearest {}",
+            v[5],
+            v[6]
+        );
+    }
+
+    /// A refused campaign serializes nothing, and the payload never trades a
+    /// certified step for a nominal one when the sign margin is missing.
+    #[test]
+    fn neuroshape_publishes_zero_when_no_certified_sign_margin_exists() {
+        // A degenerate zero field: the origin enclosure straddles zero, so no
+        // sign margin exists even though the nominal value is exactly 0.0.
+        let flat = MlpSdf::new(
+            vec![
+                Layer::new(vec![vec![0.0, 0.0]], vec![0.0]),
+                Layer::new(vec![vec![0.0]], vec![0.0]),
+            ],
+            1.0,
+        );
+        let report = fs_neuroshape_e2e::run_campaign(&flat, 2.5, 0.3);
+        assert_eq!(
+            report.safe_step.status(),
+            SafeStepStatus::NoFiniteSignMargin
+        );
+        assert_eq!(report.safe_step.radius(), 0.0);
+        assert_eq!(safe_step_status_code(report.safe_step.status()), 0.0);
+        assert_eq!(
+            safe_step_status_code(SafeStepStatus::InvalidEnclosure),
+            SAFE_STEP_INVALID_ENCLOSURE
+        );
+        assert_eq!(
+            safe_step_status_code(SafeStepStatus::InvalidLipschitz),
+            SAFE_STEP_INVALID_LIPSCHITZ
+        );
     }
 
     #[test]
     fn neuroshape_schema_reader_refuses_legacy_future_nonfinite_and_truncated_headers() {
         let current = neuroshape(6.5, 2.5, 0.3);
 
-        for unsupported in [0.0, 2.0, 1.5, f64::NAN, f64::INFINITY] {
+        // `1.0` is the version-1 payload, whose `[5]` meant `|f_nominal|/L`: a
+        // v1-shaped consumer must be forced to migrate, not silently re-read.
+        for unsupported in [0.0, 1.0, 3.0, 1.5, f64::NAN, f64::INFINITY] {
             let mut mutated = current.clone();
             mutated[22] = unsupported;
             assert!(
-                require_supported_neuroshape_component_evidence_schema(&mutated).is_err(),
+                require_supported_neuroshape_schema(&mutated).is_err(),
                 "accepted unsupported schema bits 0x{:016x}",
                 unsupported.to_bits()
             );
         }
-        for truncated_len in [0, 21, 22, 23] {
+        for unsupported in [0.0, 2.0, 1.5, f64::NAN] {
+            let mut mutated = current.clone();
+            mutated[25] = unsupported;
             assert!(
-                require_supported_neuroshape_component_evidence_schema(&current[..truncated_len])
-                    .is_err(),
+                require_supported_neuroshape_schema(&mutated).is_err(),
+                "accepted unsupported component-evidence schema bits 0x{:016x}",
+                unsupported.to_bits()
+            );
+        }
+        for truncated_len in [0, 21, 22, 23, 24, 25, 26] {
+            assert!(
+                require_supported_neuroshape_schema(&current[..truncated_len]).is_err(),
                 "accepted truncated header length {truncated_len}"
             );
         }
@@ -2018,21 +2227,31 @@ mod tests {
     #[test]
     fn neuroshape_unenclosed_case_does_not_claim_exact_zero_components() {
         let v = neuroshape(12.0, 2.5, 0.3);
-        assert_eq!(
-            require_supported_neuroshape_component_evidence_schema(&v),
-            Ok(())
-        );
+        assert_eq!(require_supported_neuroshape_schema(&v), Ok(()));
         assert_eq!(v[16], 0.0, "no enclosed-component certificate");
         assert_eq!(v[17], -1.0, "exact component count remains unknown");
         assert_eq!(v[20], 0.0, "component evidence is unknown");
         assert_eq!(v[21], 0.0, "only the trivial lower bound is available");
         assert_eq!(
             v[22],
-            f64::from(NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION),
+            f64::from(NEUROSHAPE_SCHEMA_VERSION),
             "schema version applies independently of evidence status"
         );
-        assert_eq!(v[23], 0.0, "reserved header slot");
-        assert_eq!(v.len(), 24 + 64 * 64, "wire length remains stable");
+        assert_eq!(
+            v[25],
+            f64::from(NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION),
+            "component-evidence schema version"
+        );
+        assert_eq!(v[26], 0.0, "reserved header slot");
+        assert_eq!(
+            v.len(),
+            NEUROSHAPE_HEADER_LEN + 64 * 64,
+            "wire length remains stable"
+        );
+        // The field is positive at the origin here: the sign margin is still
+        // certified, so a step is still published — just from the other side.
+        assert_eq!(v[24], SAFE_STEP_SIGN_SEPARATED);
+        assert!(v[23] > 0.0 && v[5] > 0.0);
     }
 
     #[test]

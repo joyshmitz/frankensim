@@ -12,9 +12,10 @@
 //! - **The field** ([`fs_rep_neural`]): a small `tanh`-MLP SDF whose
 //!   spectral-normalized effective form is `≈ 2.12·Σ tanh(3(±coord − 0.7)) + 6.5`
 //!   — provably negative near the origin, provably positive on a surrounding ring.
-//! - **A certified Lipschitz constant** — `L = Π σᵢ` (product of spectral norms).
-//!   Then `safe_step_radius(f, L) = |f|/L` is a certified sphere-trace step that
-//!   CANNOT tunnel through the surface.
+//! - **A certified Lipschitz constant** — `L = Π Uᵢ` (product of outward
+//!   spectral-norm upper bounds). A degenerate IBP enclosure at the origin
+//!   supplies a certified lower sign margin; dividing it downward by `L`
+//!   yields a sphere-trace step that CANNOT tunnel through the surface.
 //! - **A topology certificate by interval arithmetic** — the network's sound
 //!   Interval Bound Propagation (`eval_interval`) proves a central box is
 //!   strictly inside (`hi < 0`) and that the FOUR edge strips of a bounding box
@@ -31,14 +32,16 @@
 //!   finite-difference Hessian. Without a certified zero gradient this is not a
 //!   critical-point or minimum theorem, and never a component-count proof.
 //!   `isocontour_crossings` separately localizes the sampled zero set.
-//! - **Honest colors** ([`fs_evidence`]): the enclosure candidate is `Verified`
-//!   only when the typed closed-frame witness exists.
-//!
-//! Deterministic; no dependencies beyond the composed crates.
+//! Same-build bit-deterministic replay; retained cross-ISA evidence is required
+//! before attaching a portable G5 receipt.
 
-use fs_evidence::Color;
-use fs_rep_neural::{Layer, MlpSdf, safe_step_radius};
+use fs_rep_neural::{
+    Layer, MLP_ACTIVATION_SEMANTICS, MLP_ACTIVATION_SEMANTICS_VERSION, MLP_ACTIVATION_ULP_BUDGET,
+    MlpSdf, NeuralFieldIdentity, SAFE_STEP_POLICY, SAFE_STEP_POLICY_VERSION, SafeStepDerivation,
+    derive_safe_step,
+};
 use fs_viz::{CriticalKind, Grid2, Vec2, classify_hessian};
+use std::fmt;
 
 /// Version of the public component-evidence semantics carried by
 /// [`NeuroShapeReport`].
@@ -48,6 +51,62 @@ use fs_viz::{CriticalKind, Grid2, Vec2, classify_hessian};
 /// serializing these fields must carry this value so consumers can refuse
 /// layouts whose topology semantics they do not understand.
 pub const NEUROSHAPE_COMPONENT_EVIDENCE_SCHEMA_VERSION: u32 = 1;
+
+/// Public campaign input named by a structured admission refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CampaignParameter {
+    /// Outer half-width used by the frame and visualization grid.
+    RingRadius,
+    /// Half-width of the central interval-negative square.
+    InnerHalfWidth,
+}
+
+impl fmt::Display for CampaignParameter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::RingRadius => "ring_r",
+            Self::InnerHalfWidth => "inner",
+        })
+    }
+}
+
+/// Structured campaign admission refusal for untrusted callers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CampaignError {
+    /// NeuroShapeCert is currently a two-dimensional theorem/campaign.
+    InputDimension {
+        /// Input dimension the campaign requires (always `2` in this tranche).
+        expected: usize,
+        /// Input dimension the supplied network actually declares.
+        actual: usize,
+    },
+    /// A geometric parameter was NaN or infinite.
+    NonFiniteParameter(CampaignParameter),
+    /// `ring_r` was non-positive or `inner` was negative.
+    OutOfRangeParameter(CampaignParameter),
+}
+
+impl fmt::Display for CampaignError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InputDimension { expected, actual } => write!(
+                formatter,
+                "NeuroShape input dimension mismatch: expected {expected}, got {actual}"
+            ),
+            Self::NonFiniteParameter(parameter) => {
+                write!(formatter, "NeuroShape parameter {parameter} must be finite")
+            }
+            Self::OutOfRangeParameter(CampaignParameter::RingRadius) => {
+                formatter.write_str("NeuroShape parameter ring_r must be positive")
+            }
+            Self::OutOfRangeParameter(CampaignParameter::InnerHalfWidth) => {
+                formatter.write_str("NeuroShape parameter inner must be non-negative")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CampaignError {}
 
 /// The blob SDF network. `MlpSdf::new` spectral-normalizes every layer to
 /// exactly `bound`, so with `bound = √18` the effective hidden slope is
@@ -203,12 +262,24 @@ impl ComponentCountEvidence {
 /// The campaign report.
 #[derive(Debug, Clone)]
 pub struct NeuroShapeReport {
+    /// Content identity of the normalized MLP and certificate arithmetic.
+    pub field_identity: NeuralFieldIdentity,
+    /// Governed hidden-activation semantic version.
+    pub activation_semantics_version: u32,
+    /// Governed hidden-activation semantic name.
+    pub activation_semantics: &'static str,
+    /// ULP budget used by the interval activation enclosure.
+    pub activation_ulp_budget: u64,
+    /// Safe-step derivation semantic version.
+    pub safe_step_policy_version: u32,
+    /// Safe-step derivation semantic name.
+    pub safe_step_policy: &'static str,
     /// The certified global Lipschitz constant `L`.
     pub lipschitz: f64,
-    /// The field value at the origin.
+    /// Nominal field value at the origin, retained for visualization only.
     pub origin_value: f64,
-    /// A certified no-tunnel sphere-trace step at the origin (`|f|/L`).
-    pub safe_radius: f64,
+    /// Interval-derived sign margin and downward-rounded no-tunnel step.
+    pub safe_step: SafeStepDerivation,
     /// IBP enclosure of `f` over the central box.
     pub inside_interval: (f64, f64),
     /// Is the central box certified strictly inside (`hi < 0`)?
@@ -242,10 +313,6 @@ pub struct NeuroShapeReport {
     /// point; the safe step radius must under-estimate it (no-tunnel soundness).
     /// A valid empty result is `+inf`; rejected localization evidence is `NaN`.
     pub nearest_surface_radius: f64,
-    /// Color of the enclosed-component candidate. `Verified` means the typed
-    /// interval-frame witness exists; it does not upgrade the component-count
-    /// lower bound into an exact count.
-    pub component_enclosure_color: Color,
 }
 
 fn radius(p: Vec2) -> f64 {
@@ -255,11 +322,51 @@ fn radius(p: Vec2) -> f64 {
 /// Run the NeuroShapeCert campaign on `net` with a bounding box of half-width
 /// `ring_r` (its four edge strips form the closed barrier) and a central
 /// certified-inside box of half-width `inner`.
+///
+/// # Panics
+///
+/// Panics on invalid campaign inputs. Use [`try_run_campaign`] at untrusted
+/// boundaries that need a structured non-trapping refusal.
 #[must_use]
 pub fn run_campaign(net: &MlpSdf, ring_r: f64, inner: f64) -> NeuroShapeReport {
+    try_run_campaign(net, ring_r, inner).unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// Fallible NeuroShape campaign admission and execution.
+pub fn try_run_campaign(
+    net: &MlpSdf,
+    ring_r: f64,
+    inner: f64,
+) -> Result<NeuroShapeReport, CampaignError> {
+    if net.input_dim() != 2 {
+        return Err(CampaignError::InputDimension {
+            expected: 2,
+            actual: net.input_dim(),
+        });
+    }
+    for (parameter, value) in [
+        (CampaignParameter::RingRadius, ring_r),
+        (CampaignParameter::InnerHalfWidth, inner),
+    ] {
+        if !value.is_finite() {
+            return Err(CampaignError::NonFiniteParameter(parameter));
+        }
+    }
+    if ring_r <= 0.0 {
+        return Err(CampaignError::OutOfRangeParameter(
+            CampaignParameter::RingRadius,
+        ));
+    }
+    if inner < 0.0 {
+        return Err(CampaignError::OutOfRangeParameter(
+            CampaignParameter::InnerHalfWidth,
+        ));
+    }
+
     let lipschitz = net.lipschitz();
     let origin_value = net.eval(&[0.0, 0.0]);
-    let safe_radius = safe_step_radius(origin_value, lipschitz);
+    let origin_interval = net.eval_interval(&[0.0, 0.0], &[0.0, 0.0]);
+    let safe_step = derive_safe_step(origin_interval, lipschitz);
 
     // Interval topology certificate.
     let inside_interval = net.eval_interval(&[-inner, -inner], &[inner, inner]);
@@ -339,30 +446,16 @@ pub fn run_campaign(net: &MlpSdf, ring_r: f64, inner: f64) -> NeuroShapeReport {
             (0, f64::NAN, f64::NAN)
         };
 
-    // The enclosure candidate is Verified iff the constructor-sealed interval-
-    // frame witness exists. Its theorem is only "an enclosed component exists"; the
-    // global component count remains [1, unknown]. The certified containment is
-    // the frame's INNER edge `ring_r − w` (max-norm).
-    let component_enclosure_color = if matches!(
-        &component_count_evidence,
-        ComponentCountEvidence::LowerBound(_)
-    ) {
-        // declared-color-ok: demo topology candidate from the local containment frame; admitted only at a consumer's authority boundary (6pf9)
-        Color::Verified {
-            lo: 0.0,
-            hi: ring_r - w,
-        }
-    } else {
-        Color::Estimated {
-            estimator: "ibp-open".to_string(),
-            dispersion: f64::INFINITY,
-        }
-    };
-
-    NeuroShapeReport {
+    Ok(NeuroShapeReport {
+        field_identity: net.identity(),
+        activation_semantics_version: MLP_ACTIVATION_SEMANTICS_VERSION,
+        activation_semantics: MLP_ACTIVATION_SEMANTICS,
+        activation_ulp_budget: MLP_ACTIVATION_ULP_BUDGET,
+        safe_step_policy_version: SAFE_STEP_POLICY_VERSION,
+        safe_step_policy: SAFE_STEP_POLICY,
         lipschitz,
         origin_value,
-        safe_radius,
+        safe_step,
         inside_interval,
         certified_inside,
         boundary_certified,
@@ -373,6 +466,5 @@ pub fn run_campaign(net: &MlpSdf, ring_r: f64, inner: f64) -> NeuroShapeReport {
         surface_crossings,
         max_crossing_radius,
         nearest_surface_radius,
-        component_enclosure_color,
-    }
+    })
 }

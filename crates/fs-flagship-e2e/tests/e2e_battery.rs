@@ -637,7 +637,12 @@ fn ornith_wrapper_agrees_with_core(
 /// library surface: a convention that exists only in a test cannot be
 /// driven by anyone else, which is exactly why the original case could
 /// claim a cross-flagship audit while invoking neither flagship.
+///
+/// (One test = four coupled claims over one fixture set; the length is
+/// the claim inventory and its measured evidence, not incidental
+/// complexity — same rationale as fe2e-007.)
 #[test]
+#[allow(clippy::too_many_lines)]
 fn fe2e_006_erace_cross_consumer_audit() {
     // (1) Same-process replay determinism of the core.
     let base = [0.0f64, 0.4, 0.9, 1.3, 0.2, 1.1];

@@ -8,8 +8,9 @@
 //! regardless of training. That is what keeps a neural shape inside the
 //! certificate regime:
 //!
-//! - sphere tracing with PROVABLE step safety — a step of `|f(x)|/L` can never
-//!   tunnel through the surface ([`safe_step_radius`]);
+//! - sphere tracing with PROVABLE step safety — an interval-certified lower
+//!   sign margin divided downward by `L` cannot tunnel through the surface
+//!   ([`derive_safe_step`]);
 //! - INTERVAL evaluation via layer-wise bound propagation (IBP) — a guaranteed
 //!   output enclosure over an input box ([`MlpSdf::eval_interval`]);
 //! - the gradient is bounded by `L` (`‖∇f‖ ≤ L`).
@@ -20,6 +21,8 @@
 //! outward-rounded arithmetic and elementary-function budgets come from
 //! [`fs_ivl`], while spectral diagnostics and upper bounds remain in-house.
 
+pub use fs_blake3::ContentHash as NeuralFieldIdentity;
+use fs_blake3::DomainHasher;
 use fs_ivl::Interval;
 use fs_math::det;
 use std::fmt;
@@ -29,6 +32,90 @@ use std::fmt;
 pub const MLP_ACTIVATION_SEMANTICS_VERSION: u32 = 1;
 /// Stable name of the governed hidden-activation arithmetic.
 pub const MLP_ACTIVATION_SEMANTICS: &str = "fs-rep-neural-det-tanh-v1";
+/// ULP budget used to enclose the governed hidden activation.
+pub const MLP_ACTIVATION_ULP_BUDGET: u64 = det::TANH_ULP_BUDGET;
+/// Semantic version of the canonical normalized-MLP content identity.
+pub const MLP_FIELD_IDENTITY_SCHEMA_VERSION: u32 = 1;
+const MLP_FIELD_IDENTITY_DOMAIN: &str = "frankensim.mlp-sdf.identity.v1";
+
+/// Semantic version of the interval-sign-margin safe-step derivation.
+pub const SAFE_STEP_POLICY_VERSION: u32 = 1;
+/// Stable name of the safe-step derivation policy.
+pub const SAFE_STEP_POLICY: &str = "fs-rep-neural-interval-sign-margin-v1";
+
+/// Outcome of deriving a no-tunnel radius from a certified point enclosure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SafeStepStatus {
+    /// The enclosure excludes zero and supplies a finite positive sign margin.
+    SignSeparated,
+    /// Zero is not excluded, or neither inward endpoint supplies a finite
+    /// positive margin.
+    NoFiniteSignMargin,
+    /// The enclosure is NaN-bearing or inverted.
+    InvalidEnclosure,
+    /// The purported Lipschitz upper bound is negative or non-finite.
+    InvalidLipschitz,
+}
+
+/// Replayable arithmetic derivation of a no-tunnel radius.
+///
+/// This record proves the division/sign-margin arithmetic conditional on the
+/// supplied enclosure and Lipschitz value. Portable authority must additionally
+/// bind those inputs to a field identity, interval implementation, budget, and
+/// issuer receipt.
+#[derive(Debug, Clone, Copy)]
+pub struct SafeStepDerivation {
+    enclosure: (f64, f64),
+    magnitude_lower_bound: f64,
+    lipschitz_upper_bound: f64,
+    radius: f64,
+    status: SafeStepStatus,
+}
+
+impl SafeStepDerivation {
+    /// Point enclosure from which the sign margin was derived.
+    #[must_use]
+    pub const fn enclosure(&self) -> (f64, f64) {
+        self.enclosure
+    }
+
+    /// Certified lower bound on `|f(x)|`; zero means no positive margin was
+    /// established.
+    #[must_use]
+    pub const fn magnitude_lower_bound(&self) -> f64 {
+        self.magnitude_lower_bound
+    }
+
+    /// Lipschitz upper bound supplied to the derivation.
+    #[must_use]
+    pub const fn lipschitz_upper_bound(&self) -> f64 {
+        self.lipschitz_upper_bound
+    }
+
+    /// Downward-rounded no-tunnel radius.
+    #[must_use]
+    pub const fn radius(&self) -> f64 {
+        self.radius
+    }
+
+    /// Admission/refusal state for this derivation.
+    #[must_use]
+    pub const fn status(&self) -> SafeStepStatus {
+        self.status
+    }
+
+    /// Safe-step policy version needed to replay this derivation.
+    #[must_use]
+    pub const fn policy_version(&self) -> u32 {
+        SAFE_STEP_POLICY_VERSION
+    }
+
+    /// Stable name of the derivation policy.
+    #[must_use]
+    pub const fn policy(&self) -> &'static str {
+        SAFE_STEP_POLICY
+    }
+}
 
 /// Public evaluation surface on which an input-dimension mismatch occurred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -317,6 +404,55 @@ impl MlpSdf {
         self.layers[0].in_dim()
     }
 
+    /// Content identity of the normalized field and the arithmetic semantics
+    /// needed to evaluate and enclose it.
+    ///
+    /// The canonical preimage binds ordered layer dimensions, every normalized
+    /// weight/bias bit pattern, the Lipschitz bound, activation policy and ULP
+    /// budget, fs-ivl's enclosure policy version, and fs-math's strict-core
+    /// semantic version plus retained golden fingerprint.
+    #[must_use]
+    pub fn identity(&self) -> NeuralFieldIdentity {
+        fn update_u32(hasher: &mut DomainHasher, value: u32) {
+            hasher.update(&value.to_le_bytes());
+        }
+        fn update_u64(hasher: &mut DomainHasher, value: u64) {
+            hasher.update(&value.to_le_bytes());
+        }
+        fn update_len(hasher: &mut DomainHasher, value: usize) {
+            let canonical = u64::try_from(value)
+                .unwrap_or_else(|_| panic!("MLP identity length exceeds canonical u64 range"));
+            update_u64(hasher, canonical);
+        }
+
+        let mut hasher = DomainHasher::new(MLP_FIELD_IDENTITY_DOMAIN);
+        update_u32(&mut hasher, MLP_FIELD_IDENTITY_SCHEMA_VERSION);
+        update_u32(&mut hasher, MLP_ACTIVATION_SEMANTICS_VERSION);
+        update_u64(&mut hasher, MLP_ACTIVATION_ULP_BUDGET);
+        update_u32(&mut hasher, fs_ivl::INTERVAL_SEMANTICS_VERSION);
+        update_u32(&mut hasher, fs_math::STRICT_CORE_SEMANTICS_VERSION);
+        update_u64(&mut hasher, fs_math::STRICT_CORE_GOLDEN_HASH);
+        update_len(&mut hasher, MLP_ACTIVATION_SEMANTICS.len());
+        hasher.update(MLP_ACTIVATION_SEMANTICS.as_bytes());
+        update_len(&mut hasher, self.input_dim());
+        update_len(&mut hasher, self.layers.len());
+        for layer in &self.layers {
+            update_len(&mut hasher, layer.weights.len());
+            update_len(&mut hasher, layer.in_dim());
+            for row in &layer.weights {
+                for weight in row {
+                    update_u64(&mut hasher, weight.to_bits());
+                }
+            }
+            update_len(&mut hasher, layer.bias.len());
+            for bias in &layer.bias {
+                update_u64(&mut hasher, bias.to_bits());
+            }
+        }
+        update_u64(&mut hasher, self.lipschitz.to_bits());
+        hasher.finalize()
+    }
+
     /// The topology hint — honestly `Unknown` (never inferred from the fit).
     #[must_use]
     pub fn topology_hint(&self) -> TopologyHint {
@@ -465,20 +601,67 @@ impl MlpSdf {
     }
 }
 
-/// The provably-safe sphere-tracing step radius: with SDF value `value` and
-/// Lipschitz constant `lipschitz`, `f` cannot change sign within `|value|/L`, so
-/// a step of that size never tunnels through the surface. The returned finite
-/// quotient is rounded DOWN; a nearest-rounded quotient can exceed the exact
-/// safe radius by one ulp. Invalid inputs fail closed to a zero step.
+/// Derive a provably safe sphere-tracing radius from a sound point enclosure
+/// and a certified Lipschitz upper bound.
+///
+/// For `[lo, hi]`, the magnitude lower bound is `lo` when `lo > 0`, `-hi` when
+/// `hi < 0`, and zero otherwise. A semi-infinite enclosure is useful when its
+/// inward sign-separating endpoint is finite. The quotient is rounded down;
+/// malformed enclosures and invalid Lipschitz bounds fail closed to zero. When
+/// `L = 0`, a sign-separated constant field has infinite clearance, while an
+/// enclosure that does not exclude zero has zero clearance.
 #[must_use]
-pub fn safe_step_radius(value: f64, lipschitz: f64) -> f64 {
-    if !value.is_finite() || !lipschitz.is_finite() || lipschitz < 0.0 {
-        return 0.0;
+pub fn derive_safe_step(enclosure: (f64, f64), lipschitz: f64) -> SafeStepDerivation {
+    let (lo, hi) = enclosure;
+    if lo.is_nan() || hi.is_nan() || lo > hi {
+        return SafeStepDerivation {
+            enclosure,
+            magnitude_lower_bound: 0.0,
+            lipschitz_upper_bound: lipschitz,
+            radius: 0.0,
+            status: SafeStepStatus::InvalidEnclosure,
+        };
     }
-    if lipschitz == 0.0 {
-        return f64::INFINITY;
+
+    if !lipschitz.is_finite() || lipschitz < 0.0 {
+        return SafeStepDerivation {
+            enclosure,
+            magnitude_lower_bound: 0.0,
+            lipschitz_upper_bound: lipschitz,
+            radius: 0.0,
+            status: SafeStepStatus::InvalidLipschitz,
+        };
     }
-    next_down_nonnegative(value.abs() / lipschitz)
+
+    let magnitude_lower_bound = if lo.is_finite() && lo > 0.0 {
+        lo
+    } else if hi.is_finite() && hi < 0.0 {
+        -hi
+    } else {
+        0.0
+    };
+    if magnitude_lower_bound == 0.0 {
+        return SafeStepDerivation {
+            enclosure,
+            magnitude_lower_bound,
+            lipschitz_upper_bound: lipschitz,
+            radius: 0.0,
+            status: SafeStepStatus::NoFiniteSignMargin,
+        };
+    }
+
+    let radius = if lipschitz == 0.0 {
+        f64::INFINITY
+    } else {
+        next_down_nonnegative(magnitude_lower_bound / lipschitz)
+    };
+    SafeStepDerivation {
+        enclosure,
+        magnitude_lower_bound,
+        lipschitz_upper_bound: lipschitz,
+        radius,
+        status: SafeStepStatus::SignSeparated,
+    }
 }
 
 // -- linear-algebra helpers -------------------------------------------------

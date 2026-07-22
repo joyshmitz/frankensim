@@ -11,6 +11,7 @@ description = "Neural implicit charts (fs-rep-neural): small coordinate MLPs as 
 layer = "L2"
 
 [dependencies]
+fs-blake3 = { path = "../fs-blake3" }
 fs-ivl = { path = "../fs-ivl" }
 fs-math = { path = "../fs-math" }
 
