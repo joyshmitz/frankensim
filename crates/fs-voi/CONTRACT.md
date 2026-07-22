@@ -5,8 +5,10 @@ information to acquire next — spend where it can CHANGE A DECISION.
 
 ## Purpose and layer
 
-Layer L4 (decision/optimization). No dependencies — Gaussian decision algebra
-with an in-house normal CDF (`erf`). Pure, deterministic.
+Layer L4 (decision/optimization). The Gaussian decision algebra uses an
+in-house normal CDF (`erf`); the requirement-resolution adapter depends on the
+lower-layer `fs-evidence` verdict and action-taxonomy types. Pure,
+deterministic.
 
 ## Public types and semantics
 
@@ -16,24 +18,27 @@ with an in-house normal CDF (`erf`). Pure, deterministic.
   estimate (minimizing).
 - `ranking_flip_probability(chosen, other)` — `P(other actually better)` (Φ).
 - `decision_posture(&[DesignEstimate])` — best, runner-up, flip probability.
-- `evpi(&[DesignEstimate])` — expected opportunity loss of the current top-two
-  decision (0 when robust; positive when close).
-- `evpi_by(len, mean_at, std_at)` — the allocation-free accessor-driven
-  form of `evpi` (bead sj31i.62): the SAME top-two scan and pairwise
-  opportunity-loss computation through one shared code path, so results
-  are bitwise-identical to `evpi` over the equivalent slice. Non-finite
-  means are skipped and equal-mean ties break toward the LOWER index;
-  callers own their index order (a canonically ordered menu gets
-  canonical tie-breaking with no clone and no sort). `std_at` is
-  consulted only for the final top-two pair. `EVPI_SEMANTICS_VERSION`
-  is NOT bumped by this addition: the scan and arithmetic are shared
-  with, and bit-identical to, the existing `evpi`.
+- `expected_opportunity_loss(&[DesignEstimate])` — full-menu estimated
+  opportunity loss used for the global robustness gate.
+- `top_two_evpi_surrogate` + `top_two_evpi_surrogate_by` — closed-form top-two
+  action-ranking surrogate and its allocation-free accessor form. Non-finite
+  means are skipped and equal-mean ties break toward the lower index; this
+  surrogate must not make a full-menu robustness claim.
 - `ActionKind` (Surrogate / Simulate / Refine → numerical; Sample → statistical;
   Test → model) + `Action { name, kind, target_design, reduction, cost }`.
 - `action_value(&[DesignEstimate], &Action) -> ActionValue` — the EVPI reduction
   per cost; ~0 for a decision-irrelevant target. A zero-cost action with
   positive decision value has infinite value-per-cost; negative or non-finite
   costs are not recommended.
+- `UnknownResolutionCandidate` +
+  `recommend_unknown_resolutions(&ComplianceVerdict, &[…])` — binds supplied
+  `ActionValue` records to the exact engineering source they can resolve and
+  ranks them independently for every `FlippingUnknown`. The output retains the
+  source, named gap, required flip magnitude, and either the highest
+  decision-value-per-cost action or an explicit `RecommendedEvidence::Unpriced`
+  fallback carrying the lower-layer taxonomy suggestion. Ineligible action
+  values are ignored; deterministic ties prefer lower cost and then the
+  lexicographically smaller action id.
 - `recommend(&[…], &[Action], stop_threshold) -> Recommendation` — the best
   decision-value-per-cost action, or STOP when EVPI ≤ threshold.
 - `heuristic_choice(&[…], &[Action])` — the uncertainty-proportional baseline
@@ -51,6 +56,10 @@ with an in-house normal CDF (`erf`). Pure, deterministic.
 - Non-finite means are excluded from top-two boundary selection so malformed
   estimates cannot displace finite decisions; if fewer than two finite means
   remain, no decision boundary is reported.
+- Requirement recommendations exist only for verdict-flipping unknowns. A
+  binary verdict produces no acquisition actions, candidates for unrelated
+  sources cannot cross-attach, and absence of a positive comparable cost model
+  stays visibly unpriced.
 
 ## Error model
 
@@ -75,7 +84,7 @@ None.
 
 ## Conformance tests
 
-`tests/voi.rs` (20 cases): ranking-flip probability vs separation; full
+`tests/voi.rs` (23 cases): ranking-flip probability vs separation; full
 opportunity loss zero when robust / positive when close + posture; the
 high-variance third-alternative falsifier (surrogate ~0, full material, no
 robust STOP); two-design full-vs-closed-form agreement to quadrature
@@ -88,6 +97,10 @@ of magnitude; subnormal menus; information on a decision-irrelevant design is
 worthless; STOP for a robust decision; VOI beats the uncertainty-proportional
 baseline; model-fidelity escalation; zero-cost per-cost ranking; invalid-cost
 refusals; non-finite mean exclusion; determinism; semantics-version lock.
+The requirement seam additionally covers a named contact-resistance unknown
+selecting the better-priced sensor campaign, unrelated-source exclusion,
+unpriced fallback, the empty recommendation set for a binary verdict, and the
+lower-cost/action-id tie law.
 
 ## No-claim boundaries
 
@@ -107,5 +120,11 @@ refusals; non-finite mean exclusion; determinism; semantics-version lock.
 - Action cost models are SUPPLIED (fs-plan-models); this crate arbitrates value
   per cost. Sequential-decision validity (fs-eproc) and the HELM planner
   consuming the rankings are downstream integrations.
+- `recommend_unknown_resolutions` does not derive a compliance-decision value
+  from the flip magnitude. Its `ActionValue` inputs must already come from a
+  decision model appropriate to the requirement and candidate action. It
+  performs deterministic arbitration only; it neither certifies the supplied
+  values/costs nor claims that the winner is physically sufficient to resolve
+  the unknown. Missing comparable models remain `Unpriced`.
 - `reduction` is the fractional uncertainty cut an action achieves; calibrating
   it from real action outcomes is later work.

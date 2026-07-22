@@ -2279,6 +2279,10 @@ dependencies = [
 [[package]]
 name = "fs-voi"
 version = "0.0.1"
+dependencies = [
+ "fs-blake3",
+ "fs-evidence",
+]
 
 [[package]]
 name = "fs-vpm"

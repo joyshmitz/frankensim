@@ -24,9 +24,12 @@
 //!   robust (the STOP gate is the FULL evaluator, never the surrogate);
 //! - [`heuristic_choice`] — the uncertainty-proportional baseline VOI must beat
 //!   ([M] discipline).
+//! - [`recommend_unknown_resolutions`] — attach cost-aware information actions
+//!   to the exact unknowns that keep an `fs-evidence` requirement verdict
+//!   indeterminate, while preserving an explicit unpriced fallback.
 //!
-//! Deterministic; no dependencies (Gaussian decision algebra with an in-house
-//! normal CDF).
+//! Deterministic; the decision algebra uses an in-house normal CDF and the
+//! requirement adapter depends only on the lower-layer `fs-evidence` types.
 
 /// Semantic version of the decision algebra. Bump this whenever a change can
 /// alter opportunity-loss result bits, best/runner-up selection, uncertainty
@@ -429,6 +432,156 @@ pub struct ActionValue {
     pub cost: f64,
     /// Decision value per unit cost.
     pub value_per_cost: f64,
+}
+
+/// One costed information action explicitly scoped to one verdict-flipping
+/// engineering uncertainty source.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnknownResolutionCandidate {
+    unknown: fs_evidence::uncertainty::EngineeringUncertaintyKind,
+    evidence_action: fs_evidence::action::ActionKind,
+    action_value: ActionValue,
+}
+
+impl UnknownResolutionCandidate {
+    /// Bind a priced action-value result to the exact unknown it can resolve.
+    #[must_use]
+    pub const fn new(
+        unknown: fs_evidence::uncertainty::EngineeringUncertaintyKind,
+        evidence_action: fs_evidence::action::ActionKind,
+        action_value: ActionValue,
+    ) -> Self {
+        Self {
+            unknown,
+            evidence_action,
+            action_value,
+        }
+    }
+}
+
+/// Evidence acquisition selected for a verdict-flipping unknown.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RecommendedEvidence {
+    /// A supplied cost model produced a positive decision value and therefore
+    /// supports a cost-aware recommendation.
+    Priced {
+        /// Stable action identifier.
+        action: String,
+        /// Evidence-action taxonomy class.
+        action_kind: fs_evidence::action::ActionKind,
+        /// Supplied decision-value reduction.
+        decision_value: f64,
+        /// Supplied action cost.
+        cost: f64,
+        /// Decision value divided by cost.
+        value_per_cost: f64,
+    },
+    /// No comparable positive cost model was supplied. The taxonomy default
+    /// remains visible without pretending it is the cheapest action.
+    Unpriced {
+        /// Default evidence-action class from the lower-layer source mapping.
+        suggested_action: fs_evidence::action::ActionKind,
+    },
+}
+
+/// Cost-aware evidence recommendation for one named verdict-flipping unknown.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnknownResolutionRecommendation {
+    /// Engineering source that can change the requirement verdict.
+    pub unknown: fs_evidence::uncertainty::EngineeringUncertaintyKind,
+    /// Named evidence gap retained by the uncertainty budget.
+    pub reason: String,
+    /// Minimum adverse magnitude attributed to this source by flip analysis.
+    pub required_magnitude: f64,
+    /// Priced recommendation or explicit absence of a comparable cost model.
+    pub recommended_evidence: RecommendedEvidence,
+}
+
+/// Rank supplied action values independently for every unknown that keeps a
+/// scalar requirement verdict indeterminate.
+///
+/// Candidates must explicitly name the unknown they resolve. Invalid,
+/// non-positive, and negative-cost action values are ineligible. Selection is
+/// deterministic: highest value per cost, then lowest absolute cost, then the
+/// lexicographically smallest action id. Missing eligible candidates preserve
+/// a [`RecommendedEvidence::Unpriced`] result rather than inventing a cost.
+#[must_use]
+pub fn recommend_unknown_resolutions(
+    verdict: &fs_evidence::uncertainty::ComplianceVerdict,
+    candidates: &[UnknownResolutionCandidate],
+) -> Vec<UnknownResolutionRecommendation> {
+    verdict
+        .flipping_unknowns()
+        .iter()
+        .map(|unknown| {
+            let best = candidates
+                .iter()
+                .filter(|candidate| {
+                    candidate.unknown == unknown.kind()
+                        && eligible_resolution_action(&candidate.action_value)
+                })
+                .fold(None, |best, candidate| match best {
+                    None => Some(candidate),
+                    Some(current) if better_resolution_candidate(candidate, current) => {
+                        Some(candidate)
+                    }
+                    Some(current) => Some(current),
+                });
+            let recommended_evidence = best.map_or_else(
+                || RecommendedEvidence::Unpriced {
+                    suggested_action: unknown.suggested_action(),
+                },
+                |candidate| RecommendedEvidence::Priced {
+                    action: candidate.action_value.action.clone(),
+                    action_kind: candidate.evidence_action,
+                    decision_value: candidate.action_value.value,
+                    cost: candidate.action_value.cost,
+                    value_per_cost: candidate.action_value.value_per_cost,
+                },
+            );
+            UnknownResolutionRecommendation {
+                unknown: unknown.kind(),
+                reason: unknown.reason().to_owned(),
+                required_magnitude: unknown.required_magnitude(),
+                recommended_evidence,
+            }
+        })
+        .collect()
+}
+
+fn eligible_resolution_action(value: &ActionValue) -> bool {
+    !value.action.trim().is_empty()
+        && value.value.is_finite()
+        && value.value > 0.0
+        && value.cost.is_finite()
+        && value.cost >= 0.0
+        && !value.value_per_cost.is_nan()
+        && value.value_per_cost > 0.0
+}
+
+fn better_resolution_candidate(
+    candidate: &UnknownResolutionCandidate,
+    current: &UnknownResolutionCandidate,
+) -> bool {
+    match candidate
+        .action_value
+        .value_per_cost
+        .total_cmp(&current.action_value.value_per_cost)
+    {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Equal => match candidate
+            .action_value
+            .cost
+            .total_cmp(&current.action_value.cost)
+        {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Greater => false,
+            std::cmp::Ordering::Equal => {
+                candidate.action_value.action < current.action_value.action
+            }
+        },
+    }
 }
 
 /// The decision value of `action`: how much it reduces the TOP-TWO

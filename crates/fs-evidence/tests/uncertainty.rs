@@ -131,6 +131,19 @@ fn all_term_representations_round_trip_with_stable_identity() {
     assert_eq!(report.matches("provenance=").count(), 8);
     assert!(report.contains("total=unknown"));
 
+    let fan_bound = UnknownPlausibilityBound::try_new(
+        EngineeringUncertaintyKind::BoundaryConditions,
+        1.0,
+        artifact("plausibility:fan-tolerance"),
+    )
+    .expect("sourced fan plausibility");
+    assert!(matches!(
+        original
+            .assess_requirement(80.0, &maximum_temperature_requirement(), &[fan_bound])
+            .expect("every TermValue representation participates in the requirement band"),
+        ComplianceVerdict::Compliant { .. }
+    ));
+
     let mut with_trailing_byte = bytes;
     with_trailing_byte.push(0);
     assert!(EngineeringUncertaintyBudget::decode(&with_trailing_byte).is_err());
@@ -517,21 +530,27 @@ fn requirement_verdicts_cover_compliant_noncompliant_and_known_overlap() {
     let requirement = maximum_temperature_requirement();
     let known = budget(negligible_terms());
 
-    let ComplianceVerdict::Compliant { margin, .. } = known
+    let compliant = known
         .assess_requirement(90.0, &requirement, &[])
-        .expect("finite inputs admit")
-    else {
+        .expect("finite inputs admit");
+    let ComplianceVerdict::Compliant { margin, .. } = &compliant else {
         panic!("90 K must remain below the 100 K fixture limit");
     };
-    assert!(margin > 9.0 && margin <= 10.0);
+    assert!(*margin > 9.0 && *margin <= 10.0);
+    assert!(compliant.render_report().contains("verdict=compliant"));
 
-    let ComplianceVerdict::NonCompliant { shortfall, .. } = known
+    let non_compliant = known
         .assess_requirement(110.0, &requirement, &[])
-        .expect("finite inputs admit")
-    else {
+        .expect("finite inputs admit");
+    let ComplianceVerdict::NonCompliant { shortfall, .. } = &non_compliant else {
         panic!("110 K must remain above the 100 K fixture limit");
     };
-    assert!(shortfall > 9.0 && shortfall <= 10.0);
+    assert!(*shortfall > 9.0 && *shortfall <= 10.0);
+    assert!(
+        non_compliant
+            .render_report()
+            .contains("verdict=non-compliant")
+    );
 
     let mut overlap_terms = negligible_terms();
     replace_term(
@@ -539,15 +558,21 @@ fn requirement_verdicts_cover_compliant_noncompliant_and_known_overlap() {
         EngineeringUncertaintyKind::SolverAlgebraic,
         TermValue::interval(0.0, 2.0).expect("solver interval"),
     );
+    let indeterminate = budget(overlap_terms)
+        .assess_requirement(98.0, &requirement, &[])
+        .expect("finite inputs admit");
     assert!(matches!(
-        budget(overlap_terms)
-            .assess_requirement(98.0, &requirement, &[])
-            .expect("finite inputs admit"),
+        &indeterminate,
         ComplianceVerdict::Indeterminate {
             flipping_unknowns,
             ..
         } if flipping_unknowns.is_empty()
     ));
+    assert!(
+        indeterminate
+            .render_report()
+            .contains("verdict=indeterminate")
+    );
 }
 
 #[test]

@@ -7,10 +7,20 @@
 //! model-form escalation, overflow-safe uncertainty composition, and a
 //! deterministic Monte Carlo oracle comparison.
 
+use fs_blake3::{ContentHash, hash_domain};
+use fs_evidence::{
+    action::ActionKind as EvidenceActionKind,
+    uncertainty::{
+        ComplianceVerdict, EngineeringUncertaintyBudget, EngineeringUncertaintyKind,
+        EngineeringUncertaintyTerm, RequirementRelation, ScalarRequirement, TermValue,
+        UncertaintyArtifactRef,
+    },
+};
 use fs_voi::{
-    Action, ActionKind, Component, DesignEstimate, EVPI_SEMANTICS_VERSION, Recommendation,
-    Uncertainty, action_value, decision_posture, expected_opportunity_loss, heuristic_choice,
-    ranking_flip_probability, recommend, top_two_evpi_surrogate,
+    Action, ActionKind, ActionValue, Component, DesignEstimate, EVPI_SEMANTICS_VERSION,
+    Recommendation, RecommendedEvidence, Uncertainty, UnknownResolutionCandidate, action_value,
+    decision_posture, expected_opportunity_loss, heuristic_choice, ranking_flip_probability,
+    recommend, recommend_unknown_resolutions, top_two_evpi_surrogate,
 };
 
 fn unc(n: f64, s: f64, m: f64) -> Uncertainty {
@@ -31,6 +41,142 @@ fn act(name: &str, kind: ActionKind, target: &str, cost: f64) -> Action {
         reduction: 0.9,
         cost,
     }
+}
+
+fn evidence_artifact(label: &str) -> UncertaintyArtifactRef {
+    let digest: ContentHash =
+        hash_domain("org.frankensim.test.voi-requirement.v1", label.as_bytes());
+    UncertaintyArtifactRef::new(label, digest).expect("valid evidence artifact")
+}
+
+fn temperature_verdict(contact_unknown: bool) -> ComplianceVerdict {
+    let terms = EngineeringUncertaintyKind::ALL
+        .into_iter()
+        .map(|kind| {
+            let value = if contact_unknown && kind == EngineeringUncertaintyKind::BoundaryConditions
+            {
+                TermValue::unknown("interface=tim-a contact resistance has no retained measurement")
+                    .expect("named contact gap")
+            } else {
+                TermValue::negligible(format!("{} is zero in this fixture", kind.name()))
+                    .expect("named analytic fixture")
+            };
+            EngineeringUncertaintyTerm::try_new(kind, value, evidence_artifact(kind.name()))
+                .expect("valid uncertainty term")
+        })
+        .collect();
+    let budget = EngineeringUncertaintyBudget::try_new("temperature:max", "kelvin", terms)
+        .expect("complete uncertainty budget");
+    let requirement = ScalarRequirement::try_new(
+        "junction-temperature-limit",
+        "temperature:max",
+        "kelvin",
+        RequirementRelation::AtMost,
+        100.0,
+        evidence_artifact("requirement:thermal-safety"),
+    )
+    .expect("sourced requirement");
+    budget
+        .assess_requirement(90.0, &requirement, &[])
+        .expect("finite requirement fixture")
+}
+
+#[test]
+fn verdict_flipping_contact_unknown_gets_the_best_priced_resolution() {
+    let verdict = temperature_verdict(true);
+    let designs = [
+        design("candidate-a", 0.0, unc(0.0, 0.0, 1.0)),
+        design("candidate-b", 0.2, unc(0.0, 0.0, 1.0)),
+    ];
+    let cheap = act("measure-tim-a", ActionKind::Test, "candidate-a", 1.0);
+    let expensive = act("build-thermal-rig", ActionKind::Test, "candidate-a", 10.0);
+    let candidates = [
+        UnknownResolutionCandidate::new(
+            EngineeringUncertaintyKind::BoundaryConditions,
+            EvidenceActionKind::SensorCampaign,
+            action_value(&designs, &expensive),
+        ),
+        UnknownResolutionCandidate::new(
+            EngineeringUncertaintyKind::Parameters,
+            EvidenceActionKind::MaterialCouponTest,
+            action_value(&designs, &cheap),
+        ),
+        UnknownResolutionCandidate::new(
+            EngineeringUncertaintyKind::BoundaryConditions,
+            EvidenceActionKind::SensorCampaign,
+            action_value(&designs, &cheap),
+        ),
+    ];
+
+    let recommendations = recommend_unknown_resolutions(&verdict, &candidates);
+    assert_eq!(recommendations.len(), 1);
+    let recommendation = &recommendations[0];
+    assert_eq!(
+        recommendation.unknown,
+        EngineeringUncertaintyKind::BoundaryConditions
+    );
+    assert!(recommendation.reason.contains("interface=tim-a"));
+    assert!(recommendation.required_magnitude > 9.0);
+    assert!(matches!(
+        &recommendation.recommended_evidence,
+        RecommendedEvidence::Priced {
+            action,
+            action_kind: EvidenceActionKind::SensorCampaign,
+            cost,
+            value_per_cost,
+            ..
+        } if action == "measure-tim-a"
+            && cost.to_bits() == 1.0f64.to_bits()
+            && *value_per_cost > 0.0
+    ));
+}
+
+#[test]
+fn missing_cost_model_stays_unpriced_and_binary_verdicts_need_no_action() {
+    let indeterminate = recommend_unknown_resolutions(&temperature_verdict(true), &[]);
+    assert!(matches!(
+        indeterminate.as_slice(),
+        [recommendation]
+            if matches!(
+                &recommendation.recommended_evidence,
+                RecommendedEvidence::Unpriced {
+                    suggested_action: EvidenceActionKind::SensorCampaign
+                }
+            )
+    ));
+
+    let compliant = temperature_verdict(false);
+    assert!(matches!(compliant, ComplianceVerdict::Compliant { .. }));
+    assert!(recommend_unknown_resolutions(&compliant, &[]).is_empty());
+}
+
+#[test]
+fn unknown_resolution_ties_prefer_lower_cost_then_action_id() {
+    let verdict = temperature_verdict(true);
+    let candidate = |action: &str, value: f64, cost: f64| {
+        UnknownResolutionCandidate::new(
+            EngineeringUncertaintyKind::BoundaryConditions,
+            EvidenceActionKind::SensorCampaign,
+            ActionValue {
+                action: action.to_owned(),
+                value,
+                cost,
+                value_per_cost: value / cost,
+            },
+        )
+    };
+    let candidates = [
+        candidate("z-expensive", 4.0, 2.0),
+        candidate("z-cheap", 2.0, 1.0),
+        candidate("a-cheap", 2.0, 1.0),
+    ];
+
+    let recommendations = recommend_unknown_resolutions(&verdict, &candidates);
+    assert!(matches!(
+        &recommendations[0].recommended_evidence,
+        RecommendedEvidence::Priced { action, cost, .. }
+            if action == "a-cheap" && cost.to_bits() == 1.0f64.to_bits()
+    ));
 }
 
 #[test]

@@ -11,8 +11,10 @@ description = "Value-of-information and active validation (fs-voi): the strategi
 layer = "L4"
 
 [dependencies]
+fs-evidence = { path = "../fs-evidence" }
 
 [dev-dependencies]
+fs-blake3 = { path = "../fs-blake3" }
 
 [lints]
 workspace = true
