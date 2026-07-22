@@ -41,6 +41,110 @@ const GATING_SEVERITY: &str = "severity:default-path";
 const CRATE_LABEL_PREFIX: &str = "crate:";
 /// Beads rows are large; refuse rather than allocate without bound.
 const MAX_BEADS_BYTES: u64 = 64 * 1024 * 1024;
+/// Seeded-fault drills (bead `.2.4`) point the gate at a fixture inventory so
+/// faults can be injected without touching the real store. Using it is
+/// ANNOUNCED in the verdict rows: a green obtained against a fixture must never
+/// be mistakable for a green against the repository, or the override becomes a
+/// bypass.
+const BEADS_OVERRIDE_ENV: &str = "FSIM_CLAIM_INTEGRITY_BEADS";
+
+/// The labels an inventory entry is supposed to carry. Used both for exact
+/// matching and for the near-miss scan.
+const CANONICAL_LABELS: [&str; 4] = [
+    CLASS_LABEL,
+    GATING_SEVERITY,
+    "severity:gated",
+    "severity:doc-only",
+];
+
+/// Lowercase, keeping only ASCII alphanumerics. `claim_integrity`,
+/// `ClaimIntegrity` and `claim-integrity` all collapse to the same key, which
+/// is what lets a typo be *suspicious* rather than invisible.
+fn label_key(label: &str) -> String {
+    label
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// Labels that collapse onto a canonical label without matching it exactly.
+///
+/// A typo'd class or severity label makes a defect INVISIBLE to the gate,
+/// which is the most dangerous possible failure: the inventory looks clean
+/// because the entry silently left it. These are reported as warnings rather
+/// than violations, because the fix belongs on the bead and a mistyped label
+/// is not itself evidence that a promotion is unsafe.
+pub fn near_miss_labels(source: &str) -> Vec<(String, String)> {
+    let canonical: BTreeMap<String, &str> = CANONICAL_LABELS
+        .iter()
+        .map(|label| (label_key(label), *label))
+        .collect();
+    let mut found = Vec::new();
+    for row in source.lines() {
+        let row = row.trim();
+        if !row.starts_with('{') {
+            continue;
+        }
+        let Some(id) = row_str(row, "id") else {
+            continue;
+        };
+        for label in row_labels(row) {
+            if CANONICAL_LABELS.contains(&label.as_str()) {
+                continue;
+            }
+            if let Some(intended) = canonical.get(&label_key(&label)) {
+                found.push((id.to_string(), format!("{label:?} (meant {intended:?})")));
+            }
+        }
+    }
+    found
+}
+
+/// Crate names a `crate:` scope may legitimately name: every crate directory
+/// plus the repo tooling package.
+fn known_crate_scopes(root: &Path) -> BTreeSet<String> {
+    let mut known: BTreeSet<String> = std::fs::read_dir(root.join("crates")).map_or_else(
+        |_| BTreeSet::new(),
+        |entries| {
+            entries
+                .flatten()
+                .filter(|entry| entry.path().join("Cargo.toml").is_file())
+                .filter_map(|entry| entry.file_name().into_string().ok())
+                .collect()
+        },
+    );
+    known.insert("xtask".to_string());
+    known
+}
+
+/// Rewrite any defect naming a crate that does not exist into a GLOBAL defect,
+/// and report each rewrite.
+///
+/// A scope pointing at a renamed or deleted crate matches nothing, so the
+/// defect would quietly stop blocking anything — a stale label silently
+/// disarming a P0. Fail closed: an unresolvable scope is treated as unscoped,
+/// which blocks everything.
+pub fn globalize_unknown_scopes(
+    defects: &mut [GatingDefect],
+    known: &BTreeSet<String>,
+) -> Vec<(String, String)> {
+    let mut rewrites = Vec::new();
+    for defect in defects.iter_mut() {
+        let unknown: Vec<String> = defect
+            .scopes
+            .iter()
+            .filter(|scope| !known.contains(*scope))
+            .cloned()
+            .collect();
+        if unknown.is_empty() {
+            continue;
+        }
+        rewrites.push((defect.id.clone(), unknown.join(", ")));
+        defect.scopes.clear();
+    }
+    rewrites
+}
 
 pub struct GateReport {
     pub violations: Vec<Violation>,
@@ -271,7 +375,26 @@ pub fn check_claim_integrity_gate(root: &Path) -> GateReport {
 
     // A promotion is on the table, so the inventory must be readable. Refuse
     // rather than admit a promotion we could not check.
-    let path = root.join(BEADS_FILE);
+    let override_path = std::env::var(BEADS_OVERRIDE_ENV)
+        .ok()
+        .filter(|p| !p.is_empty());
+    let path = match &override_path {
+        Some(fixture) => {
+            // Announce loudly. A green against a fixture must never be
+            // mistakable for a green against the repository.
+            decisions.push(note(
+                "<repo>",
+                "fixture-inventory",
+                format!(
+                    "reading the claim-integrity inventory from {BEADS_OVERRIDE_ENV}={fixture} \
+                     instead of {BEADS_FILE}; this verdict describes the fixture, NOT the \
+                     repository, and must not be cited as a repository result"
+                ),
+            ));
+            std::path::PathBuf::from(fixture)
+        }
+        None => root.join(BEADS_FILE),
+    };
     let metadata = std::fs::metadata(&path);
     if let Ok(metadata) = &metadata
         && metadata.len() > MAX_BEADS_BYTES
@@ -308,7 +431,7 @@ pub fn check_claim_integrity_gate(root: &Path) -> GateReport {
         }
     };
 
-    let defects = match gating_defects(&source) {
+    let mut defects = match gating_defects(&source) {
         Ok(defects) => defects,
         Err(detail) => {
             violations.push(violation("<repo>", detail));
@@ -318,6 +441,32 @@ pub fn check_claim_integrity_gate(root: &Path) -> GateReport {
             };
         }
     };
+
+    // A typo'd class or severity label makes an entry invisible to the gate —
+    // the inventory looks clean because the defect silently left it.
+    for (id, label) in near_miss_labels(&source) {
+        decisions.push(note(
+            &id,
+            "suspicious-label",
+            format!(
+                "carries {label} — a near-miss label is INVISIBLE to this gate, so the defect \
+                 would silently stop blocking anything; fix the label on the bead"
+            ),
+        ));
+    }
+
+    // A scope naming a renamed or deleted crate matches nothing, which would
+    // quietly disarm a P0. Fail closed by treating it as global.
+    for (id, unknown) in globalize_unknown_scopes(&mut defects, &known_crate_scopes(root)) {
+        decisions.push(note(
+            &id,
+            "scope-globalized",
+            format!(
+                "names crate scope(s) {unknown} that do not exist in the tree; treating the \
+                 defect as GLOBAL rather than letting a stale scope disarm it"
+            ),
+        ));
+    }
 
     decisions.push(note(
         "<repo>",
@@ -470,6 +619,78 @@ mod tests {
         );
         let error = gating_defects(&source).expect_err("a truncated row must refuse");
         assert!(error.contains("mid-flush"), "{error}");
+    }
+
+    #[test]
+    fn near_miss_labels_are_surfaced_rather_than_left_invisible() {
+        let source = [
+            // Exactly right: not a near miss.
+            row("exact", "bug", "open", &[CLASS_LABEL, GATING_SEVERITY]),
+            // Typo'd class label — collapses onto claim-integrity.
+            row("typo-class", "bug", "open", &["claimintegrity"]),
+            row("typo-underscore", "bug", "open", &["claim_integrity"]),
+            row("typo-case", "bug", "open", &["Claim-Integrity"]),
+            // Typo'd severity — collapses onto severity:default-path.
+            row(
+                "typo-sev",
+                "bug",
+                "open",
+                &[CLASS_LABEL, "severity-default-path"],
+            ),
+            // Genuinely unrelated label: must NOT be flagged.
+            row("unrelated", "bug", "open", &["performance"]),
+        ]
+        .join("\n");
+        let found = near_miss_labels(&source);
+        let ids: Vec<&str> = found.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["typo-class", "typo-underscore", "typo-case", "typo-sev"],
+            "{found:?}"
+        );
+        assert!(
+            found[0].1.contains("meant"),
+            "the note must name the intended label"
+        );
+
+        // The typo'd entries are invisible to the inventory — which is exactly
+        // why they have to be reported some other way.
+        let defects = gating_defects(&source).expect("rows parse");
+        assert_eq!(
+            defects.len(),
+            1,
+            "only the exactly-labelled bug is inventory"
+        );
+        assert_eq!(defects[0].id, "exact");
+    }
+
+    #[test]
+    fn a_scope_naming_a_missing_crate_is_globalized_not_disarmed() {
+        let known = scopes(&["fs-real", "xtask"]);
+        let mut defects = vec![
+            GatingDefect {
+                id: "stale".to_string(),
+                scopes: scopes(&["fs-renamed-away"]),
+            },
+            GatingDefect {
+                id: "mixed".to_string(),
+                scopes: scopes(&["fs-real", "fs-gone"]),
+            },
+            GatingDefect {
+                id: "fine".to_string(),
+                scopes: scopes(&["fs-real"]),
+            },
+        ];
+        let rewrites = globalize_unknown_scopes(&mut defects, &known);
+        let ids: Vec<&str> = rewrites.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, vec!["stale", "mixed"], "{rewrites:?}");
+
+        // Globalized defects now block everything; the intact one still only
+        // blocks its own scope.
+        assert!(defects[0].scopes.is_empty() && defects[1].scopes.is_empty());
+        assert_eq!(defects[2].scopes, scopes(&["fs-real"]));
+        let (v, _) = run(&promotion("cap", &["fs-unrelated"]), &defects);
+        assert_eq!(v.len(), 2, "both globalized defects must block: {v:?}");
     }
 
     #[test]
