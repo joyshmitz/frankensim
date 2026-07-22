@@ -110,6 +110,39 @@ re-check every golden in the crate under the golden-bump protocol
 (`docs/GOLDEN_POLICY.md`) in the same change, then add the crate to
 `LIBM_DOCTRINE_CRATES` so the doctrine is enforced, not documented.
 
+## Claim-integrity defect class (bead f85xj.2.1)
+
+A **claim-integrity defect** exists when any public surface — API return type,
+evidence color, certificate, report line, CONTRACT/README sentence, WASM/CLI
+export, ledger row — can assert a **stronger** epistemic state than its actual
+evidence establishes. A false certificate is worse than an ordinary wrong
+answer, so these are tracked as their own countable, gateable class rather than
+scattered among ordinary bugs. The normative definition, decision rules, audit
+method, and known-answer set live in [`docs/CLAIM_INTEGRITY.md`](CLAIM_INTEGRITY.md);
+`check-claims` (part of `check-all`) lints that it stays present and intact.
+
+Label taxonomy — every such bead carries all three:
+
+| Label | Meaning |
+| --- | --- |
+| `claim-integrity` | Mandatory class membership. `br list -l claim-integrity` is the live inventory and the gate reads exactly this label. |
+| exactly one `severity:*` | `severity:default-path` (P0, reachable on a default/public path), `severity:gated` (P1, non-default feature or opt-in API only), `severity:doc-only` (P2, prose overstates honest code). |
+| `crate:<name>` | Every crate whose surface can emit the claim. No crate scope means **global** (fail closed, blocks every promotion), never unscoped-and-harmless. |
+
+Defects are filed as `--type=bug`; the type is what separates *exposure* from
+*work*. A `claim-integrity`-labelled `epic`/`task`/`feature` is an E02 program
+bead (this doctrine, its sweep, its gate) and is exempt from the severity and
+ownership rules — otherwise the gate would count its own epic as an open P0 and
+block every promotion forever.
+
+Severity is decided by reachability, escalates rather than averages, and
+resolves ambiguity toward the stronger severity. Under-claiming is never a
+claim-integrity defect. Bead bodies must carry a minimal repro and the honest
+claim the surface should make instead. Run
+`scripts/ci/claim_integrity_inventory.sh` for the checked live inventory; it
+fails when an open P0 has no owner, when severity labels are missing or
+duplicated, or when the beads store cannot be read.
+
 ## Compiler checks
 
 After substantive changes:

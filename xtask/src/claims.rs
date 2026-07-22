@@ -15,6 +15,11 @@
 //!    `fn <name>` in some crate source or test — sentinel names in prose
 //!    must be real tests.
 //!
+//! Rule 4 (huq.18) derives README inventory counts from the tree, and rule 5
+//! (f85xj.2.1) keeps the claim-integrity defect class defined and its label
+//! taxonomy documented — see the section further down for why that definition
+//! is load-bearing rather than decorative.
+//!
 //! The deeper claim-state machinery (landed flags, no-claim rows, site
 //! generation from evidence packages) belongs to huq.15.1; this lint is
 //! the repo-level drift stop until that exists.
@@ -277,6 +282,159 @@ fn check_inventory_counts(root: &Path, readme: &str) -> Vec<Violation> {
     violations
 }
 
+// ---------------------------------------------------------------------------
+// Claim-integrity defect class (bead frankensim-extreal-program-f85xj.2.1).
+//
+// The class definition is the input the E02 sweep and promotion gate consume
+// verbatim, so it must not silently disappear, lose a decision-rule section,
+// or drift out of agreement with the label taxonomy the gate queries. Code is
+// the single source of truth for the canonical severity labels; the definition
+// doc and the CONVENTIONS taxonomy must both name exactly these.
+//
+// This lint proves the definition is present and structurally intact. It does
+// not, and cannot, judge whether an audit was performed honestly — that is
+// what the sweep's recorded verdicts and the gate drills are for. Claiming
+// otherwise here would itself be a claim-integrity defect.
+// ---------------------------------------------------------------------------
+
+/// Canonical severity labels. The gate and the inventory script accept exactly
+/// these; adding a severity means changing this array and both documents.
+pub const CLAIM_INTEGRITY_SEVERITY_LABELS: [&str; 3] = [
+    "severity:default-path",
+    "severity:gated",
+    "severity:doc-only",
+];
+
+/// The mandatory class-membership label; `br list -l <label>` is the inventory.
+pub const CLAIM_INTEGRITY_LABEL: &str = "claim-integrity";
+
+const CLAIM_INTEGRITY_DOC: &str = "docs/CLAIM_INTEGRITY.md";
+const CLAIM_INTEGRITY_CONVENTIONS: &str = "docs/CONVENTIONS.md";
+const CLAIM_INTEGRITY_INVENTORY_SCRIPT: &str = "scripts/ci/claim_integrity_inventory.sh";
+
+/// Sections the definition must keep. Each one is consumed by a downstream
+/// bead: decision rules and audit method by the `.2.2` sweep, severity rules
+/// and label taxonomy by the `.2.3` gate, known instances by both as the
+/// known-answer set.
+const CLAIM_INTEGRITY_REQUIRED_SECTIONS: [&str; 6] = [
+    "## Definition",
+    "## Decision rules",
+    "## Severity rules",
+    "## Label taxonomy",
+    "## Audit method",
+    "## Known instances",
+];
+
+/// The CONVENTIONS taxonomy section heading that must point agents at the
+/// definition.
+const CLAIM_INTEGRITY_CONVENTIONS_SECTION: &str = "## Claim-integrity defect class";
+
+fn claim_integrity_violation(file: &str, detail: String) -> Violation {
+    Violation {
+        check: "claim-state",
+        crate_name: file.to_string(),
+        detail,
+    }
+}
+
+/// Lint the claim-integrity definition and its taxonomy (bead f85xj.2.1).
+fn check_claim_integrity_docs(root: &Path) -> Vec<Violation> {
+    let mut violations = Vec::new();
+
+    let Ok(definition) = std::fs::read_to_string(root.join(CLAIM_INTEGRITY_DOC)) else {
+        violations.push(claim_integrity_violation(
+            CLAIM_INTEGRITY_DOC,
+            format!(
+                "{CLAIM_INTEGRITY_DOC} is missing — the claim-integrity defect class is the \
+                 definition the E02 sweep and promotion gate consume verbatim; without it the \
+                 gate counts an inventory it cannot define (bead f85xj.2.1)"
+            ),
+        ));
+        return violations;
+    };
+
+    for section in CLAIM_INTEGRITY_REQUIRED_SECTIONS {
+        if !definition.contains(section) {
+            violations.push(claim_integrity_violation(
+                CLAIM_INTEGRITY_DOC,
+                format!(
+                    "{CLAIM_INTEGRITY_DOC} lost required section {section:?} — downstream beads \
+                     (.2.2 sweep, .2.3 gate) consume these sections verbatim (bead f85xj.2.1)"
+                ),
+            ));
+        }
+    }
+
+    for label in CLAIM_INTEGRITY_SEVERITY_LABELS {
+        if !definition.contains(label) {
+            violations.push(claim_integrity_violation(
+                CLAIM_INTEGRITY_DOC,
+                format!(
+                    "{CLAIM_INTEGRITY_DOC} does not name canonical severity label {label:?} — the \
+                     doc and xtask must agree on the label set the gate queries (bead f85xj.2.1)"
+                ),
+            ));
+        }
+    }
+
+    // The inventory script is named by the definition as its enforcement arm;
+    // a definition citing a script that does not exist overstates enforcement.
+    if definition.contains(CLAIM_INTEGRITY_INVENTORY_SCRIPT)
+        && !root.join(CLAIM_INTEGRITY_INVENTORY_SCRIPT).is_file()
+    {
+        violations.push(claim_integrity_violation(
+            CLAIM_INTEGRITY_DOC,
+            format!(
+                "{CLAIM_INTEGRITY_DOC} cites {CLAIM_INTEGRITY_INVENTORY_SCRIPT} as its enforcement \
+                 arm but that script does not exist — documented enforcement that cannot run is \
+                 itself an overstated claim (bead f85xj.2.1)"
+            ),
+        ));
+    }
+
+    let Ok(conventions) = std::fs::read_to_string(root.join(CLAIM_INTEGRITY_CONVENTIONS)) else {
+        violations.push(claim_integrity_violation(
+            CLAIM_INTEGRITY_CONVENTIONS,
+            format!("{CLAIM_INTEGRITY_CONVENTIONS} is missing (bead f85xj.2.1)"),
+        ));
+        return violations;
+    };
+
+    if !conventions.contains(CLAIM_INTEGRITY_CONVENTIONS_SECTION) {
+        violations.push(claim_integrity_violation(
+            CLAIM_INTEGRITY_CONVENTIONS,
+            format!(
+                "{CLAIM_INTEGRITY_CONVENTIONS} lost section \
+                 {CLAIM_INTEGRITY_CONVENTIONS_SECTION:?} — the label taxonomy must be discoverable \
+                 where agents read conventions, not only in the definition (bead f85xj.2.1)"
+            ),
+        ));
+    }
+    if !conventions.contains(CLAIM_INTEGRITY_LABEL) {
+        violations.push(claim_integrity_violation(
+            CLAIM_INTEGRITY_CONVENTIONS,
+            format!(
+                "{CLAIM_INTEGRITY_CONVENTIONS} does not name the {CLAIM_INTEGRITY_LABEL:?} label \
+                 (bead f85xj.2.1)"
+            ),
+        ));
+    }
+    for label in CLAIM_INTEGRITY_SEVERITY_LABELS {
+        if !conventions.contains(label) {
+            violations.push(claim_integrity_violation(
+                CLAIM_INTEGRITY_CONVENTIONS,
+                format!(
+                    "{CLAIM_INTEGRITY_CONVENTIONS} taxonomy omits canonical severity label \
+                     {label:?} — an undocumented severity is one the sweep will not apply \
+                     (bead f85xj.2.1)"
+                ),
+            ));
+        }
+    }
+
+    violations
+}
+
 /// README claim-state lint: see module docs for the three rules.
 pub fn check_claims(root: &Path) -> Vec<Violation> {
     let mut violations = Vec::new();
@@ -303,6 +461,10 @@ pub fn check_claims(root: &Path) -> Vec<Violation> {
     // Rule 4 (huq.18): README inventory counts are derived, never
     // hand-promoted.
     violations.extend(check_inventory_counts(root, &readme));
+
+    // Rule 5 (f85xj.2.1): the claim-integrity defect class stays defined and
+    // its taxonomy stays documented where agents read conventions.
+    violations.extend(check_claim_integrity_docs(root));
 
     // Rule 1: cited hashes exist in code.
     for h in hashes_in(&readme) {
@@ -383,6 +545,135 @@ members = [
         assert_eq!(workspace_fs_member_count("[workspace]\n"), None);
     }
 
+    /// Build a minimal docs pair that satisfies the claim-integrity lint, so
+    /// each negative case below differs from green by exactly one mutation.
+    fn claim_integrity_fixture(base: &Path) {
+        let mut definition = String::new();
+        for section in CLAIM_INTEGRITY_REQUIRED_SECTIONS {
+            definition.push_str(section);
+            definition.push_str("\n\nbody\n\n");
+        }
+        for label in CLAIM_INTEGRITY_SEVERITY_LABELS {
+            definition.push_str(&format!("- `{label}`\n"));
+        }
+        let mut conventions = format!("{CLAIM_INTEGRITY_CONVENTIONS_SECTION}\n\n");
+        conventions.push_str(&format!("label `{CLAIM_INTEGRITY_LABEL}`\n"));
+        for label in CLAIM_INTEGRITY_SEVERITY_LABELS {
+            conventions.push_str(&format!("- `{label}`\n"));
+        }
+        let write = |rel: &str, text: &str| {
+            let path = base.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(CLAIM_INTEGRITY_DOC, &definition);
+        write(CLAIM_INTEGRITY_CONVENTIONS, &conventions);
+    }
+
+    #[test]
+    fn claim_integrity_lint_accepts_a_complete_definition_and_taxonomy() {
+        let base = std::env::temp_dir().join(format!("fsim-ci-ok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        claim_integrity_fixture(&base);
+        let violations = check_claim_integrity_docs(&base);
+        assert!(violations.is_empty(), "expected clean: {violations:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn claim_integrity_lint_fails_closed_on_each_single_mutation() {
+        let base = std::env::temp_dir().join(format!("fsim-ci-mut-{}", std::process::id()));
+
+        // A missing definition is one violation, not a silent pass: the gate
+        // must never count an inventory whose class it cannot define.
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("docs")).unwrap();
+        std::fs::write(base.join(CLAIM_INTEGRITY_CONVENTIONS), "irrelevant").unwrap();
+        let missing = check_claim_integrity_docs(&base);
+        assert_eq!(missing.len(), 1, "{missing:?}");
+        assert!(missing[0].detail.contains("is missing"));
+
+        // Dropping any one required section is caught by name.
+        for dropped in CLAIM_INTEGRITY_REQUIRED_SECTIONS {
+            let _ = std::fs::remove_dir_all(&base);
+            claim_integrity_fixture(&base);
+            let text = std::fs::read_to_string(base.join(CLAIM_INTEGRITY_DOC)).unwrap();
+            std::fs::write(
+                base.join(CLAIM_INTEGRITY_DOC),
+                text.replace(dropped, "## Removed"),
+            )
+            .unwrap();
+            let violations = check_claim_integrity_docs(&base);
+            assert!(
+                violations.iter().any(|v| v.detail.contains(dropped)),
+                "dropping {dropped:?} must be caught: {violations:?}"
+            );
+        }
+
+        // Dropping any one canonical severity label is caught in both files,
+        // because doc and taxonomy must agree on the set the gate queries.
+        for label in CLAIM_INTEGRITY_SEVERITY_LABELS {
+            let _ = std::fs::remove_dir_all(&base);
+            claim_integrity_fixture(&base);
+            for file in [CLAIM_INTEGRITY_DOC, CLAIM_INTEGRITY_CONVENTIONS] {
+                let text = std::fs::read_to_string(base.join(file)).unwrap();
+                std::fs::write(base.join(file), text.replace(label, "severity:unknown")).unwrap();
+            }
+            let violations = check_claim_integrity_docs(&base);
+            assert!(
+                violations
+                    .iter()
+                    .filter(|v| v.detail.contains(label))
+                    .count()
+                    >= 2,
+                "dropping {label:?} must be caught in both files: {violations:?}"
+            );
+        }
+
+        // The CONVENTIONS taxonomy section must stay discoverable.
+        let _ = std::fs::remove_dir_all(&base);
+        claim_integrity_fixture(&base);
+        let text = std::fs::read_to_string(base.join(CLAIM_INTEGRITY_CONVENTIONS)).unwrap();
+        std::fs::write(
+            base.join(CLAIM_INTEGRITY_CONVENTIONS),
+            text.replace(CLAIM_INTEGRITY_CONVENTIONS_SECTION, "## Something else"),
+        )
+        .unwrap();
+        let violations = check_claim_integrity_docs(&base);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.detail.contains(CLAIM_INTEGRITY_CONVENTIONS_SECTION)),
+            "{violations:?}"
+        );
+
+        // Citing an enforcement script that does not exist is itself an
+        // overstated claim.
+        let _ = std::fs::remove_dir_all(&base);
+        claim_integrity_fixture(&base);
+        let text = std::fs::read_to_string(base.join(CLAIM_INTEGRITY_DOC)).unwrap();
+        std::fs::write(
+            base.join(CLAIM_INTEGRITY_DOC),
+            format!("{text}\nrun {CLAIM_INTEGRITY_INVENTORY_SCRIPT} for the report\n"),
+        )
+        .unwrap();
+        let violations = check_claim_integrity_docs(&base);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.detail.contains(CLAIM_INTEGRITY_INVENTORY_SCRIPT)),
+            "{violations:?}"
+        );
+        std::fs::create_dir_all(base.join("scripts/ci")).unwrap();
+        std::fs::write(base.join(CLAIM_INTEGRITY_INVENTORY_SCRIPT), "#!/bin/sh\n").unwrap();
+        assert!(
+            check_claim_integrity_docs(&base).is_empty(),
+            "materializing the cited script must clear the violation"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn claims_check_end_to_end_on_fixture_tree() {
         let base = std::env::temp_dir().join(format!("fsim-claims-test-{}", std::process::id()));
@@ -413,6 +704,10 @@ members = [
                 "Gone sentinel `ghost_golden_hash`.\n",
             ),
         );
+        // Rule 5's docs are present and complete so this case still isolates
+        // the three seeded README drifts; the claim-integrity lint has its own
+        // mutation tests above.
+        claim_integrity_fixture(&base);
         let v = check_claims(&base);
         assert_eq!(v.len(), 3, "exactly the three seeded drifts: {v:?}");
         assert!(v.iter().any(|x| x.detail.contains("aaaabbbbccccdddd")));
