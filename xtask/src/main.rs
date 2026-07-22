@@ -3039,7 +3039,7 @@ fn casual_span_mask(token_count: usize, spans: &[(usize, usize)]) -> Vec<bool> {
 }
 
 fn casual_span_end_map(token_count: usize, spans: &[(usize, usize)]) -> Vec<Option<usize>> {
-    let mut ends = vec![None; token_count];
+    let mut ends: Vec<Option<usize>> = vec![None; token_count];
     for &(start, end) in spans {
         if start < token_count {
             ends[start] = Some(ends[start].map_or(end, |existing| existing.max(end)));
@@ -3366,7 +3366,7 @@ fn casual_function_owner_map(
     let mut order = (0..functions.len()).collect::<Vec<_>>();
     order.sort_unstable_by_key(|index| functions[*index].open);
     let mut owners = vec![None; token_count];
-    let mut stack = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
     let mut next = 0usize;
     for token in 0..token_count {
         while stack
