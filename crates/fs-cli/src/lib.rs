@@ -106,7 +106,7 @@ impl Diagnostic {
 pub fn run(args: impl IntoIterator<Item = String>) -> CommandOutput {
     let (mode, command) = match parse_args(args) {
         Ok(parsed) => parsed,
-        Err((mode, diagnostic)) => return refusal(mode, exit::USAGE, diagnostic, None),
+        Err((mode, diagnostic)) => return refusal(mode, exit::USAGE, &diagnostic, None),
     };
 
     match command {
@@ -151,7 +151,7 @@ pub fn run_os(args: impl IntoIterator<Item = OsString>) -> CommandOutput {
                 return refusal(
                     OutputMode::Text,
                     exit::USAGE,
-                    Diagnostic::new(
+                    &Diagnostic::new(
                         "arguments",
                         "cli-argument-encoding",
                         "an argument is not valid UTF-8",
@@ -275,7 +275,7 @@ fn validate_path(path: &Path, mode: OutputMode) -> CommandOutput {
             return refusal(
                 mode,
                 exit::INPUT,
-                Diagnostic::new(
+                &Diagnostic::new(
                     "validate",
                     "cli-input-format",
                     format!("project `{label}` has no admitted .fsim or .json extension"),
@@ -304,7 +304,7 @@ fn validate_path(path: &Path, mode: OutputMode) -> CommandOutput {
         return refusal(
             mode,
             exit::INPUT,
-            Diagnostic::new(
+            &Diagnostic::new(
                 "validate",
                 "cli-input-too-large",
                 format!(
@@ -335,7 +335,7 @@ fn validate_path(path: &Path, mode: OutputMode) -> CommandOutput {
         return refusal(
             mode,
             exit::INPUT,
-            Diagnostic::new(
+            &Diagnostic::new(
                 "validate",
                 "cli-input-too-large",
                 format!("project exceeded the {MAX_PROJECT_BYTES}-byte cap while being read"),
@@ -352,7 +352,7 @@ fn input_error(mode: OutputMode, project: &str, message: String) -> CommandOutpu
     refusal(
         mode,
         exit::INPUT,
-        Diagnostic::new(
+        &Diagnostic::new(
             "validate",
             "cli-input-read",
             message,
@@ -379,7 +379,7 @@ fn validate_loaded(
             return refusal(
                 mode,
                 exit::REFUSED,
-                Diagnostic::new("validate", error.code, error.detail, error.hint)
+                &Diagnostic::new("validate", error.code, error.detail, error.hint)
                     .with_subject(project),
                 Some(("validate", "refused", project, None, 0)),
             );
@@ -456,7 +456,7 @@ fn unavailable(
     let mut output = refusal(
         mode,
         exit::UNAVAILABLE,
-        Diagnostic::new(command, "cli-stage-unavailable", message, fix).with_subject(subject),
+        &Diagnostic::new(command, "cli-stage-unavailable", message, fix).with_subject(subject),
         Some((command, "unavailable", subject, None, 0)),
     );
     if mode == OutputMode::Json {
@@ -475,7 +475,7 @@ fn unavailable(
 fn refusal(
     mode: OutputMode,
     exit_code: u8,
-    diagnostic: Diagnostic,
+    diagnostic: &Diagnostic,
     result: Option<(&str, &str, &str, Option<&str>, usize)>,
 ) -> CommandOutput {
     let stdout = result.map_or_else(String::new, |(command, status, subject, hash, findings)| {
@@ -484,7 +484,7 @@ fn refusal(
     CommandOutput {
         exit_code,
         stdout,
-        stderr: format_diagnostic(mode, &diagnostic),
+        stderr: format_diagnostic(mode, diagnostic),
     }
 }
 
