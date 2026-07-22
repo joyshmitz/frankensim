@@ -43,6 +43,7 @@ pub mod color;
 mod discrepancy;
 pub mod falsify;
 pub mod identity;
+pub mod uncertainty;
 pub mod vv;
 
 pub use admitted::{

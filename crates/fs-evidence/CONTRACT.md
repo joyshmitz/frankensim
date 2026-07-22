@@ -50,6 +50,29 @@ telemetry/legacy correlation.
   RefineNumerics / GatherMoreSamples / EscalateModelFidelity (the HELM
   governor hook) and reserves `NoneNeeded` for the rigorous case; a
   within-threshold non-rigorous band advises RefineNumerics.
+- `uncertainty::EngineeringUncertaintyBudget` — the versioned, absolute-unit
+  engineering error ledger with exactly eight named sources: roundoff,
+  solver/algebraic, discretization, geometry, parameters, boundary
+  conditions, model form, and measurement. Each source carries a provenance
+  artifact and one explicit representation: interval bound, distribution
+  summary plus replay reference, ensemble envelope plus replay reference,
+  covariance block, unknown with reason, or negligible with justification.
+  Unknown and negligible are disjoint admitted states. Empty reasons and
+  justifications refuse. Totals linearly add conservative half-widths except
+  for complete, bit-symmetric, positive-semidefinite covariance blocks that
+  explicitly name every participating source. Unknown sources produce an
+  unknown total while retaining the known conservative contribution; finite
+  inputs whose aggregate overflows produce an explicit unbounded total.
+  Composition is same-QoI/same-unit only; mixed rich representations degrade
+  to an interval upper bound, unknown is absorbing, and derived provenance
+  binds the exact two parent-budget identities. The legacy three-slice
+  projection accounts for all eight sources, retains the exact source-budget
+  identity, and requires a finite nonzero QoI magnitude before converting
+  absolute half-widths to relative bands. Canonical transport is bounded,
+  version-gated, revalidated, and byte-fixed-point checked; its domain-
+  separated BLAKE3 digest is the ledger/package identity. `render_report`
+  emits one deterministic line per source with both term provenance and any
+  distribution, ensemble, or covariance replay authority.
 - `ModelCard` (name, version, ambition tag, assumptions, validity, known
   failures, calibration provenance, discrepancy band) and `ModelRegistry`
   — `register_solver` REFUSES without a registered card (the lint).
@@ -570,6 +593,8 @@ telemetry/legacy correlation.
 ## Error model
 Structured teaching errors throughout: `CertifyError`, `RegistryError`,
 `OutOfDomain`, `FitError`, `FalsifyError`, and typed identity refusals including
+`UncertaintyError` / `UncertaintyCodecError` for eight-term budget admission
+and canonical transport,
 `ModelEvidenceIdentityError`, `ModelCardIdentityError`,
 `CardBoundModelEvidenceIdentityError`,
 `NumericalCertificateIdentityError`, `StatisticalCertificateIdentityError`,
@@ -585,7 +610,10 @@ Deterministic: pure values and mutable diagnostic state machines produce the
 same results for the same ordered call sequence; renderings use sorted
 (`BTreeMap`) order; there are no clocks, addresses, or hidden randomness.
 Bit-stable across runs and platforms up to fs-math-class scalar-arithmetic
-divergence.
+divergence. Engineering uncertainty terms and covariance members are emitted
+in a closed canonical source order; totals use a fixed traversal and upward
+rounding. Covariance square roots therefore inherit the platform `f64::sqrt`
+class rather than claiming a cross-ISA correctly-rounded transcendental.
 
 ## Cancellation behavior
 Core certificate/color algebra is bounded small synchronous work. Typed color,
@@ -609,6 +637,10 @@ Certified-f64 lineage sources use the same bounded incremental crosswalk;
 composition polls before parent adjudication, before and after its fixed-size,
 allocation-fallible legacy-chain compatibility step, and throughout final
 canonical framing.
+Engineering uncertainty admission and composition are bounded to eight terms
+and covariance matrices of at most 8×8. Canonical decoding is capped at 1 MiB;
+it has no `Cx` parameter and makes no latency/cancellation claim beyond those
+fixed structural bounds.
 Card-bound model-evidence construction additionally polls at entry, at each
 positional card boundary, and at exact byte strides while comparing potentially
 long names before its final bounded parent-framing pass.
@@ -955,6 +987,27 @@ physical validation, process-standard conformance, or decision fitness.
   labels, not signatures or source authority.
 
 ## No-claim boundaries
+- The eight-term engineering budget validates representation, source
+  completeness, explicit covariance structure, composition monotonicity, and
+  canonical identity. It does not prove that a producer selected the correct
+  physical source, that a cited artifact is authentic, that an interval is a
+  valid enclosure, that a distribution has coverage, or that an ensemble is
+  representative. Those are producer/checker and ledger-admission claims.
+- Covariance aggregation is used only for a complete retained block whose
+  matrix passes structural and positive-semidefinite admission. Terms outside
+  a block add linearly. No independence is inferred from the absence of a
+  block, and negative covariance is never inferred from shared provenance.
+- The legacy 8-to-3 projection is complete accounting, not a reversible
+  encoding. It retains the original budget identity and source lists, but the
+  returned `UncertaintyBreakdown` intentionally collapses roundoff/solver/
+  discretization/geometry into numerical, parameters/boundary/measurement
+  into statistical, and model-form into model. It requires a caller-provided
+  QoI magnitude to convert absolute units to relative bands; zero-reference
+  QoIs refuse rather than inventing a scale.
+- A budget type does not populate itself. Until domain producers (including
+  E05.10 thermal QoIs) attach real receipts, missing sources must be `Unknown`
+  with a named reason. A `Negligible` term is an explicit producer assertion
+  with a justification, not a proof of physical zero.
 - Statistical composition is CONSERVATIVE-WEAKEST v1 (half-widths add,
   confidences min, mixed kinds keep the width-bearing certificate);
   proper e-value arithmetic (products under independence, e-BH) is
