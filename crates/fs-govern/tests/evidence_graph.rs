@@ -680,9 +680,9 @@ fn g0_graph_identity_is_permutation_invariant_and_semantic_mutations_move_the_ro
     let upstream = claim("upstream residual is bounded", "identity/upstream");
     let downstream = claim("downstream objective is certified", "identity/downstream");
     let upstream_state = unknown_state(&upstream);
-    let support = support(&upstream_state, &downstream, "identity");
+    let support_edge = support(&upstream_state, &downstream, "identity");
     let alternate_support = support(&upstream_state, &downstream, "identity/alternate");
-    let (counterexample, attack) = attack(&upstream, "identity");
+    let (counterexample, attack_edge) = attack(&upstream, "identity");
     let (alternate_counterexample, alternate_attack) = attack(&upstream, "identity/alternate");
     let nodes = vec![
         GraphNode::claim(&upstream),
@@ -700,16 +700,16 @@ fn g0_graph_identity_is_permutation_invariant_and_semantic_mutations_move_the_ro
     ];
     let expected = GraphSnapshot::new(
         nodes.clone(),
-        vec![support, alternate_support],
-        vec![attack, alternate_attack],
+        vec![support_edge, alternate_support],
+        vec![attack_edge, alternate_attack],
     )
     .expect("reference snapshot");
 
     for permutation in representative_orders(&nodes) {
         let actual = GraphSnapshot::new(
             permutation,
-            vec![alternate_support, support],
-            vec![alternate_attack, attack],
+            vec![alternate_support, support_edge],
+            vec![alternate_attack, attack_edge],
         )
         .expect("permuted snapshot");
         assert_eq!(actual.identity(), expected.identity());
@@ -717,8 +717,8 @@ fn g0_graph_identity_is_permutation_invariant_and_semantic_mutations_move_the_ro
     }
     let reversed_edges = GraphSnapshot::new(
         nodes.clone(),
-        vec![alternate_support, support],
-        vec![alternate_attack, attack],
+        vec![alternate_support, support_edge],
+        vec![alternate_attack, attack_edge],
     )
     .expect("reversed edge sets");
     assert_eq!(reversed_edges.identity(), expected.identity());
@@ -739,8 +739,8 @@ fn g0_graph_identity_is_permutation_invariant_and_semantic_mutations_move_the_ro
             attack_evidence_nodes(&upstream, "identity/alternate")[0],
             attack_evidence_nodes(&upstream, "identity/alternate")[1],
         ],
-        vec![support, alternate_support],
-        vec![attack, alternate_attack],
+        vec![support_edge, alternate_support],
+        vec![attack_edge, alternate_attack],
     )
     .expect("weight-mutated snapshot");
     assert_ne!(changed_weight.identity(), expected.identity());
@@ -761,18 +761,25 @@ fn g0_graph_identity_is_permutation_invariant_and_semantic_mutations_move_the_ro
             attack_evidence_nodes(&upstream, "identity/alternate")[0],
             attack_evidence_nodes(&upstream, "identity/alternate")[1],
         ],
-        vec![support, alternate_support],
-        vec![attack, alternate_attack],
+        vec![support_edge, alternate_support],
+        vec![attack_edge, alternate_attack],
     )
     .expect("consumer-mutated snapshot");
     assert_ne!(changed_consumer.identity(), expected.identity());
 
-    let removed_support =
-        GraphSnapshot::new(nodes.clone(), vec![support], vec![attack, alternate_attack])
-            .expect("support-edge removal");
+    let removed_support = GraphSnapshot::new(
+        nodes.clone(),
+        vec![support_edge],
+        vec![attack_edge, alternate_attack],
+    )
+    .expect("support-edge removal");
     assert_ne!(removed_support.identity(), expected.identity());
-    let removed_attack = GraphSnapshot::new(nodes, vec![support, alternate_support], vec![attack])
-        .expect("attack-edge removal");
+    let removed_attack = GraphSnapshot::new(
+        nodes,
+        vec![support_edge, alternate_support],
+        vec![attack_edge],
+    )
+    .expect("attack-edge removal");
     assert_ne!(removed_attack.identity(), expected.identity());
 }
 
@@ -1722,6 +1729,7 @@ fn g0_floors_empty_selection_and_no_action_reserve_are_explicit_and_budget_bound
                 &claims[index],
                 CandidateSpec::new(statement, class, label, kind)
                     .cost(2)
+                    .utility(2)
                     .correlation(label),
             )
         })

@@ -4093,7 +4093,11 @@ impl AuthorityHead {
             || !successor_state.invalidation.is_clear()
         {
             return Err(AuthorityError::IllegalTransition {
-                from: self.invalidation.code(),
+                from: if self.invalidation.is_clear() {
+                    self.invalidation.code()
+                } else {
+                    "invalidated-authority-head"
+                },
                 to: successor_state.invalidation.code(),
             });
         }
