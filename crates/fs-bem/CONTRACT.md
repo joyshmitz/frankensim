@@ -21,6 +21,11 @@ everywhere: this is screening, not a viscous truth source.
   `solve_exterior` — GMRES over the FMM matvec, returning a converged
   `ExteriorSolution` with its full `SolveReport` or an
   `ExteriorSolveError::NotConverged` carrying the last iterate and report;
+  every returned report is a `ResidualClaim::TrueEuclidean` one — GMRES
+  recomputes `‖b − Ax‖₂/‖b‖₂`, and the zero-onset-flow short circuit is
+  built through `SolveReport::from_claim` with an EXACTLY zero residual
+  rather than a bare struct literal, so `report.euclidean_rel_residual()`
+  is `Some` on both paths (bead `frankensim-extreal-program-f85xj.2.24`);
   a fallible operator refusal is distinct and preserves its first `BemError`
   plus the iterate/report rather than laundering the refusal into convergence;
   `surface_velocity`.

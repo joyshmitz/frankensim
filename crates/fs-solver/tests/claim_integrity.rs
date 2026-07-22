@@ -8,7 +8,8 @@
 //! assumption had no evidence at all.
 
 use fs_solver::{
-    CgState, GmresState, MaskedTensorOp, PMultigrid, PminresState, ResidualClaim, dot, norm2,
+    CgState, GmresState, MaskedTensorOp, PMultigrid, PminresState, ResidualClaim, SolveReport,
+    StallDiagnosis, dot, norm2,
 };
 use fs_sparse::precond::{IdentityPrecond, Precond};
 
@@ -159,6 +160,171 @@ fn residual_claims_name_the_norm_each_solver_reports() {
         "CG/MINRES report a recursive estimate, P-MINRES an M-norm estimate, GMRES/FGMRES \
          the true Euclidean residual; the M-norm gap reaches 1e-6 vs 1.0 on a legal SPD \
          preconditioner",
+    );
+}
+
+#[test]
+fn a_report_alone_names_its_residual_and_refuses_the_euclidean_reading() {
+    // frankensim-extreal-program-f85xj.2.24, REMAINING half. Naming the
+    // three quantities on the STATES was not enough: `SolveReport` is
+    // what crosses the crate boundary, and a driver holding only a
+    // report could not tell which quantity it had. Now the report
+    // carries the claim, and the Euclidean reading is a REFUSAL when the
+    // solve never established that number.
+    //
+    // Against the pre-fix shape this test does not compile: `SolveReport`
+    // had no `residual_claim()`, no `euclidean_rel_residual()`, no
+    // `converged_euclidean()`, and no constructor — it was an open struct
+    // literal any crate could fill in without provenance.
+    let a = Diag(vec![1.0, 1.0]);
+    let b = [1.0, 1.0];
+
+    // (1) P-MINRES: the M-norm estimate. `converged` is true, the number
+    // is small, and the Euclidean reading REFUSES rather than hand the
+    // M-norm number over under the Euclidean name.
+    let m = DiagPrecond(vec![1.0, 1e-12]);
+    let mut pminres = PminresState::new(&a, &m, &b);
+    let pm_report = pminres.run(&a, &m, 1e-10, 50);
+    assert!(
+        matches!(pm_report.residual_claim(), ResidualClaim::MNormEstimate(_)),
+        "the report itself must name the M-norm: {pm_report:?}"
+    );
+    assert_eq!(
+        pm_report.euclidean_rel_residual(),
+        None,
+        "an M-norm estimate must not be readable as ‖b − Ax‖₂/‖b‖₂"
+    );
+    assert!(
+        !pm_report.converged_euclidean(),
+        "converged_euclidean() is the Euclidean reading and must fail closed \
+         on an M-norm claim: {pm_report:?}"
+    );
+    assert_eq!(
+        pm_report.rel_residual.to_bits(),
+        pm_report.residual_claim().value().to_bits(),
+        "the published magnitude IS the claim's magnitude — they cannot drift"
+    );
+
+    // (2) CG: the recursive estimate. Same refusal, different provenance.
+    let mut cg = CgState::new(&a, &IdentityPrecond, &b);
+    let cg_report = cg.run(&a, &IdentityPrecond, 1e-12, 50);
+    assert!(
+        cg_report.converged,
+        "the CG fixture is meant to converge: {cg_report:?}"
+    );
+    assert!(
+        matches!(
+            cg_report.residual_claim(),
+            ResidualClaim::RecursiveEstimate(_)
+        ),
+        "CG never recomputes b − Ax: {cg_report:?}"
+    );
+    assert_eq!(
+        cg_report.euclidean_rel_residual(),
+        None,
+        "a recursively propagated estimate must not be readable as the true residual"
+    );
+    assert!(
+        !cg_report.converged_euclidean(),
+        "CG's `converged` is not a Euclidean correctness statement: {cg_report:?}"
+    );
+    assert_ne!(
+        cg_report.residual_provenance(),
+        pm_report.residual_provenance(),
+        "the two estimates must not describe themselves identically"
+    );
+
+    // (3) GMRES: the one producer that recomputed it. The Euclidean
+    // reading is granted, and it is the same number.
+    let mut gmres = GmresState::new(&b, 2);
+    let gm_report = gmres.run(&a, &b, 1e-12, 8, false);
+    assert!(gm_report.converged, "GMRES fixture: {gm_report:?}");
+    assert_eq!(
+        gm_report.euclidean_rel_residual().map(f64::to_bits),
+        Some(gm_report.rel_residual.to_bits()),
+        "a recomputed true residual IS readable as the Euclidean residual"
+    );
+    assert!(
+        gm_report.converged_euclidean(),
+        "GMRES recomputes ‖b − Ax‖₂ at every cycle end: {gm_report:?}"
+    );
+
+    // (4) The gap the refusal exists for: the M-norm report says
+    // `converged` while the TRUE Euclidean residual of its own iterate is
+    // the number a driver would actually care about. The typed accessor
+    // is what stops `pm_report.converged` from being read as that.
+    let mut ax = vec![0.0; 2];
+    fs_solver::LinearOp::apply(&a, &pminres.x, &mut ax);
+    let residual: Vec<f64> = b.iter().zip(&ax).map(|(bi, ai)| bi - ai).collect();
+    let true_euclidean = norm2(&residual) / norm2(&b);
+    assert!(
+        pm_report.converged && pm_report.euclidean_rel_residual().is_none(),
+        "the report claims convergence in ITS measure and refuses the other one"
+    );
+    log(
+        "report-carries-its-claim",
+        &format!(
+            "P-MINRES report: converged={} rel_residual={:.3e} ({}) euclidean=None; \
+             its iterate's true Euclidean relative residual is {:.3e}",
+            pm_report.converged,
+            pm_report.rel_residual,
+            pm_report.residual_provenance(),
+            true_euclidean
+        ),
+    );
+}
+
+#[test]
+fn every_report_is_built_from_a_claim_and_cannot_contradict_it() {
+    // The constructor is the ONLY way in (the claim field is private and
+    // the struct is #[non_exhaustive]), so `rel_residual`, `converged`,
+    // and the claim are one decision rather than three fields a producer
+    // could fill in inconsistently. Before the fix, fs-bem built a
+    // `SolveReport` by struct literal with no provenance at all.
+    let claim = ResidualClaim::MNormEstimate(1e-6);
+    let report = SolveReport::from_claim(7, claim, 1e-5, vec![1.0, 1e-6]);
+    assert_eq!(report.rel_residual.to_bits(), 1e-6_f64.to_bits());
+    assert!(report.converged, "1e-6 < 1e-5 in the claim's own measure");
+    assert!(
+        !report.converged_euclidean(),
+        "but that convergence is NOT a Euclidean statement"
+    );
+    assert_eq!(report.euclidean_rel_residual(), None);
+    assert_eq!(report.iters, 7);
+    assert!(report.diagnosis.is_none());
+
+    // A diagnosis supplied by the producer is recorded only when the
+    // claim did NOT meet tol: a success cannot be dressed with a failure
+    // story, and a failure cannot be laundered into a success.
+    let unresolved = SolveReport::from_claim_with_diagnosis(
+        3,
+        ResidualClaim::TrueEuclidean(0.5),
+        1e-8,
+        vec![1.0, 0.5],
+        StallDiagnosis::Breakdown,
+    );
+    assert!(!unresolved.converged);
+    assert_eq!(unresolved.diagnosis, Some(StallDiagnosis::Breakdown));
+    let converged = SolveReport::from_claim_with_diagnosis(
+        3,
+        ResidualClaim::TrueEuclidean(1e-12),
+        1e-8,
+        vec![1.0, 1e-12],
+        StallDiagnosis::Breakdown,
+    );
+    assert!(converged.converged);
+    assert_eq!(
+        converged.diagnosis, None,
+        "a converged report carries no stall diagnosis, whatever the producer passes"
+    );
+    assert_eq!(
+        converged.euclidean_rel_residual().map(f64::to_bits),
+        Some(1e-12_f64.to_bits())
+    );
+    log(
+        "report-constructor-is-total",
+        "SolveReport::from_claim derives rel_residual/converged from the typed claim; \
+         no producer in any crate can publish a magnitude without its provenance",
     );
 }
 

@@ -96,13 +96,27 @@ diagnoses, never timeout mysteries).
   unrelated in magnitude to the Euclidean residual (with
   `M = diag(1, 1e-12)`, `r = (0,1)` against `b = (1,0)` gives
   `‖r‖_M/‖b‖_M = 1e-6` while `‖r‖₂/‖b‖₂ = 1`). `ResidualClaim::
-  {TrueEuclidean, RecursiveEstimate, MNormEstimate}` names the three,
-  and every solver state exposes `residual_claim()`; a driver that
-  needs a Euclidean statement from CG/MINRES/P-MINRES must recompute
-  `b − Ax` itself. The provenance is NOT carried on `SolveReport`
-  itself — that struct is constructed by struct literal outside this
-  crate, so the field could not be added without breaking those
-  callers.
+  {TrueEuclidean, RecursiveEstimate, MNormEstimate}` names the three.
+  THE REPORT CARRIES ITS OWN PROVENANCE: `SolveReport::residual_claim()`
+  says which quantity `rel_residual` is, so a driver holding nothing but
+  a report can tell; `euclidean_rel_residual() -> Option<f64>` and
+  `converged_euclidean() -> bool` are the Euclidean readings and REFUSE
+  (`None`/`false`) on a recursive or M-norm claim rather than hand back
+  a number that is not `‖b − Ax‖₂/‖b‖₂`. A driver that needs a Euclidean
+  statement from CG/MINRES/P-MINRES must still recompute `b − Ax`
+  itself; what it can no longer do is mistake the estimate for it.
+  The claim field is PRIVATE and the struct is `#[non_exhaustive]`, so
+  `SolveReport::from_claim` / `from_claim_with_diagnosis` are the only
+  constructors in any crate: `rel_residual` and `converged` are DERIVED
+  from the claim, no producer can publish a magnitude without its
+  provenance (fs-bem's zero-flow exterior report was a bare struct
+  literal before), and `from_claim_with_diagnosis` records the
+  producer's diagnosis only when the claim missed `tol`. The bare
+  `rel_residual`/`converged` fields stay public and untyped for the
+  existing readers (fs-adjoint `ift`, fs-cutfem `elastic`, fs-time
+  `stiff`); reading them yields the CLAIM's magnitude in the CLAIM's
+  measure, which is why the typed accessors exist. Bead
+  `frankensim-extreal-program-f85xj.2.24`.
 - `PMultigrid` — matrix-free p-MG V-cycle as a `Precond`: order
   hierarchy r → r/2 → … → 1 over fs-feec `TensorSpace`s; prolongation
   is EXACT INJECTION (the hierarchical Lobatto basis nests, so the

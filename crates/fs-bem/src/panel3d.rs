@@ -12,7 +12,7 @@ use crate::BemError;
 use fs_fmm::{Fmm, Kernel};
 use fs_geom::Point3;
 use fs_rep_mesh::shapes::icosphere;
-use fs_solver::krylov::{GmresState, SolveReport};
+use fs_solver::krylov::{GmresState, ResidualClaim, SolveReport};
 use fs_solver::op::LinearOp;
 use std::cell::RefCell;
 
@@ -565,13 +565,12 @@ pub fn solve_exterior(
     if rhs.iter().all(|value| *value == 0.0) {
         return Ok(ExteriorSolution {
             sigma: zeroed_f64(n, "zero-flow exterior solution")?,
-            report: SolveReport {
-                iters: 0,
-                rel_residual: 0.0,
-                converged: true,
-                history: Vec::new(),
-                diagnosis: None,
-            },
+            // b = 0 with x = 0: ‖b − Ax‖₂ is EXACTLY zero, so this is a
+            // TrueEuclidean claim and not a courtesy zero. The report is
+            // built through the constructor for the same reason every
+            // other producer is — a `SolveReport` cannot exist without
+            // naming which quantity its number is.
+            report: SolveReport::from_claim(0, ResidualClaim::TrueEuclidean(0.0), tol, Vec::new()),
         });
     }
     let op = FmmOp {

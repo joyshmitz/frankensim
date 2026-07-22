@@ -608,19 +608,17 @@ impl FgmresState {
                 break;
             }
         }
-        SolveReport {
-            iters: self.iters,
-            rel_residual: self.rel,
-            converged: self.rel < tolerance,
-            history: self.history.clone(),
-            diagnosis: if self.rel < tolerance {
-                None
-            } else if broken || !self.rel.is_finite() {
-                Some(StallDiagnosis::Breakdown)
+        SolveReport::from_claim_with_diagnosis(
+            self.iters,
+            self.residual_claim(),
+            tolerance,
+            self.history.clone(),
+            if broken || !self.rel.is_finite() {
+                StallDiagnosis::Breakdown
             } else {
-                Some(StallDiagnosis::BudgetExhausted)
+                StallDiagnosis::BudgetExhausted
             },
-        }
+        )
     }
 }
 
@@ -762,7 +760,11 @@ pub struct NewtonIteration {
     pub residual_after: f64,
     /// Eisenstat--Walker forcing term.
     pub forcing: f64,
-    /// Inner true relative residual.
+    /// Inner TRUE relative residual `‖b − Jd‖₂/‖b‖₂`, taken from the
+    /// inner solve's [`SolveReport::euclidean_rel_residual`] — FGMRES
+    /// recomputes it, so the claim is real. `NaN` if the inner solver is
+    /// ever swapped for one that reports only an estimate: this field is
+    /// a Euclidean claim and refuses to carry a number that is not one.
     pub linear_relative_residual: f64,
     /// Inner iterations.
     pub linear_iterations: usize,
@@ -1015,7 +1017,7 @@ impl NewtonKrylovState {
             residual_before,
             residual_after: residual_before,
             forcing,
-            linear_relative_residual: linear_report.rel_residual,
+            linear_relative_residual: linear_report.euclidean_rel_residual().unwrap_or(f64::NAN),
             linear_iterations: linear_report.iters,
             newton_step_norm: direction_norm,
             step_length,
@@ -1104,7 +1106,9 @@ impl NewtonKrylovState {
                         residual_before,
                         residual_after: residual_before,
                         forcing,
-                        linear_relative_residual: linear_report.rel_residual,
+                        linear_relative_residual: linear_report
+                            .euclidean_rel_residual()
+                            .unwrap_or(f64::NAN),
                         linear_iterations: linear_report.iters,
                         newton_step_norm: direction_norm,
                         step_length: last_step_length,
@@ -1230,7 +1234,9 @@ impl NewtonKrylovState {
                         residual_before,
                         residual_after: residual_before,
                         forcing,
-                        linear_relative_residual: linear_report.rel_residual,
+                        linear_relative_residual: linear_report
+                            .euclidean_rel_residual()
+                            .unwrap_or(f64::NAN),
                         linear_iterations: linear_report.iters,
                         newton_step_norm: direction_norm,
                         step_length,
@@ -1256,7 +1262,9 @@ impl NewtonKrylovState {
                 residual_before,
                 residual_after: trial_norm,
                 forcing,
-                linear_relative_residual: linear_report.rel_residual,
+                linear_relative_residual: linear_report
+                    .euclidean_rel_residual()
+                    .unwrap_or(f64::NAN),
                 linear_iterations: linear_report.iters,
                 newton_step_norm: direction_norm,
                 step_length,

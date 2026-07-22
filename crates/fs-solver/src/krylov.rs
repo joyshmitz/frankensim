@@ -26,14 +26,14 @@ pub enum StallDiagnosis {
     Breakdown,
 }
 
-/// WHAT a reported relative residual is, and in which norm — the
-/// provenance `SolveReport::rel_residual` cannot carry on its own.
+/// WHAT a reported relative residual is, and in which norm.
 ///
 /// The five solvers in this crate do not all report the same quantity,
 /// so `converged == true` does not by itself mean
-/// `‖b − Ax‖₂/‖b‖₂ < tol`. Ask the producing state for its claim
-/// ([`CgState::residual_claim`] and siblings) before treating a report
-/// as a Euclidean correctness statement.
+/// `‖b − Ax‖₂/‖b‖₂ < tol`. Every [`SolveReport`] carries the claim that
+/// produced its number ([`SolveReport::residual_claim`]), and the
+/// producing state exposes the same claim mid-flight
+/// ([`CgState::residual_claim`] and siblings).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ResidualClaim {
     /// `‖b − Ax‖₂/‖b‖₂`, recomputed from the current iterate by an
@@ -72,6 +72,19 @@ impl ResidualClaim {
         matches!(self, ResidualClaim::TrueEuclidean(_))
     }
 
+    /// The number ONLY when it is a recomputed Euclidean relative
+    /// residual — `None` for either estimate. This is the accessor a
+    /// driver that needs `‖b − Ax‖₂/‖b‖₂` must use: it REFUSES rather
+    /// than hand back a recurrence estimate or an M-norm number under
+    /// the Euclidean name.
+    #[must_use]
+    pub fn euclidean(&self) -> Option<f64> {
+        match self {
+            ResidualClaim::TrueEuclidean(value) => Some(*value),
+            ResidualClaim::RecursiveEstimate(_) | ResidualClaim::MNormEstimate(_) => None,
+        }
+    }
+
     /// A stable one-line description for receipts and reports.
     #[must_use]
     pub fn provenance(&self) -> &'static str {
@@ -89,28 +102,135 @@ impl ResidualClaim {
 
 /// Solve outcome with the full residual history (error transparency).
 ///
-/// `rel_residual` is a bare number: its NORM and PROVENANCE depend on
-/// the producing solver (see [`ResidualClaim`]), and this type cannot
-/// carry them. A driver holding only a `SolveReport` therefore may not
-/// read `converged` as `‖b − Ax‖₂/‖b‖₂ < tol`; it may read it only as
-/// "the residual this solver reports met `tol`". Use the producing
-/// state's `residual_claim()` when the distinction matters.
+/// The report CARRIES its own provenance: [`SolveReport::residual_claim`]
+/// says which of the three quantities in [`ResidualClaim`] the number is,
+/// and every other field is derived from that claim by the constructors
+/// below — `rel_residual` is the claim's magnitude, `converged` is
+/// "that magnitude met `tol`", and `history` is a trace of the same
+/// measure. There is no way to build a report whose number and
+/// provenance disagree, and no way to build one at all without naming
+/// the claim: the claim field is private and the struct is
+/// `#[non_exhaustive]`, so [`SolveReport::from_claim`] (or its
+/// `_with_diagnosis` sibling) is the only constructor, here or in any
+/// other crate.
+///
+/// A driver that needs `‖b − Ax‖₂/‖b‖₂ < tol` must ask for it through
+/// [`SolveReport::euclidean_rel_residual`] or
+/// [`SolveReport::converged_euclidean`], which REFUSE (`None`/`false`)
+/// when the producing solver never computed that quantity. Reading the
+/// bare `rel_residual` field yields the claim's magnitude in the
+/// claim's measure — for P-MINRES that is an M-norm number, which for
+/// an ill-conditioned preconditioner is unrelated in magnitude to the
+/// Euclidean residual.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SolveReport {
     /// Iterations performed (cumulative across resumes).
     pub iters: usize,
-    /// Final relative residual as the producing solver measures it:
-    /// recomputed `‖b − Ax‖₂/‖b‖₂` for GMRES/FGMRES, the recursive
-    /// estimate of it for CG and MINRES, and the M-NORM estimate
-    /// `‖r‖_M/‖b‖_M` for P-MINRES. See [`ResidualClaim`].
+    /// The MAGNITUDE of [`SolveReport::residual_claim`] — the reported
+    /// claim's number, whose MEANING is in that claim and is not
+    /// necessarily Euclidean: recomputed `‖b − Ax‖₂/‖b‖₂` for
+    /// GMRES/FGMRES, a recursive estimate of it for CG and MINRES, and
+    /// the M-NORM estimate `‖r‖_M/‖b‖_M` for P-MINRES.
+    ///
+    /// Use [`SolveReport::euclidean_rel_residual`] when the Euclidean
+    /// reading is the one that matters; it returns `None` instead of
+    /// this number when the number is not that quantity.
     pub rel_residual: f64,
-    /// `rel_residual < tol` — the reported residual claim met the
-    /// tolerance. NOT, on its own, a Euclidean correctness statement.
+    /// `rel_residual < tol` — the reported residual CLAIM met the
+    /// tolerance. NOT, on its own, a Euclidean correctness statement;
+    /// see [`SolveReport::converged_euclidean`].
     pub converged: bool,
-    /// `rel_residual` after each iteration, in the same measure.
+    /// `rel_residual` after each iteration, in the claim's measure.
     pub history: Vec<f64>,
     /// Present iff not converged.
     pub diagnosis: Option<StallDiagnosis>,
+    /// WHICH quantity `rel_residual` is. Private on purpose: it is set
+    /// once, by the constructor, from the producing solver's own claim,
+    /// so it can be neither omitted nor overwritten by a later hand.
+    claim: ResidualClaim,
+}
+
+impl SolveReport {
+    /// The only way to build a report: from the producing solver's typed
+    /// claim. `rel_residual` and `converged` are DERIVED from `claim`, so
+    /// a producer cannot publish a magnitude whose provenance is missing,
+    /// stale, or contradicted.
+    #[must_use]
+    pub fn from_claim(
+        iters: usize,
+        claim: ResidualClaim,
+        tol: f64,
+        history: Vec<f64>,
+    ) -> SolveReport {
+        let value = claim.value();
+        let converged = value < tol;
+        SolveReport {
+            iters,
+            rel_residual: value,
+            converged,
+            diagnosis: if converged {
+                None
+            } else {
+                diagnose(&history, tol)
+            },
+            history,
+            claim,
+        }
+    }
+
+    /// As [`SolveReport::from_claim`], but with a stall diagnosis the
+    /// producer knows and the history cannot show (FGMRES's breakdown
+    /// flags). `unresolved` is recorded ONLY when the claim did not meet
+    /// `tol`: a converged report carries no diagnosis, so this cannot be
+    /// used to attach a failure story to a success or vice versa.
+    #[must_use]
+    pub fn from_claim_with_diagnosis(
+        iters: usize,
+        claim: ResidualClaim,
+        tol: f64,
+        history: Vec<f64>,
+        unresolved: StallDiagnosis,
+    ) -> SolveReport {
+        let mut report = SolveReport::from_claim(iters, claim, tol, history);
+        if !report.converged {
+            report.diagnosis = Some(unresolved);
+        }
+        report
+    }
+
+    /// WHICH of the three quantities `rel_residual` is, and in which
+    /// norm. Carried by the report itself, so a driver holding nothing
+    /// but a report can still tell.
+    #[must_use]
+    pub fn residual_claim(&self) -> ResidualClaim {
+        self.claim
+    }
+
+    /// `‖b − Ax‖₂/‖b‖₂` — `Some` ONLY when the producing solver actually
+    /// recomputed it (GMRES(m), FGMRES). `None` for CG/MINRES's recursive
+    /// estimate and for P-MINRES's M-norm estimate: the honest answer
+    /// there is "this solve never established that number", not the
+    /// number it did establish under a name it does not deserve.
+    #[must_use]
+    pub fn euclidean_rel_residual(&self) -> Option<f64> {
+        self.claim.euclidean()
+    }
+
+    /// `‖b − Ax‖₂/‖b‖₂ < tol` — true ONLY when the report's claim is a
+    /// recomputed Euclidean residual AND it met the tolerance. The
+    /// Euclidean reading of `converged`, fail-closed.
+    #[must_use]
+    pub fn converged_euclidean(&self) -> bool {
+        self.converged && self.claim.is_true_euclidean()
+    }
+
+    /// A stable one-line description of what `rel_residual` is, for
+    /// receipts and reports.
+    #[must_use]
+    pub fn residual_provenance(&self) -> &'static str {
+        self.claim.provenance()
+    }
 }
 
 fn diagnose(history: &[f64], tol: f64) -> Option<StallDiagnosis> {
@@ -138,18 +258,8 @@ fn diagnose(history: &[f64], tol: f64) -> Option<StallDiagnosis> {
     Some(StallDiagnosis::BudgetExhausted)
 }
 
-fn report(iters: usize, history: &[f64], bnorm_rel: f64, tol: f64) -> SolveReport {
-    SolveReport {
-        iters,
-        rel_residual: bnorm_rel,
-        converged: bnorm_rel < tol,
-        history: history.to_vec(),
-        diagnosis: if bnorm_rel < tol {
-            None
-        } else {
-            diagnose(history, tol)
-        },
-    }
+fn report(iters: usize, history: &[f64], claim: ResidualClaim, tol: f64) -> SolveReport {
+    SolveReport::from_claim(iters, claim, tol, history.to_vec())
 }
 
 // ------------------------------------------------------------------------ CG
@@ -238,7 +348,7 @@ impl CgState {
             self.iters += 1;
             self.history.push(self.rel_residual());
         }
-        report(self.iters, &self.history, self.rel_residual(), tol)
+        report(self.iters, &self.history, self.residual_claim(), tol)
     }
 }
 
@@ -359,7 +469,7 @@ impl MinresState {
             self.iters += 1;
             self.history.push(self.rel_residual());
         }
-        report(self.iters, &self.history, self.rel_residual(), tol)
+        report(self.iters, &self.history, self.residual_claim(), tol)
     }
 }
 
@@ -560,7 +670,7 @@ impl PminresState {
                 self.z[i] = z_next[i] / beta_next;
             }
         }
-        report(self.iters, &self.history, self.rel_residual(), tol)
+        report(self.iters, &self.history, self.residual_claim(), tol)
     }
 }
 
@@ -718,7 +828,7 @@ impl GmresState {
                 break;
             }
         }
-        report(self.iters, &self.history, self.rel, tol)
+        report(self.iters, &self.history, self.residual_claim(), tol)
     }
 }
 
