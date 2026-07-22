@@ -143,6 +143,67 @@ claim the surface should make instead. Run
 fails when an open P0 has no owner, when severity labels are missing or
 duplicated, or when the beads store cannot be read.
 
+## EXTREAL critical-path triage (bead f85xj.16.2)
+
+The EXTREAL vertical is the program critical path. `.beads/issues.jsonl`
+remains authoritative for issue state and dependency edges;
+`vertical-capability-graph.json` is a checked projection that binds every
+`capability-maturity.json` capability to implementing Beads and names the
+owners of the four integration seams. It intentionally does not copy Beads
+edges or assert that membership, issue closure, or crate-local green proves a
+capability mature.
+
+Every Bead whose id starts with `frankensim-extreal-program-f85xj` carries the
+`extreal` label. Use robot modes only:
+
+```bash
+bv --robot-plan --label extreal
+bv --robot-triage --label extreal
+bv --robot-alerts --label extreal
+```
+
+The plan result must expose a summary, parallel tracks, status, and a data
+hash. The triage result must expose quick reference counts, recommendations,
+blockers, and project health. If a local `bv` version rejects `--label` for a
+particular robot command, use `bv --recipe actionable --robot-plan` to inspect
+the global actionable graph and retain the limitation in the triage record;
+never fall back to bare interactive `bv`.
+
+The named seam owners are integration owners, not crate owners:
+
+| Seam | Owner | Accountability |
+| --- | --- | --- |
+| `schema-scenario` | `jemanuel` | Versioned project inputs preserve persistent scenario identity and the Five Explicits. |
+| `physics-evidence` | `jemanuel` | Physics QoIs retain numerical, model-form, experimental, and regime authority. |
+| `corpus-scorecard` | `jemanuel` | Corpus identity, domain, uncertainty, and limitations reach the public scorecard. |
+| `cli-session` | `jemanuel` | CLI work enters governed sessions with budgets, cancellation, replay, and structured output. |
+
+Crate-local tests do not establish seam health. The owner must demand an e2e
+exercise across the seam before reporting it integrated. Work outside the
+critical path needs the `f85xj.16.3` displacement-rule justification: either a
+named trust-risk reduction or capped research with a falsifier, budget, and no
+claim on critical-path capacity.
+
+### Weekly recipe
+
+1. Run `bv --robot-plan --label extreal`; inspect blockers and whether each
+   track advances the Cooling 0.1 vertical or a linked `ty23`/`v6dn` gate.
+2. Run `bv --robot-triage --label extreal`; challenge the top recommendations
+   against seam risk, maturity gaps, and the actual dependency chain.
+3. Check `cargo run -p xtask -- check-critical-path`; repair missing labels,
+   stale capability bindings, missing owners, or dangling issue ids before
+   selecting work.
+4. For off-path work, record the `f85xj.16.3` justification before assigning
+   capacity. Record the command, UTC timestamp, data hash, result shape, and
+   counts from the weekly run; do not silently replace prior receipts.
+
+The first retained exercise ran `bv --robot-plan --label extreal` at
+`2026-07-22T21:19:43Z`. It returned the documented summary/tracks/status/hash
+shape with data hash `5ba7d5d6e7f40830`, 178 scoped issues, 68 actionable, and
+61 blocked. The complete deterministic receipt fields are retained in
+`vertical-capability-graph.json`; those counts are historical observations,
+not promises about the live graph.
+
 ## Compiler checks
 
 After substantive changes:

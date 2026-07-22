@@ -17,6 +17,7 @@
 //! - `check-identities` — identity schemas classify fields and link mutation coverage (bead iu5l).
 //! - `check-manifest-fixture` — admit only declared new-domain Cargo edges and an acyclic same-layer order.
 //! - `check-constellation-assessment` — keep the measured seven-sibling trust cone current.
+//! - `check-critical-path` — bind maturity capabilities and integration seams to the live Beads graph.
 //! - `check-docs`     — README facts and capability matrix exactly match tracked authorities.
 //! - `check-claims`   — README hashes/crates/sentinels must exist in code (bead 06yc).
 //! - `check-closures` — closed bug beads must cite regression evidence or a disposition (bead hx4p).
@@ -41,6 +42,7 @@ mod closures;
 pub mod constellation_admission;
 mod constellation_assessment;
 mod constellation_cleanliness;
+mod critical_path;
 mod depgraph;
 mod identities;
 mod manifest_fixture;
@@ -8091,6 +8093,11 @@ fn main() -> ExitCode {
             policy_notes = report.decisions;
             (report.violations, vec!["capability-maturity"])
         }
+        "check-critical-path" => {
+            let report = critical_path::check_critical_path(&root);
+            policy_notes = report.decisions;
+            (report.violations, vec![critical_path::CHECK])
+        }
         "check-docs" => {
             let docs = claims::check_docs(&root);
             let projection = maturity::check_readme_projection(&root);
@@ -8126,6 +8133,9 @@ fn main() -> ExitCode {
             let maturity_report = maturity::check_maturity(&root);
             v.extend(maturity_report.violations);
             policy_notes.extend(maturity_report.decisions);
+            let critical_path_report = critical_path::check_critical_path(&root);
+            v.extend(critical_path_report.violations);
+            policy_notes.extend(critical_path_report.decisions);
             let gate_report = claim_integrity_gate::check_claim_integrity_gate(&root);
             v.extend(gate_report.violations);
             policy_notes.extend(gate_report.decisions);
@@ -8152,6 +8162,7 @@ fn main() -> ExitCode {
                     "doc-facts",
                     "capability-matrix",
                     "capability-maturity",
+                    critical_path::CHECK,
                     "claim-integrity-gate",
                     "claim-state",
                     "closure-evidence",
@@ -8163,7 +8174,7 @@ fn main() -> ExitCode {
             eprintln!(
                 "unknown command {other:?}; use check-layers|check-deps|check-contracts|\
                  check-unsafe|check-powi|check-obs-events|check-casual-print|check-terminology|\
-                 check-goldens|check-docs|check-claims|check-closures|check-maturity|check-claim-integrity|\
+                 check-goldens|check-docs|check-claims|check-closures|check-maturity|check-critical-path|check-claim-integrity|\
                  check-identities|check-manifest-fixture|check-constellation-assessment|check-citable-producers|\
                  check-all|generate-identities|generate-constellation-assessment|lock-constellation|\
                  check-constellation|depgraph-receipt|matdb-pack"

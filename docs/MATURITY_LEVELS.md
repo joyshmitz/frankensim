@@ -126,3 +126,19 @@ A ref that does not resolve is a violation: the registry may not cite evidence
 that is not there. `corpus` refs are recorded but not resolved, because the
 V&V corpus registry (`e04`) does not exist yet — that gap is the honest reason
 no capability here is L4.
+
+## Capability-to-work projection
+
+`vertical-capability-graph.json` cross-references every capability id here to
+the Beads that implement or harden it. The projection is checked by
+`cargo run -p xtask -- check-critical-path`: every referenced issue must exist,
+every registry capability must appear exactly once, and any L2-or-higher row
+must have at least one closed implementing Bead. This is a consistency floor,
+not promotion evidence. The evidence refs above remain the authority for the
+maturity level, while `.beads/issues.jsonl` remains the authority for issue
+status and dependency edges.
+
+The same projection names owners for the four EXTREAL integration seams and
+retains the shape and identity of a successful robot-plan exercise. See
+`docs/CONVENTIONS.md` for the weekly triage recipe and the explicit no-claim
+boundary between a closed task, a green seam, and a mature capability.
