@@ -1,0 +1,22 @@
+[package]
+name = "fs-project"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "The versioned .fsim project schema (bead f85xj.6.1): the user-facing contract for the ratified thermal-design-assurance vertical, with the Five Explicits mandatory, defaults rare and receipted, typed violations, isomorphic s-expression/JSON spellings over fs-ir's AST, canonical bytes for hashing, and migration receipts."
+
+[package.metadata.frankensim]
+layer = "L6"
+
+[dependencies]
+fs-blake3 = { path = "../fs-blake3" }
+fs-ir = { path = "../fs-ir" }
+fs-qty = { path = "../fs-qty" }
+fs-scenario = { path = "../fs-scenario" }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

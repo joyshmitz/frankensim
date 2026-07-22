@@ -143,6 +143,7 @@ members = [
     "crates/fs-conduction",
     "crates/fs-convection",
     "crates/fs-airflow",
+    "crates/fs-project",
     "xtask",
 ]
 
