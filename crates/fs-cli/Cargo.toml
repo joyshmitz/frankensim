@@ -1,0 +1,24 @@
+[package]
+name = "fs-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Stable command-line surface for FrankenSim project workflows."
+
+[package.metadata.frankensim]
+layer = "L6"
+
+[[bin]]
+name = "frankensim"
+path = "src/main.rs"
+
+[dependencies]
+fs-project = { path = "../fs-project" }
+
+[dev-dependencies]
+fs-qty = { path = "../fs-qty" }
+
+[lints]
+workspace = true

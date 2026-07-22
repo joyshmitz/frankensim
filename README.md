@@ -8,16 +8,16 @@
 
 [![Status](https://img.shields.io/badge/status-active%20Rust%20workspace-2ea44f)](#implemented-workspace)
 [![Rust](https://img.shields.io/badge/rust-nightly%202024-b7410e)](rust-toolchain.toml)
-[![Crates](https://img.shields.io/badge/workspace-138%20native%20fs--%2A%20crates-0969da)](#implemented-workspace)
-[![Contracts](https://img.shields.io/badge/contracts-139%20of%20139%20crates-8250df)](#contracts-and-verification)
-[![Tests](https://img.shields.io/badge/tests-520%20tracked%20integration%20test%20files-1f883d)](#contracts-and-verification)
+[![Crates](https://img.shields.io/badge/workspace-140%20native%20fs--%2A%20crates-0969da)](#implemented-workspace)
+[![Contracts](https://img.shields.io/badge/contracts-141%20of%20141%20crates-8250df)](#contracts-and-verification)
+[![Tests](https://img.shields.io/badge/tests-522%20tracked%20integration%20test%20files-1f883d)](#contracts-and-verification)
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20AI%20rider-yellow)](LICENSE)
 
 </div>
 
 FrankenSim is an active Rust source workspace for deterministic geometry, certified numerics, meshing, execution, evidence, and design-ledger infrastructure for simulation and design optimization.
 
-The tree contains 139 `fs-*` crate directories: 138 in the native Cargo workspace plus the standalone nested `fs-wasm` workspace. They include repository policy tooling, conformance contracts, integration tests, and implementations across substrate/runtime, numerical kernels, geometry representations, meshing, physics, solvers, adjoints, optimization, imaging, evidence, packaging, and ledger layers.
+The tree contains 141 `fs-*` crate directories: 140 in the native Cargo workspace plus the standalone nested `fs-wasm` workspace. They include repository policy tooling, conformance contracts, integration tests, and implementations across substrate/runtime, numerical kernels, geometry representations, meshing, physics, solvers, adjoints, optimization, imaging, evidence, packaging, and ledger layers.
 
 The inventory numbers in this README are derived from the root workspace
 manifest, each crate's declared layer metadata, and the portable tracked-input
@@ -32,15 +32,15 @@ edge is valid.
 <!-- BEGIN GENERATED FRANKENSIM DOC FACTS -->
 | Derived repository fact | Value |
 |-------------------------|-------|
-| Native workspace `fs-*` crates | 138 |
+| Native workspace `fs-*` crates | 140 |
 | Standalone `fs-*` workspaces | 1 (`fs-wasm`) |
-| Tracked `fs-*` crate directories | 139 |
-| Tracked `CONTRACT.md` files | 139 of 139 |
-| Tracked crate integration-test files | 520 |
-| `fs-*` layer inventory | `UTIL=15`, `L0=7`, `L1=13`, `L2=18`, `L3=27`, `L4=32`, `L5=4`, `L6=23` |
+| Tracked `fs-*` crate directories | 141 |
+| Tracked `CONTRACT.md` files | 141 of 141 |
+| Tracked crate integration-test files | 522 |
+| `fs-*` layer inventory | `UTIL=15`, `L0=7`, `L1=13`, `L2=18`, `L3=27`, `L4=32`, `L5=4`, `L6=25` |
 <!-- END GENERATED FRANKENSIM DOC FACTS -->
 
-There is not yet a packaged end-user simulation application or crates.io release. Today, FrankenSim is usable as a source workspace and library substrate.
+An initial stable validation CLI now exists, but there is not yet an integrated end-user simulation application or crates.io release. Today, FrankenSim is usable as a source workspace and library substrate.
 
 ## TL;DR
 
@@ -52,15 +52,15 @@ There is not yet a packaged end-user simulation application or crates.io release
 
 | Area | Current implementation |
 |------|------------------------|
-| Workspace | Rust 2024 nightly Cargo workspace with 138 native `fs-*` workspace crates plus `xtask`; `fs-wasm` is a standalone nested workspace |
-| Contracts | 139 of 139 `fs-*` crate directories have `CONTRACT.md` files |
+| Workspace | Rust 2024 nightly Cargo workspace with 140 native `fs-*` workspace crates plus `xtask`; `fs-wasm` is a standalone nested workspace |
+| Contracts | 141 of 141 `fs-*` crate directories have `CONTRACT.md` files |
 | Runtime substrate | Capability probing, SIMD facades, aligned arenas, two-lane execution, cancellation contexts, tile pools, tuner and race scaffolding |
 | Numerics | Deterministic elementary math, dense/sparse linear algebra, FFT/DCT, interval/affine/Taylor arithmetic, Chebyshev collocation, random/QMC streams, AD/adjoint infrastructure, e-process inference |
 | Geometry | Region/chart abstraction, SDF, mesh and F-rep charts, representation conversion hooks, transformations, tet meshing, remeshing, quality audits |
 | Thermal and airflow | `fs-conduction` provides a steady FEM kernel; `fs-convection` provides 11 validity-gated Nusselt cards; and `fs-airflow` provides typed fan curves, series/parallel quadratic loss networks with explicit leakage, nominal-model interval-Newton operating-point brackets, and an evidence-preserving branch-flow handoff to convection. Only conduction is currently registered for capability maturity |
 | Evidence and ledger | L2 evidence-colour and evidence-packaging capabilities; `fs-vvreg` now has a fail-closed validation-corpus schema with 19 reference-only Level-A thermal definitions/targets, one synthetic Level-B fixture, and one gap-preserving Level-C retained curve, while the FrankenSQLite-backed design ledger remains registered at L1 with known suite failures open |
 | Policy tooling | `xtask` checks for layer direction, Franken-only runtime dependencies, contracts, unsafe capsules, and constellation lock verification |
-| Tests | 520 tracked Rust files under crate `tests/` directories in the checked inventory, in addition to inline unit tests; this is an inventory count, not a claim that every test is green on the current tree |
+| Tests | 522 tracked Rust files under crate `tests/` directories in the checked inventory, in addition to inline unit tests; this is an inventory count, not a claim that every test is green on the current tree |
 
 ### Capability Maturity, Not Crate Count
 
@@ -190,10 +190,11 @@ GitHub Actions is not the source of truth for this project. Use DSR for automati
 
 ## Command Reference
 
-FrankenSim does not yet ship an end-user simulator CLI. The commands below are the implemented repository and validation entrypoints.
+FrankenSim ships an initial strict validation CLI. Its solve, report, and package verbs currently fail closed at explicit unavailable-stage boundaries rather than presenting an incomplete simulator as a working product.
 
 | Command | Purpose |
 |---------|---------|
+| `cargo run -p fs-cli --bin frankensim -- validate <project.fsim>` | Parse a canonical `fs-project` file, report all structural findings, and emit its canonical hash |
 | `cargo run --manifest-path tools/bootstrap/Cargo.toml` | From a fresh checkout, materialize and verify the pinned sibling constellation before the root workspace resolves |
 | `cargo test --workspace` | Build the workspace and run crate-level unit, integration, and conformance tests |
 | `cargo fmt --check` | Check formatting under the pinned nightly toolchain |
@@ -294,11 +295,11 @@ The workspace has grown beyond the first substrate and geometry layer. These cra
 | `fs-constraint`, `fs-ascent`, `fs-dfo`, `fs-dimine`, `fs-regime`, `fs-topopt`, `fs-robust` | ASCENT layer: typed constraints with unsat cores and repairs, L-BFGS/TR-Newton/augmented-Lagrangian/Riemannian optimizers, derivative-free CMA-ES/BIPOP/Nelder-Mead, dimensional law mining, regime/validity-domain machinery, density-based topology optimization, and objective epistemics |
 | `fs-contract`, `fs-verify`, `fs-bisect`, `fs-conform` | Verification layer: assume-guarantee component contracts, certified speculation verification, bisect-style proof/debug infrastructure, and restriction-map plugin conformance |
 | `fs-package`, `fs-checker`, `fs-crosswalk` | Evidence distribution layer: content-addressed evidence packages, a solver-free standalone checker, and a standards-language crosswalk for ASME V&V and FAA/EASA certification-by-analysis concepts |
-| `fs-recompute`, `fs-session`, `fs-govern`, `fs-probe`, `fs-iface`, `fs-ladder`, `fs-spececo`, `fs-wedge`, `fs-io` | HELM and utility layer: incremental recomputation, sessions/resource governance, machine-readable proposal governance, probes, interfaces, degradation ladders, specialization ecology, wedge-selection data, and I/O boundaries |
+| `fs-project`, `fs-cli`, `fs-recompute`, `fs-session`, `fs-govern`, `fs-probe`, `fs-iface`, `fs-ladder`, `fs-spececo`, `fs-wedge`, `fs-io` | HELM and utility layer: a versioned project schema, strict validation CLI with fail-closed product-stage seams, incremental recomputation, sessions/resource governance, machine-readable proposal governance, probes, interfaces, degradation ladders, specialization ecology, wedge-selection data, and I/O boundaries |
 
 ## Examples
 
-These examples are library-level examples. FrankenSim does not yet expose a stable end-user CLI.
+These examples remain library-level examples. The stable CLI surface currently covers project validation only; solve, report, and package are explicit unavailable stages.
 
 ### Deterministic Sparse Assembly
 
@@ -1133,7 +1134,7 @@ Different readers should start in different places.
 
 ## Contracts and Verification
 
-The tree currently has 139 `CONTRACT.md` files for 139 `fs-*` crate directories.
+The tree currently has 141 `CONTRACT.md` files for 141 `fs-*` crate directories.
 The contract count is meant to be checkable, not aspirational.
 
 Existing contracts use these required sections:
@@ -1175,7 +1176,7 @@ The current DSR setup is preferred over GitHub Actions for this repository. If a
 |-- Cargo.toml                         # Workspace manifest
 |-- Cargo.lock                         # Committed lockfile
 |-- rust-toolchain.toml                # Nightly toolchain and components
-|-- crates/                            # 139 fs-* crates; selected entries shown below
+|-- crates/                            # 141 fs-* crates; selected entries shown below
 |   |-- fs-qty/                        # Dimensional quantities
 |   |-- fs-obs/                        # Structured observability
 |   |-- fs-evidence/                   # Evidence and certification wrappers
@@ -1300,7 +1301,7 @@ FrankenSim has substantial working code, but it is still early infrastructure.
 | Capability | Current state |
 |------------|---------------|
 | Stable public API | Not promised yet; contracts exist, but APIs may still change |
-| End-user CLI/application | Not implemented as a packaged simulation app |
+| End-user CLI/application | Stable project validation is implemented; solve, report, and package refuse as unavailable until their product stages are integrated |
 | crates.io distribution | Not published |
 | GitHub Actions | Not authoritative for this repo; use DSR |
 | Full multiphysics solver suite | Not complete in the current workspace |

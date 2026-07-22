@@ -953,6 +953,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-cli"
+version = "0.0.1"
+dependencies = [
+ "fs-project",
+ "fs-qty",
+]
+
+[[package]]
 name = "fs-conduction"
 version = "0.0.1"
 dependencies = [
@@ -1690,6 +1698,16 @@ dependencies = [
  "fs-ledger",
  "fs-opt",
  "fs-qty",
+]
+
+[[package]]
+name = "fs-project"
+version = "0.0.1"
+dependencies = [
+ "fs-blake3",
+ "fs-ir",
+ "fs-qty",
+ "fs-scenario",
 ]
 
 [[package]]

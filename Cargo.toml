@@ -144,6 +144,7 @@ members = [
     "crates/fs-convection",
     "crates/fs-airflow",
     "crates/fs-project",
+    "crates/fs-cli",
     "xtask",
 ]
 
