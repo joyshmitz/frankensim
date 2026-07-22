@@ -147,7 +147,8 @@ workstream.
   composition identities, a unique sign-changing nominal bracket, stall
   refusal, three speed points, leakage sensitivity and flow balance, the
   convection handoff, and provenance separation for equal-nominal models with
-  different uncertainty authority.
+  different uncertainty authority. The focused remote Cargo lane passed all
+  nine tests on RCH worker `ovh-a` (job `j-29943194691043331`).
 - The retained fan fixture and uncertainty allowances are synthetic. No
   manufacturer curve/tolerance corpus, unequal parallel-fan model,
   installation-effects model, CFD comparison, experimental validation, or
