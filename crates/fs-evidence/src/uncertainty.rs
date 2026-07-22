@@ -62,6 +62,9 @@ pub enum UncertaintyRule {
     CovarianceMatrix,
     /// Two budgets described different QoIs or units.
     IncompatibleBudget,
+    /// A numerical-only update named a non-numerical source or omitted one of
+    /// the three numerical sources.
+    NumericalUpdate,
     /// A collection or transport exceeded its declared bound.
     CollectionBudget,
     /// The transport schema version is unknown.
@@ -80,6 +83,7 @@ impl UncertaintyRule {
             Self::CovarianceMembership => "uncertainty-covariance-membership",
             Self::CovarianceMatrix => "uncertainty-covariance-matrix",
             Self::IncompatibleBudget => "uncertainty-incompatible-budget",
+            Self::NumericalUpdate => "uncertainty-numerical-update",
             Self::CollectionBudget => "uncertainty-collection-budget",
             Self::SchemaVersion => "uncertainty-schema-version",
         }
@@ -523,11 +527,11 @@ impl TermValue {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EngineeringUncertaintyTerm {
     /// Engineering source category.
-    pub kind: EngineeringUncertaintyKind,
+    kind: EngineeringUncertaintyKind,
     /// Rich uncertainty representation.
-    pub value: TermValue,
+    value: TermValue,
     /// Evidence/provenance artifact supporting this declaration.
-    pub provenance: UncertaintyArtifactRef,
+    provenance: UncertaintyArtifactRef,
 }
 
 impl EngineeringUncertaintyTerm {
@@ -551,6 +555,92 @@ impl EngineeringUncertaintyTerm {
             value,
             provenance,
         })
+    }
+
+    /// Engineering source category fixed at admission.
+    #[must_use]
+    pub const fn kind(&self) -> EngineeringUncertaintyKind {
+        self.kind
+    }
+
+    /// Admitted representation. No mutable accessor is exposed: changing a
+    /// value must re-enter [`Self::try_new`].
+    #[must_use]
+    pub const fn value(&self) -> &TermValue {
+        &self.value
+    }
+
+    /// Provenance authority fixed together with the source and value.
+    #[must_use]
+    pub const fn provenance(&self) -> &UncertaintyArtifactRef {
+        &self.provenance
+    }
+}
+
+/// Sealed update containing exactly the numerical certificate sources.
+///
+/// Model-form, measurement, geometry, parameter, and boundary-condition
+/// evidence cannot be represented by this type. Applying one therefore
+/// changes only roundoff, solver/algebraic, and discretization terms; callers
+/// that acquired better numerical evidence cannot accidentally rewrite a
+/// model or experimental authority term in the same operation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NumericalUncertaintyUpdate {
+    terms: [EngineeringUncertaintyTerm; 3],
+}
+
+impl NumericalUncertaintyUpdate {
+    /// Admit exactly one roundoff, solver/algebraic, and discretization term.
+    pub fn try_new(terms: Vec<EngineeringUncertaintyTerm>) -> Result<Self, UncertaintyError> {
+        const KINDS: [EngineeringUncertaintyKind; 3] = [
+            EngineeringUncertaintyKind::Roundoff,
+            EngineeringUncertaintyKind::SolverAlgebraic,
+            EngineeringUncertaintyKind::Discretization,
+        ];
+        if terms.len() != KINDS.len() {
+            return refuse(
+                UncertaintyRule::NumericalUpdate,
+                format!("numerical update has {} terms; expected 3", terms.len()),
+            );
+        }
+        let mut by_kind = BTreeMap::new();
+        for term in terms {
+            if !KINDS.contains(&term.kind) {
+                return refuse(
+                    UncertaintyRule::NumericalUpdate,
+                    format!("{} is not a numerical update source", term.kind.name()),
+                );
+            }
+            let kind = term.kind;
+            if by_kind.insert(kind, term).is_some() {
+                return refuse(
+                    UncertaintyRule::NumericalUpdate,
+                    format!("duplicate {} numerical update term", kind.name()),
+                );
+            }
+        }
+        let terms = KINDS.map(|kind| {
+            by_kind.remove(&kind).ok_or_else(|| {
+                UncertaintyError::new(
+                    UncertaintyRule::NumericalUpdate,
+                    format!("missing {} numerical update term", kind.name()),
+                )
+            })
+        });
+        let terms = terms.into_iter().collect::<Result<Vec<_>, _>>()?;
+        let terms = terms.try_into().map_err(|_| {
+            UncertaintyError::new(
+                UncertaintyRule::NumericalUpdate,
+                "numerical update term count changed",
+            )
+        })?;
+        Ok(Self { terms })
+    }
+
+    /// Canonically ordered numerical terms.
+    #[must_use]
+    pub const fn terms(&self) -> &[EngineeringUncertaintyTerm; 3] {
+        &self.terms
     }
 }
 
@@ -729,6 +819,19 @@ impl EngineeringUncertaintyBudget {
     #[must_use]
     pub fn term(&self, kind: EngineeringUncertaintyKind) -> &EngineeringUncertaintyTerm {
         &self.terms[usize::from(kind.code() - 1)]
+    }
+
+    /// Replace only roundoff, solver/algebraic, and discretization evidence.
+    /// Every other term is cloned bit-for-bit from this budget.
+    pub fn apply_numerical_update(
+        &self,
+        update: &NumericalUncertaintyUpdate,
+    ) -> Result<Self, UncertaintyError> {
+        let mut terms = self.terms.clone();
+        for term in update.terms() {
+            terms[usize::from(term.kind.code() - 1)] = term.clone();
+        }
+        Self::try_new(self.qoi(), self.unit(), Vec::from(terms))
     }
 
     /// Conservative total honoring only explicit covariance blocks.

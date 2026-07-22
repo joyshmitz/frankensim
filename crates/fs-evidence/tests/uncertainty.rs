@@ -4,7 +4,7 @@ use fs_blake3::{ContentHash, hash_domain};
 use fs_evidence::uncertainty::{
     BudgetTotal, CovarianceBlock, DistributionTerm, DominantEngineeringTerm,
     EngineeringUncertaintyBudget, EngineeringUncertaintyKind, EngineeringUncertaintyTerm,
-    EnsembleTerm, TermValue, UncertaintyArtifactRef, UncertaintyRule,
+    EnsembleTerm, NumericalUncertaintyUpdate, TermValue, UncertaintyArtifactRef, UncertaintyRule,
 };
 
 fn digest(label: &str) -> ContentHash {
@@ -40,7 +40,7 @@ fn replace_term(
 ) {
     let slot = terms
         .iter_mut()
-        .find(|term| term.kind == kind)
+        .find(|term| term.kind() == kind)
         .expect("all eight fixture terms exist");
     *slot = term(kind, value);
 }
@@ -318,8 +318,9 @@ fn composition_is_monotone_and_never_launders_unknowns() {
             let composed = budget(left_terms)
                 .compose(&budget(right_terms))
                 .expect("compatible budgets compose");
-            let TermValue::IntervalBound { upper, .. } =
-                &composed.term(EngineeringUncertaintyKind::Parameters).value
+            let TermValue::IntervalBound { upper, .. } = composed
+                .term(EngineeringUncertaintyKind::Parameters)
+                .value()
             else {
                 panic!("mixed rich terms must conservatively degrade to an interval");
             };
@@ -340,7 +341,9 @@ fn composition_is_monotone_and_never_launders_unknowns() {
         .compose(&budget(unknown_terms))
         .expect("compatible budgets compose");
     assert!(matches!(
-        composed.term(EngineeringUncertaintyKind::Measurement).value,
+        composed
+            .term(EngineeringUncertaintyKind::Measurement)
+            .value(),
         TermValue::Unknown { .. }
     ));
     assert!(matches!(composed.total(), BudgetTotal::Unknown { .. }));
@@ -372,13 +375,93 @@ fn composition_provenance_binds_exact_parent_budgets() {
     assert_ne!(
         small
             .term(EngineeringUncertaintyKind::Geometry)
-            .provenance
+            .provenance()
             .digest(),
         large
             .term(EngineeringUncertaintyKind::Geometry)
-            .provenance
+            .provenance()
             .digest()
     );
+}
+
+#[test]
+fn numerical_updates_cannot_name_or_rewrite_model_or_measurement_sources() {
+    let mut terms = negligible_terms();
+    replace_term(
+        &mut terms,
+        EngineeringUncertaintyKind::ModelForm,
+        TermValue::unknown("no held-out experiment anchors the closure model").expect("unknown"),
+    );
+    replace_term(
+        &mut terms,
+        EngineeringUncertaintyKind::Measurement,
+        TermValue::interval(0.4, 0.8).expect("measurement interval"),
+    );
+    replace_term(
+        &mut terms,
+        EngineeringUncertaintyKind::Geometry,
+        TermValue::Ensemble(EnsembleTerm {
+            member_count: 8,
+            conservative_half_width: 0.3,
+            replay: artifact("ensemble:geometry-preserved"),
+        }),
+    );
+    let original = budget(terms);
+    let update = NumericalUncertaintyUpdate::try_new(vec![
+        term(
+            EngineeringUncertaintyKind::Discretization,
+            TermValue::interval(0.0, 0.03).expect("discretization bound"),
+        ),
+        term(
+            EngineeringUncertaintyKind::Roundoff,
+            TermValue::interval(0.0, 0.01).expect("roundoff bound"),
+        ),
+        term(
+            EngineeringUncertaintyKind::SolverAlgebraic,
+            TermValue::interval(0.0, 0.02).expect("solver bound"),
+        ),
+    ])
+    .expect("the three numerical sources admit in any input order");
+    let updated = original
+        .apply_numerical_update(&update)
+        .expect("sealed update preserves the complete budget");
+
+    for kind in [
+        EngineeringUncertaintyKind::Geometry,
+        EngineeringUncertaintyKind::Parameters,
+        EngineeringUncertaintyKind::BoundaryConditions,
+        EngineeringUncertaintyKind::ModelForm,
+        EngineeringUncertaintyKind::Measurement,
+    ] {
+        assert_eq!(
+            updated.term(kind),
+            original.term(kind),
+            "numerical evidence rewrote {}",
+            kind.name()
+        );
+    }
+    assert!(matches!(
+        updated.term(EngineeringUncertaintyKind::ModelForm).value(),
+        TermValue::Unknown { .. }
+    ));
+
+    let error = NumericalUncertaintyUpdate::try_new(vec![
+        term(
+            EngineeringUncertaintyKind::Roundoff,
+            TermValue::interval(0.0, 0.01).expect("roundoff bound"),
+        ),
+        term(
+            EngineeringUncertaintyKind::SolverAlgebraic,
+            TermValue::interval(0.0, 0.02).expect("solver bound"),
+        ),
+        term(
+            EngineeringUncertaintyKind::ModelForm,
+            TermValue::interval(0.0, 0.03).expect("attempted model bound"),
+        ),
+    ])
+    .expect_err("a numerical update has no representation for model authority");
+    assert_eq!(error.rule(), UncertaintyRule::NumericalUpdate);
+    assert!(error.detail().contains("model-form"));
 }
 
 #[test]
@@ -411,7 +494,7 @@ fn finite_overflow_never_masquerades_as_a_bounded_total() {
         .compose(&budget(one))
         .expect("overflow becomes explicit unknown rather than a constructor failure");
     assert!(matches!(
-        composed.term(EngineeringUncertaintyKind::Roundoff).value,
+        composed.term(EngineeringUncertaintyKind::Roundoff).value(),
         TermValue::Unknown { .. }
     ));
 }

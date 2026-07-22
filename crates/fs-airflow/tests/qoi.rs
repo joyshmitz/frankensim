@@ -149,7 +149,7 @@ fn every_reference_qoi_emits_an_eight_term_budget_without_laundering_unknowns() 
     for budget in qois.budgets() {
         assert_eq!(budget.terms().len(), ENGINEERING_UNCERTAINTY_TERM_COUNT);
         assert!(matches!(
-            budget.term(EngineeringUncertaintyKind::ModelForm).value,
+            budget.term(EngineeringUncertaintyKind::ModelForm).value(),
             TermValue::Unknown { .. }
         ));
         assert!(matches!(budget.total(), BudgetTotal::Unknown { .. }));
@@ -166,14 +166,14 @@ fn every_reference_qoi_emits_an_eight_term_budget_without_laundering_unknowns() 
         qois.pressure_drop
             .uncertainty
             .term(EngineeringUncertaintyKind::BoundaryConditions)
-            .value,
+            .value(),
         TermValue::IntervalBound { .. }
     ));
     assert!(matches!(
         qois.fan_power
             .uncertainty
             .term(EngineeringUncertaintyKind::Parameters)
-            .value,
+            .value(),
         TermValue::IntervalBound { .. }
     ));
 }
@@ -278,13 +278,13 @@ fn widening_an_upstream_operating_envelope_cannot_shrink_qoi_terms() {
                 .pressure_drop
                 .uncertainty
                 .term(EngineeringUncertaintyKind::BoundaryConditions)
-                .value
+                .value()
         ) >= upper(
             &base
                 .pressure_drop
                 .uncertainty
                 .term(EngineeringUncertaintyKind::BoundaryConditions)
-                .value
+                .value()
         )
     );
     assert!(
@@ -293,13 +293,13 @@ fn widening_an_upstream_operating_envelope_cannot_shrink_qoi_terms() {
                 .fan_power
                 .uncertainty
                 .term(EngineeringUncertaintyKind::BoundaryConditions)
-                .value
+                .value()
         ) >= upper(
             &base
                 .fan_power
                 .uncertainty
                 .term(EngineeringUncertaintyKind::BoundaryConditions)
-                .value
+                .value()
         )
     );
 }

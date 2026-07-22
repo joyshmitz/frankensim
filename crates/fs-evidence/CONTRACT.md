@@ -993,6 +993,20 @@ physical validation, process-standard conformance, or decision fitness.
   physical source, that a cited artifact is authentic, that an interval is a
   valid enclosure, that a distribution has coverage, or that an ensemble is
   representative. Those are producer/checker and ledger-admission claims.
+- `EngineeringUncertaintyTerm` is sealed after `try_new`: source, value, and
+  provenance have read-only accessors and no mutation door. A changed term must
+  re-enter admission. `NumericalUncertaintyUpdate` can contain exactly
+  roundoff, solver/algebraic, and discretization terms, and applying it clones
+  geometry, parameter, boundary-condition, model-form, and measurement terms
+  bit-for-bit. Better residuals, tighter roundoff analysis, or a finer mesh
+  therefore have no typed path that rewrites model or experimental authority.
+- Numerical verification and empirical validation remain orthogonal even
+  though `ColorRank` provides a conservative composition order. Neither an
+  eight-term numerical update nor any collection of `Verified` numerical
+  colors can mint `Validated`; only an independently admitted anchored-source
+  receipt can supply that authority. Transforming an existing `Validated`
+  parent with `Verified` arithmetic preserves the weaker validation class and
+  derives new lineage, but does not create a new anchor.
 - Covariance aggregation is used only for a complete retained block whose
   matrix passes structural and positive-semidefinite admission. Terms outside
   a block add linearly. No independence is inferred from the absence of a
