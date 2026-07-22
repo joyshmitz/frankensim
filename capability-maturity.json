@@ -1,0 +1,344 @@
+{
+  "schema": "frankensim-capability-maturity-v1",
+  "staleness_days": 90,
+  "note": "Levels are defined in docs/MATURITY_LEVELS.md and enforced by `cargo run -p xtask -- check-maturity`. A capability sits at the highest level its RECORDED evidence meets, not the level anyone hopes it reaches. Promotions are events the claim-integrity gate (bead f85xj.2.3) inspects; demotions are always allowed. Nothing here is L4 or L5, because the external V&V corpus (e04) and any written support policy do not exist yet -- that is the honest state, not an oversight.",
+  "capabilities": [
+    {
+      "id": "evidence.colour-algebra",
+      "title": "Evidence colours and conservative composition",
+      "level": "L2",
+      "owner": "jemanuel",
+      "last_review": "2026-07-22",
+      "crates": [
+        "fs-evidence"
+      ],
+      "evidence": [
+        {
+          "kind": "contract",
+          "ref": "crates/fs-evidence/CONTRACT.md"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/fs-evidence/tests/conformance.rs::evd_001_g0_composition_conservativeness_battery"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/fs-evidence/tests/conformance.rs::evd_002_model_card_registration_lint"
+        }
+      ],
+      "notes": "G0 algebraic laws green: composition cannot outrank its weakest operand. Not L3 -- no e2e lane exercises colour composition across a full study."
+    },
+    {
+      "id": "evidence.packaging",
+      "title": "Content-addressed evidence packages and solver-free re-checking",
+      "level": "L2",
+      "owner": "jemanuel",
+      "last_review": "2026-07-22",
+      "crates": [
+        "fs-package",
+        "fs-checker",
+        "fs-crosswalk"
+      ],
+      "evidence": [
+        {
+          "kind": "contract",
+          "ref": "crates/fs-package/CONTRACT.md"
+        },
+        {
+          "kind": "contract",
+          "ref": "crates/fs-checker/CONTRACT.md"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/fs-package/tests/package.rs::fixture_source_authority_binds_certificate_subject_fields"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/fs-package/tests/package.rs::portable_witness_round_trips_and_binds_the_source_request"
+        }
+      ],
+      "notes": "Merkle roots, deny-all verification and the Phase-0A release gate are tested. Structural integrity is NOT authenticity: authority requires a caller-supplied verifier and an independent trust channel."
+    },
+    {
+      "id": "geometry.chart-conversion",
+      "title": "Region/chart abstraction and conversion with recorded error authority",
+      "level": "L2",
+      "owner": "jemanuel",
+      "last_review": "2026-07-22",
+      "crates": [
+        "fs-geom"
+      ],
+      "evidence": [
+        {
+          "kind": "contract",
+          "ref": "crates/fs-geom/CONTRACT.md"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/fs-geom/tests/claim_integrity.rs::solid_fixture_charts_publish_solid_region_betti_numbers"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/fs-geom/tests/claim_integrity.rs::degenerate_fixture_parameters_publish_unknown_topology"
+        }
+      ],
+      "notes": "Conversion promotes to Enclosure only from an ExactDistance source; everything else stays Estimate. The sheaf seam result means agreement at retained finite interface samples -- not watertightness."
+    },
+    {
+      "id": "geometry.topology-certificates",
+      "title": "Self-intersection and manifoldness certificates on triangle soups",
+      "level": "L2",
+      "owner": "jemanuel",
+      "last_review": "2026-07-22",
+      "crates": [
+        "fs-topo"
+      ],
+      "evidence": [
+        {
+          "kind": "contract",
+          "ref": "crates/fs-topo/CONTRACT.md"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/fs-topo/tests/claim_integrity.rs::vertex_sharing_pair_that_pierces_is_not_proven_free"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/fs-topo/tests/claim_integrity.rs::legitimate_adjacency_still_passes_and_is_actually_tested"
+        }
+      ],
+      "notes": "Exact predicates decide every pair including vertex-sharing ones; non-finite input refuses rather than passing. Exactly-degenerate faces are REFUSED, not analysed -- a soup containing one carries no non-intersection claim."
+    },
+    {
+      "id": "numerics.sparse-assembly",
+      "title": "Deterministic sparse assembly and cross-format SpMV",
+      "level": "L2",
+      "owner": "jemanuel",
+      "last_review": "2026-07-22",
+      "crates": [
+        "fs-sparse"
+      ],
+      "evidence": [
+        {
+          "kind": "contract",
+          "ref": "crates/fs-sparse/CONTRACT.md"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/fs-sparse/tests/conformance.rs::cross_format_battery_and_golden_hash"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/fs-sparse/tests/conformance.rs::generated_cross_format_spmv_is_bitwise_equal"
+        }
+      ],
+      "notes": "Cross-format bitwise equality is an independent check, not only a golden: COO/CSR/BSR/SELL are separate implementations agreeing exactly."
+    },
+    {
+      "id": "numerics.certified-arithmetic",
+      "title": "Outward-rounded intervals and exact geometric predicates",
+      "level": "L2",
+      "owner": "jemanuel",
+      "last_review": "2026-07-22",
+      "crates": [
+        "fs-ivl"
+      ],
+      "evidence": [
+        {
+          "kind": "contract",
+          "ref": "crates/fs-ivl/CONTRACT.md"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/fs-ivl/tests/conformance.rs::expression_tree_containment"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/fs-ivl/tests/conformance.rs::golden_hash_of_interval_endpoints"
+        }
+      ],
+      "notes": "Containment under randomized expression trees is the independent oracle. Rigor is conditional on fs-math ULP budgets, per the crate's own no-claim section."
+    },
+    {
+      "id": "solvers.krylov",
+      "title": "Resumable Krylov solves with typed residual provenance",
+      "level": "L2",
+      "owner": "jemanuel",
+      "last_review": "2026-07-22",
+      "crates": [
+        "fs-solver"
+      ],
+      "evidence": [
+        {
+          "kind": "contract",
+          "ref": "crates/fs-solver/CONTRACT.md"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/fs-solver/tests/claim_integrity.rs::residual_claims_name_the_norm_each_solver_reports"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/fs-solver/tests/claim_integrity.rs::pminres_happy_breakdown_still_solves_exactly"
+        }
+      ],
+      "notes": "Held at L2 with a known gap: bead f85xj.2.24 is open -- SolveReport itself still does not carry which of three residual quantities it holds, so a driver seeing only a report cannot tell. Do not promote until that closes."
+    },
+    {
+      "id": "gradients.adjoint-verification",
+      "title": "IFT adjoints and the gradient verification gate",
+      "level": "L2",
+      "owner": "jemanuel",
+      "last_review": "2026-07-22",
+      "crates": [
+        "fs-adjoint"
+      ],
+      "evidence": [
+        {
+          "kind": "contract",
+          "ref": "crates/fs-adjoint/CONTRACT.md"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/fs-adjoint/tests/adjoint_battery.rs::ift_source_gradient_triangle"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/fs-adjoint/tests/adjoint_battery.rs::density_chain_rule_simp"
+        }
+      ],
+      "notes": "Finite differences are the independent check. The gate now counts informative directions, so a bit-insensitive probe cannot score a pass."
+    },
+    {
+      "id": "campaign.quality-diversity",
+      "title": "Certify-or-escalate quality-diversity campaign (point-vortex thruster)",
+      "level": "L2",
+      "owner": "jemanuel",
+      "last_review": "2026-07-22",
+      "crates": [
+        "fs-thrust-e2e"
+      ],
+      "evidence": [
+        {
+          "kind": "contract",
+          "ref": "crates/fs-thrust-e2e/CONTRACT.md"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/fs-thrust-e2e/tests/thrust.rs::a_four_vortex_thruster_self_propels_and_conserves_impulse"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/fs-thrust-e2e/tests/thrust.rs::the_campaign_illuminates_a_screened_diverse_family"
+        }
+      ],
+      "notes": "Deliberately NOT L3 despite being an e2e crate: impulse conservation is a screen, every drift is Estimated, and no interval certificate exists for the QoI. A validated drift bound needs validated integration in fs-vpm."
+    },
+    {
+      "id": "governance.claim-integrity",
+      "title": "Claim-integrity defect class, inventory, and burn-down",
+      "level": "L2",
+      "owner": "FrostyOx",
+      "last_review": "2026-07-22",
+      "crates": [
+        "xtask"
+      ],
+      "evidence": [
+        {
+          "kind": "doc",
+          "ref": "docs/CLAIM_INTEGRITY.md"
+        },
+        {
+          "kind": "doc",
+          "ref": "docs/CLAIM_INTEGRITY_SWEEP_2026-07.md"
+        },
+        {
+          "kind": "lane",
+          "ref": "scripts/ci/claim_integrity_inventory.sh"
+        },
+        {
+          "kind": "test",
+          "ref": "xtask/src/claims.rs::claim_integrity_lint_accepts_a_complete_definition_and_taxonomy"
+        },
+        {
+          "kind": "test",
+          "ref": "xtask/src/claims.rs::claim_integrity_lint_fails_closed_on_each_single_mutation"
+        }
+      ],
+      "notes": "Definition, taxonomy, doc lint and inventory lane are live; one full sweep completed and 40 of 47 defects closed. Not L3 until the promotion gate (f85xj.2.3) actually blocks a promotion."
+    },
+    {
+      "id": "governance.capability-maturity",
+      "title": "Capability maturity registry and promotion events",
+      "level": "L1",
+      "owner": "FrostyOx",
+      "last_review": "2026-07-22",
+      "crates": [
+        "xtask"
+      ],
+      "evidence": [
+        {
+          "kind": "doc",
+          "ref": "docs/MATURITY_LEVELS.md"
+        }
+      ],
+      "notes": "This registry itself. L1 until a rehearsed promotion and a rehearsed blocked-promotion are both demonstrated through the e02 gate."
+    },
+    {
+      "id": "thermal.conduction-solve",
+      "title": "Steady conduction FEM solve on solids",
+      "level": "L1",
+      "owner": "jemanuel",
+      "last_review": "2026-07-22",
+      "crates": [
+        "fs-feec",
+        "fs-solid"
+      ],
+      "evidence": [
+        {
+          "kind": "contract",
+          "ref": "crates/fs-feec/CONTRACT.md"
+        },
+        {
+          "kind": "contract",
+          "ref": "crates/fs-solid/CONTRACT.md"
+        }
+      ],
+      "notes": "The cooling vertical's core capability, bead f85xj.5.1, is NOT yet built -- the exterior-calculus and elasticity substrate it will sit on exists, the thermal solve does not. L1 is the honest level and the registry says so rather than crediting the substrate."
+    },
+    {
+      "id": "ledger.design-ledger",
+      "title": "Design ledger: artifacts, operations, lineage, time travel",
+      "level": "L1",
+      "owner": "jemanuel",
+      "last_review": "2026-07-22",
+      "crates": [
+        "fs-ledger"
+      ],
+      "evidence": [
+        {
+          "kind": "contract",
+          "ref": "crates/fs-ledger/CONTRACT.md"
+        }
+      ],
+      "notes": "DEMOTED in substance, not in record -- this crate did not compile until 2026-07-22 and its suite now shows 5 failures (bead frankensim-fs-ledger-latent-failures-xys1z), including an evidence-binding guard that does not hold. No test evidence is cited here because none currently passes that would justify L2."
+    },
+    {
+      "id": "wasm.browser-flagships",
+      "title": "Browser-facing reduced flagship campaigns",
+      "level": "L1",
+      "owner": "CyanBarn",
+      "last_review": "2026-07-22",
+      "crates": [
+        "fs-wasm"
+      ],
+      "evidence": [
+        {
+          "kind": "contract",
+          "ref": "crates/fs-wasm/CONTRACT.md"
+        }
+      ],
+      "notes": "Does not currently build against the working tree (bead f85xj.2.39: reads a field the in-flight fs-neuroshape-e2e change removed). No test evidence cited because the crate cannot be exercised in place."
+    }
+  ]
+}

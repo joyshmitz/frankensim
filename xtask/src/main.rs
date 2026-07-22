@@ -41,6 +41,7 @@ mod depgraph;
 mod identities;
 mod manifest_fixture;
 mod matdb_pack;
+mod maturity;
 
 use bootstrap_provenance::{
     BootstrapProvenanceRow, bootstrap_provenance_support_preflight, provenance_path_text,
@@ -6864,6 +6865,11 @@ fn main() -> ExitCode {
             policy_notes = report.decisions;
             (report.violations, vec!["manifest-fixture"])
         }
+        "check-maturity" => {
+            let report = maturity::check_maturity(&root);
+            policy_notes = report.decisions;
+            (report.violations, vec!["capability-maturity"])
+        }
         "check-claims" => (claims::check_claims(&root), vec!["claim-state"]),
         "check-closures" => (closures::check_closures(&root), vec!["closure-evidence"]),
         "check-citable-producers" => (check_citable_producers(&root), vec![CITABLE_PRODUCER_CHECK]),
@@ -6883,6 +6889,9 @@ fn main() -> ExitCode {
             let manifest_report = manifest_fixture::check_manifest_fixture(&root);
             v.extend(manifest_report.violations);
             policy_notes = manifest_report.decisions;
+            let maturity_report = maturity::check_maturity(&root);
+            v.extend(maturity_report.violations);
+            policy_notes.extend(maturity_report.decisions);
             v.extend(claims::check_claims(&root));
             v.extend(closures::check_closures(&root));
             v.extend(check_citable_producers(&root));
@@ -6902,6 +6911,7 @@ fn main() -> ExitCode {
                     "golden-couplings",
                     "semantic-identities",
                     "manifest-fixture",
+                    "capability-maturity",
                     "claim-state",
                     "closure-evidence",
                     CITABLE_PRODUCER_CHECK,
@@ -6912,7 +6922,7 @@ fn main() -> ExitCode {
             eprintln!(
                 "unknown command {other:?}; use check-layers|check-deps|check-contracts|\
                  check-unsafe|check-powi|check-obs-events|check-casual-print|check-terminology|\
-                 check-goldens|check-claims|check-closures|\
+                 check-goldens|check-claims|check-closures|check-maturity|\
                  check-identities|check-manifest-fixture|check-citable-producers|check-all|generate-identities|\
                  lock-constellation|check-constellation|depgraph-receipt|matdb-pack"
             );
