@@ -8,16 +8,16 @@
 
 [![Status](https://img.shields.io/badge/status-active%20Rust%20workspace-2ea44f)](#implemented-workspace)
 [![Rust](https://img.shields.io/badge/rust-nightly%202024-b7410e)](rust-toolchain.toml)
-[![Crates](https://img.shields.io/badge/workspace-135%20native%20fs--%2A%20crates-0969da)](#implemented-workspace)
-[![Contracts](https://img.shields.io/badge/contracts-136%20of%20136%20crates-8250df)](#contracts-and-verification)
-[![Tests](https://img.shields.io/badge/tests-509%20tracked%20integration%20test%20files-1f883d)](#contracts-and-verification)
+[![Crates](https://img.shields.io/badge/workspace-138%20native%20fs--%2A%20crates-0969da)](#implemented-workspace)
+[![Contracts](https://img.shields.io/badge/contracts-139%20of%20139%20crates-8250df)](#contracts-and-verification)
+[![Tests](https://img.shields.io/badge/tests-520%20tracked%20integration%20test%20files-1f883d)](#contracts-and-verification)
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20AI%20rider-yellow)](LICENSE)
 
 </div>
 
 FrankenSim is an active Rust source workspace for deterministic geometry, certified numerics, meshing, execution, evidence, and design-ledger infrastructure for simulation and design optimization.
 
-The tree contains 136 `fs-*` crate directories: 135 in the native Cargo workspace plus the standalone nested `fs-wasm` workspace. They include repository policy tooling, conformance contracts, integration tests, and implementations across substrate/runtime, numerical kernels, geometry representations, meshing, physics, solvers, adjoints, optimization, imaging, evidence, packaging, and ledger layers.
+The tree contains 139 `fs-*` crate directories: 138 in the native Cargo workspace plus the standalone nested `fs-wasm` workspace. They include repository policy tooling, conformance contracts, integration tests, and implementations across substrate/runtime, numerical kernels, geometry representations, meshing, physics, solvers, adjoints, optimization, imaging, evidence, packaging, and ledger layers.
 
 The inventory numbers in this README are derived from the root workspace
 manifest, each crate's declared layer metadata, and the portable tracked-input
@@ -32,12 +32,12 @@ edge is valid.
 <!-- BEGIN GENERATED FRANKENSIM DOC FACTS -->
 | Derived repository fact | Value |
 |-------------------------|-------|
-| Native workspace `fs-*` crates | 135 |
+| Native workspace `fs-*` crates | 138 |
 | Standalone `fs-*` workspaces | 1 (`fs-wasm`) |
-| Tracked `fs-*` crate directories | 136 |
-| Tracked `CONTRACT.md` files | 136 of 136 |
-| Tracked crate integration-test files | 509 |
-| `fs-*` layer inventory | `UTIL=15`, `L0=7`, `L1=13`, `L2=18`, `L3=24`, `L4=32`, `L5=4`, `L6=23` |
+| Tracked `fs-*` crate directories | 139 |
+| Tracked `CONTRACT.md` files | 139 of 139 |
+| Tracked crate integration-test files | 520 |
+| `fs-*` layer inventory | `UTIL=15`, `L0=7`, `L1=13`, `L2=18`, `L3=27`, `L4=32`, `L5=4`, `L6=23` |
 <!-- END GENERATED FRANKENSIM DOC FACTS -->
 
 There is not yet a packaged end-user simulation application or crates.io release. Today, FrankenSim is usable as a source workspace and library substrate.
@@ -52,14 +52,15 @@ There is not yet a packaged end-user simulation application or crates.io release
 
 | Area | Current implementation |
 |------|------------------------|
-| Workspace | Rust 2024 nightly Cargo workspace with 135 native `fs-*` workspace crates plus `xtask`; `fs-wasm` is a standalone nested workspace |
-| Contracts | 136 of 136 `fs-*` crate directories have `CONTRACT.md` files |
+| Workspace | Rust 2024 nightly Cargo workspace with 138 native `fs-*` workspace crates plus `xtask`; `fs-wasm` is a standalone nested workspace |
+| Contracts | 139 of 139 `fs-*` crate directories have `CONTRACT.md` files |
 | Runtime substrate | Capability probing, SIMD facades, aligned arenas, two-lane execution, cancellation contexts, tile pools, tuner and race scaffolding |
 | Numerics | Deterministic elementary math, dense/sparse linear algebra, FFT/DCT, interval/affine/Taylor arithmetic, Chebyshev collocation, random/QMC streams, AD/adjoint infrastructure, e-process inference |
 | Geometry | Region/chart abstraction, SDF, mesh and F-rep charts, representation conversion hooks, transformations, tet meshing, remeshing, quality audits |
+| Thermal and airflow | `fs-conduction` provides a steady FEM kernel; `fs-convection` provides 11 validity-gated Nusselt cards; and `fs-airflow` provides typed fan curves, series/parallel quadratic loss networks with explicit leakage, nominal-model interval-Newton operating-point brackets, and an evidence-preserving branch-flow handoff to convection. Only conduction is currently registered for capability maturity |
 | Evidence and ledger | L2 evidence-colour and evidence-packaging capabilities; `fs-vvreg` now has a fail-closed validation-corpus schema with 19 reference-only Level-A thermal definitions/targets, one synthetic Level-B fixture, and one gap-preserving Level-C retained curve, while the FrankenSQLite-backed design ledger remains registered at L1 with known suite failures open |
 | Policy tooling | `xtask` checks for layer direction, Franken-only runtime dependencies, contracts, unsafe capsules, and constellation lock verification |
-| Tests | 509 tracked Rust files under crate `tests/` directories at the committed snapshot, in addition to inline unit tests; this is an inventory count, not a claim that every test is green on the current tree |
+| Tests | 520 tracked Rust files under crate `tests/` directories in the checked inventory, in addition to inline unit tests; this is an inventory count, not a claim that every test is green on the current tree |
 
 ### Capability Maturity, Not Crate Count
 
@@ -129,6 +130,7 @@ validated.
 | Assemble exterior-calculus operators and cohomology probes | `fs_feec` cochains, incidence, Hodge stars, Betti checks, and Hodge decomposition |
 | Run matrix-free/resumable linear solves | `fs_solver` CG, MINRES, GMRES, transposed solves, and p-multigrid support |
 | Build CutFEM and elasticity fixtures | `fs_cutfem`, `fs_solid`, `fs_material`, and `fs_scenario` |
+| Solve steady conduction and derive evidence-bearing airflow/Robin inputs | `fs_conduction`, the validity-gated `fs_convection` catalog, and `fs_airflow` fan/network operating points; only the nominal airflow-model root is interval-certified, while physical tolerance propagation and correlation output remain estimates without a registered maturity level |
 | Verify gradients and build adjoint pipelines | `fs_ad`, `fs_adjoint`, and the gradient verification gate |
 | Track spectral health signals | `fs_spectral` sheaf-Laplacian gap monitoring and low-confidence propagation |
 | Harvest cyclic symmetry in solves | `fs_symmetry` cyclic residuals, DFT block-diagonalized circulant solves, and perturbation bounds |
@@ -286,7 +288,7 @@ The workspace has grown beyond the first substrate and geometry layer. These cra
 | `fs-feec` | Exterior-calculus core: cochains, Whitney forms, exact incidence operators, Hodge stars, Betti checks, high-order tensor/simplex spaces, and cohomology/Hodge-decomposition utilities |
 | `fs-opdsl`, `fs-tilelang`, `fs-tilelang-macros`, `fs-soa`, `fs-soa-derive` | Operator and layout tooling: DSL scaffolding for operators, deterministic tile-language lowering, and structured data layouts for stable kernel memory behavior |
 | `fs-solver` | Resumable Krylov and multigrid stack: CG, MINRES, GMRES, matrix-free operators, transposed solves, mixed-precision refinement, and p-multigrid over the FEEC hierarchy |
-| `fs-cutfem`, `fs-solid`, `fs-material`, `fs-scenario`, `fs-time` | FLUX physics layer: CutFEM on certified SDF cuts, elasticity/hyperelasticity, constitutive laws, typed boundary/load scenarios, and time-support primitives |
+| `fs-cutfem`, `fs-solid`, `fs-material`, `fs-scenario`, `fs-time`, `fs-conduction`, `fs-convection`, `fs-airflow` | FLUX physics layer: CutFEM on certified SDF cuts, elasticity/hyperelasticity, constitutive laws, typed boundary/load scenarios, time-support primitives, steady heat conduction, validity-gated heat-transfer correlations, and fan/loss-network operating points that retain estimate authority through the convection handoff |
 | `fs-adjoint` | Gradient truth layer: IFT adjoints, density/SIMP pullbacks, Sobolev smoothing, Hadamard shape gradients, revolve-style time adjoints, gradient verification, and feature-gated ledger transposition |
 | `fs-spectral`, `fs-symmetry` | Spectral and symmetry health tools: sheaf-Laplacian gap tracking, hysteresis, confidence propagation, cyclic residuals, DFT block-diagonalized circulant solves, and perturbation bounds |
 | `fs-constraint`, `fs-ascent`, `fs-dfo`, `fs-dimine`, `fs-regime`, `fs-topopt`, `fs-robust` | ASCENT layer: typed constraints with unsat cores and repairs, L-BFGS/TR-Newton/augmented-Lagrangian/Riemannian optimizers, derivative-free CMA-ES/BIPOP/Nelder-Mead, dimensional law mining, regime/validity-domain machinery, density-based topology optimization, and objective epistemics |
@@ -1125,13 +1127,13 @@ Different readers should start in different places.
 | Check repository policy | `AGENTS.md`, `docs/CI_GATES.md`, `xtask`, and `constellation.lock` |
 | Study numerical kernels | `crates/fs-math`, `crates/fs-la`, `crates/fs-sparse`, `crates/fs-fft`, `crates/fs-ivl`, `crates/fs-cheb` |
 | Study geometry | `crates/fs-geom`, `crates/fs-rep-*`, `crates/fs-query`, `crates/fs-topo`, `crates/fs-mesh` |
-| Study physics and solvers | `crates/fs-feec`, `crates/fs-cutfem`, `crates/fs-solid`, `crates/fs-material`, `crates/fs-solver` |
+| Study physics and solvers | `crates/fs-feec`, `crates/fs-cutfem`, `crates/fs-solid`, `crates/fs-material`, `crates/fs-conduction`, `crates/fs-convection`, `crates/fs-airflow`, `crates/fs-solver` |
 | Study gradients and optimization | `crates/fs-ad`, `crates/fs-adjoint`, `crates/fs-ascent`, `crates/fs-dfo`, `crates/fs-constraint` |
 | Study audit and packaging | `crates/fs-evidence`, `crates/fs-ledger`, `crates/fs-package`, `crates/fs-checker`, `crates/fs-crosswalk` |
 
 ## Contracts and Verification
 
-The tree currently has 136 `CONTRACT.md` files for 136 `fs-*` crate directories.
+The tree currently has 139 `CONTRACT.md` files for 139 `fs-*` crate directories.
 The contract count is meant to be checkable, not aspirational.
 
 Existing contracts use these required sections:
@@ -1173,7 +1175,7 @@ The current DSR setup is preferred over GitHub Actions for this repository. If a
 |-- Cargo.toml                         # Workspace manifest
 |-- Cargo.lock                         # Committed lockfile
 |-- rust-toolchain.toml                # Nightly toolchain and components
-|-- crates/                            # 136 fs-* crates; selected entries shown below
+|-- crates/                            # 139 fs-* crates; selected entries shown below
 |   |-- fs-qty/                        # Dimensional quantities
 |   |-- fs-obs/                        # Structured observability
 |   |-- fs-evidence/                   # Evidence and certification wrappers
@@ -1197,6 +1199,9 @@ The current DSR setup is preferred over GitHub Actions for this repository. If a
 |   |-- fs-xform/                      # Design parameterizations
 |   |-- fs-img/                        # LUMEN image artifact plumbing
 |   |-- fs-mesh/                       # Tetrahedralization and remeshing
+|   |-- fs-conduction/                 # Steady heat-conduction FEM
+|   |-- fs-convection/                 # Validity-gated heat-transfer correlations
+|   |-- fs-airflow/                    # Typed fan curves and uncertain loss networks
 |   |-- fs-ledger/                     # Design ledger on FrankenSQLite
 |   |-- fs-ir/                         # FrankenScript IR
 |   |-- fs-plan/                       # Cost and error planning
@@ -1299,6 +1304,8 @@ FrankenSim has substantial working code, but it is still early infrastructure.
 | crates.io distribution | Not published |
 | GitHub Actions | Not authoritative for this repo; use DSR |
 | Full multiphysics solver suite | Not complete in the current workspace |
+| Convection correlations | `fs-convection` implements 11 sourced analytic or empirical relations with machine-readable domains and structured refusal, plus a tested Robin seam into `fs-conduction`. Its empirical discrepancy bands are declared engineering allowances rather than source-published confidence intervals; source-table corpora, automatic model selection/blending, interrupted-fin and array-interference cards, conjugate CFD, experimental validation, and a registered maturity claim remain absent |
+| Enclosure airflow | `fs-airflow` validates monotone typed fan curves, bounds fan-law speed scaling, composes quadratic series/parallel losses with a mandatory explicit leakage branch, certifies the unique nominal-model operating root with `fs-ivl`, and hands evidence-bearing branch velocities/Reynolds inputs to `fs-convection`. Its retained tests use synthetic fixtures: no manufacturer curve/tolerance corpus, unequal parallel-fan model, installation-effects model, CFD comparison, experimental validation, or registered maturity claim exists |
 | Neural representations | `fs-rep-neural` exists as a first-class crate, but its current work is experimental/in flight and has no registered capability-maturity claim |
 | Design ledger | `fs-ledger` exists, but the registry holds it at L1 while five known suite failures, including an evidence-binding guard, remain tracked |
 | Browser flagships | Source surfaces exist, but the registry holds the capability at L1 and records a current cross-crate schema/build break |

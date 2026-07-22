@@ -1,0 +1,22 @@
+[package]
+name = "fs-airflow"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Typed fan curves, uncertain loss networks, certified operating-point roots, and convection handoffs."
+
+[package.metadata.frankensim]
+layer = "L3"
+
+[dependencies]
+fs-convection = { path = "../fs-convection" }
+fs-evidence = { path = "../fs-evidence" }
+fs-ivl = { path = "../fs-ivl" }
+fs-math = { path = "../fs-math" }
+fs-qty = { path = "../fs-qty" }
+fs-regime = { path = "../fs-regime" }
+
+[lints]
+workspace = true

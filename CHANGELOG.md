@@ -102,6 +102,57 @@ workstream.
   adjoint run, or machine fingerprint is bound yet, so registration is not
   reported as a G1 pass.
 
+### Post-checkpoint convection-correlation rung
+
+- Added `fs-convection`, an L3 library with 11 Nusselt relations spanning
+  analytic duct limits, developing and turbulent ducts, rectangular ducts,
+  flat plates, isolated-cylinder crossflow, and vertical-plate natural
+  convection.
+- Each relation carries a source, assumptions, known failures, a shared
+  machine-readable validity domain, and an explicit discrepancy basis.
+  Missing, non-finite, non-positive, or out-of-domain inputs refuse instead of
+  extrapolating silently.
+- The public dimensional conversion returns typed W/(m² K) with attached model
+  evidence. The paired Robin-boundary adapter keeps that evidence beside the
+  exact boundary row consumed by `fs-conduction`.
+- Added Level-A limit and frozen-formula spot checks, domain-edge refusals, a G3
+  coherent-unit-rescaling check, evidence-retention checks, and a
+  three-flow-rate conduction seam test. The focused remote Cargo lane passed 10
+  tests.
+- The empirical discrepancy values are declared engineering allowances, not
+  source-published confidence intervals. Source-table corpora, automatic model
+  selection or blending, interrupted-fin and array-interference models,
+  conjugate CFD, experimental validation, and capability-maturity registration
+  remain outside this slice.
+
+### Post-checkpoint fan/network operating-point rung
+
+- Added `fs-airflow`, an L3 library for typed, monotone fan curves and
+  series/parallel quadratic-loss networks. Admission makes pressure tolerance,
+  tolerance authority, speed-scaling bounds, and the non-admissible stall
+  region explicit; malformed or out-of-domain inputs refuse structurally.
+- Added identical-fan series/parallel laws, exact quadratic resistance
+  composition, and an enclosure model that requires leakage to be represented
+  as a distinct branch rather than buried in a fitted system coefficient.
+- Added a bounded interval-Newton solve for the unique nominal intersection of
+  the retained fan and system curves. Only that declared mathematical root is
+  `Certified`; fan-data tolerance, loss uncertainty, model discrepancy,
+  pressure, branch flow, and leakage conclusions remain `Estimate` evidence.
+- Added deterministic terminal-branch allocation and a typed velocity/Reynolds
+  handoff into `fs-convection`, retaining the weakest evidence authority and
+  refusing missing branches or invalid handoff quantities. Operating-point
+  provenance binds the full curve, source and tolerance authority, fan-bank
+  configuration, recursive loss-network semantics, and leakage identity.
+- Added nine conformance tests covering monotone-curve refusal, fan and loss
+  composition identities, a unique sign-changing nominal bracket, stall
+  refusal, three speed points, leakage sensitivity and flow balance, the
+  convection handoff, and provenance separation for equal-nominal models with
+  different uncertainty authority.
+- The retained fan fixture and uncertainty allowances are synthetic. No
+  manufacturer curve/tolerance corpus, unequal parallel-fan model,
+  installation-effects model, CFD comparison, experimental validation, or
+  capability-maturity registration is claimed by this slice.
+
 ## Version Timeline
 
 There are no git tags and no GitHub Releases as of

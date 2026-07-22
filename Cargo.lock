@@ -802,6 +802,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-airflow"
+version = "0.0.1"
+dependencies = [
+ "fs-convection",
+ "fs-evidence",
+ "fs-ivl",
+ "fs-math",
+ "fs-qty",
+ "fs-regime",
+]
+
+[[package]]
 name = "fs-alloc"
 version = "0.0.1"
 dependencies = [

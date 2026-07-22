@@ -142,6 +142,7 @@ members = [
     "crates/fs-vmanifest",
     "crates/fs-conduction",
     "crates/fs-convection",
+    "crates/fs-airflow",
     "xtask",
 ]
 

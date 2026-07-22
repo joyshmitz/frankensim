@@ -1,3 +1,5 @@
+//! G0/G3 correlation-card, refusal, typing, and metamorphic coverage.
+
 use fs_convection::{
     CorrelationError, CorrelationId, CorrelationInputs, DiscrepancyBasis, HeatTransferCoefficient,
     ThermalConductivity, ThermalDirection, correlation_catalog, evaluate,

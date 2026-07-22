@@ -1,3 +1,5 @@
+//! Integration coverage for the evidence-preserving correlation-to-Robin seam.
+
 use fs_alloc::{ArenaConfig, ArenaPool};
 use fs_conduction::fixtures::{box_grid, on_box_face};
 use fs_conduction::{
