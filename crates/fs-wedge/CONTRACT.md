@@ -2,7 +2,8 @@
 
 Go-to-market wedge selection as data (plan addendum, Proposal 7): the
 historical three-vertical ranking, its superseded judgment scores, measured
-decision inputs, and the cycle-time kill criterion.
+decision inputs, the explicit three-candidate recommendation with one-factor
+sensitivity tables, and the cycle-time kill criterion.
 
 ## Purpose and layer
 
@@ -31,8 +32,10 @@ it constrains vertical-specific kernel work and records the commercial bet.
 - `Measurement { readiness, score, method, evidence, finding }` plus
   `EvidencePointer { kind, reference, locator }`. Methods distinguish direct
   workspace inventory, contract-boundary review, official-dataset review, and
-  static complexity analysis. Evidence kinds distinguish tracked workspace
-  paths, Beads, and official publisher URLs.
+  static complexity analysis. `DecisionAssumptionReview` explicitly marks
+  commercial or schedule judgments whose empirical measurement is pending.
+  Evidence kinds distinguish tracked workspace paths, Beads, and official
+  publisher URLs.
 - `KernelReadinessEntry`, `ValidationDataEntry`, `CadBurdenEntry`, and
   `ComputeCostEntry` carry their domain-specific fields around a common
   measurement. Compute envelopes state variables and operation/complexity
@@ -40,6 +43,27 @@ it constrains vertical-specific kernel work and records the commercial bet.
 - `MeasuredWedgeInputs { vertical, measured_on, kernels, validation_data,
   cad_burden, compute_cost }`; `measured_wedge_inputs()` returns one record per
   candidate and `measured_inputs_for` resolves by vertical slug.
+- `ScoringFactor` defines nine higher-is-better factors: customer pain, kernel
+  readiness, validation tractability, data access, low CAD burden, short time
+  to decision, differentiation, low compute cost, and low regulatory risk.
+  `DEFAULT_FACTOR_WEIGHTS` records integer percentage weights summing to 100.
+- `FactorRating` keeps the comparative `0..=10` rating separate from the
+  attached `Measurement`'s evidence authority. `ComparisonCandidate` carries
+  exactly one such input per factor, an inventory revision, and a minority
+  case. `comparison_candidates()` returns full electronics CHT, SDF
+  structural/topology assurance, and thermal design assurance.
+- `score_candidates` is the pure scoring function. It validates weights and
+  candidates, computes the integer sum `rating * weight`, and orders by total
+  descending then stable candidate slug ascending. `tilted_weights` raises one
+  weight and proportionally rescales the others to 100 using deterministic
+  largest-remainder allocation.
+- `ranked_recommendation` and `default_recommendation` return the ranking,
+  runner-up minority report, and exhaustive single-factor flip tables. Rating
+  sensitivity raises only one challenger rating. Weight sensitivity raises one
+  factor weight while proportionally reducing every other weight.
+- `render_comparison_report()` emits the complete weights, factor evidence,
+  rank, minority report, and both sensitivity tables as a deterministic TSV-like
+  artifact.
 - `CycleTimeBaseline` + `CHT_BASELINE` — `baseline_days`, `target_reduction`
   (`3.0`), `kill_within_quarters`; `meets_kill_criterion(measured_days)`.
 - `audit() -> WedgeAudit` (+ `STRONG_THRESHOLD`); `to_json()`.
@@ -51,6 +75,17 @@ it constrains vertical-specific kernel work and records the commercial bet.
 - Every candidate has at least one evidence-complete record on all four
   measured axes. Every measurement has a non-empty method, finding, and
   evidence pointer.
+- Every explicit comparison candidate has exactly one complete input for each
+  scoring factor. Comparative ratings are in `0..=10`; evidence-authority
+  scores independently obey the readiness ceiling.
+- Default weights contain each factor exactly once and sum to 100. Weighted
+  totals therefore lie in `0..=1000`. Exact total ties resolve by ascending
+  candidate slug, independent of candidate or weight input order.
+- At inventory revision `e5c8061f4faed986b831b8978d0c8d1812e960fb`, the
+  recorded default totals are thermal design assurance `638`, SDF structural
+  assurance `623`, and full electronics CHT `502`. Thermal design assurance is
+  the provisional recommendation; SDF structural assurance is the runner-up
+  whose minority report is retained.
 - `Measurement.score <= Readiness::score_ceiling()`. In particular, an absent
   capability can never reach `STRONG_THRESHOLD` (`8`).
 - Exactly three verticals ranked 1, 2, 3; each names at least one exercised
@@ -60,13 +95,18 @@ it constrains vertical-specific kernel work and records the commercial bet.
 
 ## Error model
 
-Total functions; no panics.
+Static accessors are total. Scoring returns `ScoringError` for non-normalized,
+missing, or duplicate weights; missing, duplicate, or incomplete candidates;
+invalid factor inputs; and non-increasing weight tilts. Internal `expect` calls
+are applied only after those structural validations and to infallible writes to
+`String`.
 
 ## Determinism class
 
-Fully deterministic: pure `const` data; inventory and evidence order are
-fixed; `to_json` emits the complete historical and measured ledger
-byte-for-byte.
+Fully deterministic: pure `const` inputs; inventory and evidence order are
+fixed; integer scoring avoids floating-point rank drift; ties use stable slugs;
+largest-remainder weight normalization breaks equal remainders by canonical
+factor order. `to_json` and `render_comparison_report` replay byte-for-byte.
 
 ## Cancellation behavior
 
@@ -84,11 +124,14 @@ None.
 
 `tests/wedge.rs` (Proposal 7): the beachhead identity; historical-score
 supersession; complete measured inputs on all four axes; status/score ceilings;
-three ranked verticals with proposal mappings; measurable cycle-time shape
-(including divide-by-zero guard); complete audit; negative doctrine and unique
-labels; deterministic JSON. The workspace evidence test reads every
-`WorkspacePath`, checks its locator marker, prints a deterministic
-`PASS`/`FAIL` table, and fails on drift.
+three ranked verticals with proposal mappings; explicit factor completeness and
+recorded totals; weight normalization/refusals; monotonicity of every factor;
+candidate-permutation and exact-tie determinism; exhaustive rating/weight flip
+sensitivity including degenerate full-weight ties; deterministic verbose
+report; measurable cycle-time shape (including divide-by-zero guard); complete
+audit; negative doctrine and unique labels; deterministic JSON. The workspace
+evidence test reads every `WorkspacePath`, checks its locator marker, prints a
+deterministic `PASS`/`FAIL` table, and fails on drift.
 
 ## No-claim boundaries
 
@@ -96,7 +139,23 @@ labels; deterministic JSON. The workspace evidence test reads every
   empirical measurements, and are explicitly superseded for decision use.
 - The measured-input scores classify readiness of the stated evidence at the
   dated inventory snapshot. They do not aggregate into a replacement wedge
-  rank, prove model accuracy, or predict adoption/ROI.
+  rank, prove model accuracy, or predict adoption/ROI. The later explicit
+  comparison uses separate comparative ratings rather than repurposing these
+  readiness scores.
+- The explicit ranking is a reproducible decision model, not empirical proof
+  that the recommended market exists or that any candidate will achieve a
+  delivery schedule, cycle-time reduction, adoption, accuracy, or return on
+  investment. Customer-pain, time-to-decision, and regulatory inputs remain
+  declared assumptions wherever no retained measurement exists.
+- Evidence authority and comparative desirability are separate axes. A high
+  factor rating cannot promote an `Absent` or `Partial` measurement into a
+  stronger scientific claim, and the weighted total is not a certificate.
+- Weight sensitivity permits a factor to reach 100, which can zero every other
+  factor. In that degenerate case a recommendation may flip solely through the
+  documented slug tie-break; the report exposes rather than hides that result.
+- The recommendation is provisional pending ratification and successor
+  customer-baseline work. It records the repository inventory at the pinned
+  revision above and does not silently incorporate later workspace changes.
 - The CHT `correlation-Nu`, `RANS`, and `LES` entries in `fs-ladder` are rung
   declarations with a generic `Refine1d` demonstrator; the ladder contract says
   it does not run solves. No correlation catalog, fan curve, RANS/LES solver,

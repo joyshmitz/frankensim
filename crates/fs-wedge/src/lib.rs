@@ -17,8 +17,12 @@
 //! judgment-only scores are [`ScoreUse::SupersededForDecisionUse`]. Current
 //! decisions use [`MeasuredWedgeInputs`]: source-inventory readiness,
 //! validation-data access, CAD burden, and static compute envelopes, each with
-//! a method and evidence pointer. The [`CycleTimeBaseline`] remains a
-//! separately identified placeholder until a customer measurement replaces it.
+//! a method and evidence pointer. An explicit nine-factor comparison then ranks
+//! full CHT, SDF structural/topology assurance, and a narrower thermal-design-
+//! assurance candidate. Ratings remain separate from evidence authority, and
+//! both rating and weight flip sensitivities are recorded. The
+//! [`CycleTimeBaseline`] remains a separately identified placeholder until a
+//! customer measurement replaces it.
 
 /// The load-bearing negative doctrine of wedge selection.
 pub const WEDGE_DOCTRINE: &str = "Do not sell against peak single-physics fidelity anywhere; the wedge is a \
@@ -1238,30 +1242,51 @@ pub struct ComparisonCandidate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScoringError {
     /// The supplied weights do not sum to 100.
-    WeightsNotNormalized { sum: u16 },
+    WeightsNotNormalized {
+        /// Observed sum of the supplied integer weights.
+        sum: u16,
+    },
     /// A factor appears more than once in the weight vector.
-    DuplicateWeight { factor: ScoringFactor },
+    DuplicateWeight {
+        /// Repeated factor.
+        factor: ScoringFactor,
+    },
     /// A factor is absent from the weight vector.
-    MissingWeight { factor: ScoringFactor },
+    MissingWeight {
+        /// Missing factor.
+        factor: ScoringFactor,
+    },
     /// No candidates were supplied.
     NoCandidates,
     /// Candidate slugs must be unique.
-    DuplicateCandidate { candidate: &'static str },
+    DuplicateCandidate {
+        /// Repeated candidate slug.
+        candidate: &'static str,
+    },
     /// A candidate does not carry exactly one input for every factor.
-    IncompleteCandidate { candidate: &'static str },
+    IncompleteCandidate {
+        /// Incomplete candidate slug.
+        candidate: &'static str,
+    },
     /// A candidate repeats one factor.
     DuplicateFactor {
+        /// Candidate containing the repeated factor.
         candidate: &'static str,
+        /// Repeated factor.
         factor: ScoringFactor,
     },
     /// A factor rating, rationale, or measurement is incomplete.
     InvalidFactorInput {
+        /// Candidate containing the invalid input.
         candidate: &'static str,
+        /// Invalid factor.
         factor: ScoringFactor,
     },
     /// A requested weight tilt does not increase the named factor.
     InvalidWeightTilt {
+        /// Factor whose weight was to increase.
         factor: ScoringFactor,
+        /// Requested replacement weight.
         requested: u8,
     },
 }
@@ -1437,7 +1462,7 @@ const CHT_FULL_FACTORS: [FactorRating; 9] = [
             &[evidence(
                 EvidenceKind::WorkspacePath,
                 "crates/fs-io/CONTRACT.md",
-                "broader CAD/EXPRESS interpretation",
+                "broader CAD/EXPRESS",
             )],
             "Native admission remains a strict faceted STEP subset without assemblies, material linkage, general B-rep/NURBS, or interface identity.",
         ),
@@ -1657,7 +1682,7 @@ const SDF_STRUCTURAL_FACTORS: [FactorRating; 9] = [
                 evidence(
                     EvidenceKind::WorkspacePath,
                     "COMPREHENSIVE_ADDENDUM_TO_FRANKENSIM_PLAN.md",
-                    "make differentiability a routing requirement",
+                    "differentiability a routing requirement",
                 ),
                 evidence(
                     EvidenceKind::WorkspacePath,
@@ -1809,7 +1834,7 @@ const THERMAL_ASSURANCE_FACTORS: [FactorRating; 9] = [
             &[evidence(
                 EvidenceKind::WorkspacePath,
                 "crates/fs-io/CONTRACT.md",
-                "broader CAD/EXPRESS interpretation",
+                "broader CAD/EXPRESS",
             )],
             "Prepared faceted models can enter, but board stackups, assemblies, materials, thin interfaces, and units are not natively reconstructed.",
         ),
@@ -2393,6 +2418,70 @@ impl WedgeAudit {
 /// for an absent capability.
 pub const STRONG_THRESHOLD: u8 = 8;
 
+fn audit_comparison(gaps: &mut Vec<String>) -> [AuditCheck; 4] {
+    let inputs_complete = COMPARISON_CANDIDATES.len() == 3
+        && COMPARISON_CANDIDATES
+            .iter()
+            .all(|candidate| validate_candidate(candidate).is_ok());
+    if !inputs_complete {
+        gaps.push("the explicit comparison lacks a complete measured factor table".to_string());
+    }
+
+    let weights_normalized = canonical_weight_values(&DEFAULT_FACTOR_WEIGHTS).is_ok();
+    if !weights_normalized {
+        gaps.push("the default comparison weights do not normalize to 100".to_string());
+    }
+
+    let recommendation = default_recommendation();
+    let ranking_complete = recommendation.as_ref().is_ok_and(|record| {
+        record.ranked.len() == COMPARISON_CANDIDATES.len()
+            && record.recommended == "thermal-design-assurance"
+            && !record.runner_up.is_empty()
+            && !record.minority_report.is_empty()
+    });
+    if !ranking_complete {
+        gaps.push(
+            "the default explicit comparison does not produce its recorded ranking".to_string(),
+        );
+    }
+
+    let sensitivity_complete = recommendation.as_ref().is_ok_and(|record| {
+        let expected = (COMPARISON_CANDIDATES.len() - 1) * ScoringFactor::ALL.len();
+        record.rating_sensitivities.len() == expected
+            && record.weight_sensitivities.len() == expected
+            && record
+                .rating_sensitivities
+                .iter()
+                .any(|row| row.challenger == record.runner_up && row.required_rating.is_some())
+            && record
+                .weight_sensitivities
+                .iter()
+                .any(|row| row.challenger == record.runner_up && row.required_weight.is_some())
+    });
+    if !sensitivity_complete {
+        gaps.push("the comparison lacks complete one-factor flip sensitivities".to_string());
+    }
+
+    [
+        AuditCheck {
+            name: "comparison-inputs-complete",
+            passed: inputs_complete,
+        },
+        AuditCheck {
+            name: "default-weights-normalized",
+            passed: weights_normalized,
+        },
+        AuditCheck {
+            name: "comparison-ranking-complete",
+            passed: ranking_complete,
+        },
+        AuditCheck {
+            name: "comparison-sensitivity-complete",
+            passed: sensitivity_complete,
+        },
+    ]
+}
+
 /// Audit the wedge input ledger.
 ///
 /// Historical scores must be superseded, every candidate needs complete
@@ -2435,48 +2524,7 @@ pub fn audit() -> WedgeAudit {
         ));
     }
 
-    let comparison_inputs_complete = COMPARISON_CANDIDATES.len() == 3
-        && COMPARISON_CANDIDATES
-            .iter()
-            .all(|candidate| validate_candidate(candidate).is_ok());
-    if !comparison_inputs_complete {
-        gaps.push("the explicit comparison lacks a complete measured factor table".to_string());
-    }
-
-    let default_weights_normalized = canonical_weight_values(&DEFAULT_FACTOR_WEIGHTS).is_ok();
-    if !default_weights_normalized {
-        gaps.push("the default comparison weights do not normalize to 100".to_string());
-    }
-
-    let recommendation = default_recommendation();
-    let comparison_ranking_complete = recommendation.as_ref().is_ok_and(|record| {
-        record.ranked.len() == COMPARISON_CANDIDATES.len()
-            && record.recommended == "thermal-design-assurance"
-            && !record.runner_up.is_empty()
-            && !record.minority_report.is_empty()
-    });
-    if !comparison_ranking_complete {
-        gaps.push(
-            "the default explicit comparison does not produce its recorded ranking".to_string(),
-        );
-    }
-
-    let comparison_sensitivity_complete = recommendation.as_ref().is_ok_and(|record| {
-        let expected = (COMPARISON_CANDIDATES.len() - 1) * ScoringFactor::ALL.len();
-        record.rating_sensitivities.len() == expected
-            && record.weight_sensitivities.len() == expected
-            && record
-                .rating_sensitivities
-                .iter()
-                .any(|row| row.challenger == record.runner_up && row.required_rating.is_some())
-            && record
-                .weight_sensitivities
-                .iter()
-                .any(|row| row.challenger == record.runner_up && row.required_weight.is_some())
-    });
-    if !comparison_sensitivity_complete {
-        gaps.push("the comparison lacks complete one-factor flip sensitivities".to_string());
-    }
+    let comparison_checks = audit_comparison(&mut gaps);
 
     let mut ranks: Vec<u8> = VERTICALS.iter().map(|v| v.rank).collect();
     ranks.sort_unstable();
@@ -2495,51 +2543,37 @@ pub fn audit() -> WedgeAudit {
         gaps.push("cycle-time kill criterion is not the required 3x".to_string());
     }
 
-    WedgeAudit {
-        checks: vec![
-            AuditCheck {
-                name: "historic-scores-superseded",
-                passed: historic_scores_superseded,
-            },
-            AuditCheck {
-                name: "measured-inputs-complete",
-                passed: measured_inputs_complete,
-            },
-            AuditCheck {
-                name: "no-absent-strong-scores",
-                passed: no_absent_strong_scores,
-            },
-            AuditCheck {
-                name: "comparison-inputs-complete",
-                passed: comparison_inputs_complete,
-            },
-            AuditCheck {
-                name: "default-weights-normalized",
-                passed: default_weights_normalized,
-            },
-            AuditCheck {
-                name: "comparison-ranking-complete",
-                passed: comparison_ranking_complete,
-            },
-            AuditCheck {
-                name: "comparison-sensitivity-complete",
-                passed: comparison_sensitivity_complete,
-            },
-            AuditCheck {
-                name: "ranks-complete",
-                passed: ranks_complete,
-            },
-            AuditCheck {
-                name: "all-exercise-proposals",
-                passed: all_exercise_proposals,
-            },
-            AuditCheck {
-                name: "kill-criterion-measurable",
-                passed: kill_criterion_measurable,
-            },
-        ],
-        gaps,
-    }
+    let mut checks = vec![
+        AuditCheck {
+            name: "historic-scores-superseded",
+            passed: historic_scores_superseded,
+        },
+        AuditCheck {
+            name: "measured-inputs-complete",
+            passed: measured_inputs_complete,
+        },
+        AuditCheck {
+            name: "no-absent-strong-scores",
+            passed: no_absent_strong_scores,
+        },
+    ];
+    checks.extend(comparison_checks);
+    checks.extend([
+        AuditCheck {
+            name: "ranks-complete",
+            passed: ranks_complete,
+        },
+        AuditCheck {
+            name: "all-exercise-proposals",
+            passed: all_exercise_proposals,
+        },
+        AuditCheck {
+            name: "kill-criterion-measurable",
+            passed: kill_criterion_measurable,
+        },
+    ]);
+
+    WedgeAudit { checks, gaps }
 }
 
 fn push_json_string(out: &mut String, value: &str) {

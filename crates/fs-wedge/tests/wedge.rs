@@ -310,7 +310,7 @@ fn candidate_permutation_and_tie_breaking_are_deterministic() {
 }
 
 #[test]
-fn sensitivity_tables_expose_flips_and_dominance() {
+fn sensitivity_tables_expose_flips_and_degenerate_ties() {
     let record = default_recommendation().unwrap();
     let expected = 2 * ScoringFactor::ALL.len();
     assert_eq!(record.rating_sensitivities.len(), expected);
@@ -328,9 +328,22 @@ fn sensitivity_tables_expose_flips_and_dominance() {
     assert!(record.rating_sensitivities.iter().all(|row| {
         row.challenger != "full-electronics-cooling-cht" || row.required_rating.is_none()
     }));
-    assert!(record.weight_sensitivities.iter().all(|row| {
-        row.challenger != "full-electronics-cooling-cht" || row.required_weight.is_none()
-    }));
+    for row in record
+        .weight_sensitivities
+        .iter()
+        .filter(|row| row.challenger == "full-electronics-cooling-cht")
+    {
+        let ties_thermal_at_full_weight = matches!(
+            row.factor,
+            ScoringFactor::CustomerPain | ScoringFactor::DataAccess | ScoringFactor::RegulatoryRisk
+        );
+        assert_eq!(
+            row.required_weight,
+            ties_thermal_at_full_weight.then_some(100),
+            "unexpected full-CHT weight sensitivity for {}",
+            row.factor.label()
+        );
+    }
 }
 
 #[test]
