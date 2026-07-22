@@ -33,6 +33,8 @@ pub const REGISTRY_FILE: &str = "capability-maturity.json";
 const REGISTRY_SCHEMA: &str = "frankensim-capability-maturity-v1";
 const CHECK: &str = "capability-maturity";
 const LEVELS: [&str; 5] = ["L1", "L2", "L3", "L4", "L5"];
+const README_MATRIX_BEGIN: &str = "<!-- BEGIN GENERATED FRANKENSIM CAPABILITY MATRIX -->";
+const README_MATRIX_END: &str = "<!-- END GENERATED FRANKENSIM CAPABILITY MATRIX -->";
 
 /// Evidence kinds and whether the check can resolve them against the tree.
 /// `corpus` is recorded but unresolvable until the V&V corpus registry (e04)
@@ -105,10 +107,99 @@ fn level_index(level: &str) -> Option<usize> {
     LEVELS.iter().position(|candidate| *candidate == level)
 }
 
+/// Ordinal of a level name, for callers comparing two levels. `None` for an
+/// unrecognized name — the caller must treat that as "cannot compare", never
+/// as "equal".
+pub fn level_rank(level: &str) -> Option<usize> {
+    level_index(level)
+}
+
+/// The registry's levels now and as last committed, plus each capability's
+/// crate scope. The claim-integrity promotion gate (bead `.2.3`) consumes this
+/// to decide which capabilities are being promoted and what a defect must
+/// overlap to block one.
+pub struct CapabilityLevels {
+    pub current: BTreeMap<String, String>,
+    pub committed: BTreeMap<String, String>,
+    pub crates: BTreeMap<String, BTreeSet<String>>,
+}
+
+/// Pull `(id -> level)` and `(id -> crate scopes)` out of a registry document.
+/// Structural defects are the business of `check_maturity`; this extraction
+/// simply skips what it cannot read, because the gate must not double-report
+/// the registry's own validity problems.
+fn levels_and_scopes(
+    source: &str,
+) -> (BTreeMap<String, String>, BTreeMap<String, BTreeSet<String>>) {
+    let mut levels = BTreeMap::new();
+    let mut scopes = BTreeMap::new();
+    let Ok(parsed) = JsonParser::new(source).finish() else {
+        return (levels, scopes);
+    };
+    let Some(items) = obj(&parsed)
+        .and_then(|map| field(map, "capabilities"))
+        .and_then(arr)
+    else {
+        return (levels, scopes);
+    };
+    for item in items {
+        let Some(map) = obj(item) else { continue };
+        let (Some(id), Some(level)) = (
+            field(map, "id").and_then(text),
+            field(map, "level").and_then(text),
+        ) else {
+            continue;
+        };
+        levels.insert(id.to_string(), level.to_string());
+        let crates = field(map, "crates")
+            .and_then(arr)
+            .map(|items| items.iter().filter_map(text).map(str::to_string).collect())
+            .unwrap_or_default();
+        scopes.insert(id.to_string(), crates);
+    }
+    (levels, scopes)
+}
+
+/// Read the working registry and its last committed state.
+///
+/// A missing committed predecessor is not an error: the registry is new, so
+/// nothing in it is a promotion. An unreadable working registry IS an error,
+/// because a gate that cannot see the levels must refuse rather than conclude
+/// that nothing is being promoted.
+pub fn capability_levels(root: &Path) -> Result<CapabilityLevels, String> {
+    let source = std::fs::read_to_string(root.join(REGISTRY_FILE)).map_err(|error| {
+        format!(
+            "{REGISTRY_FILE} is unreadable ({error}); the promotion gate cannot conclude that \
+             nothing is being promoted from a registry it could not read"
+        )
+    })?;
+    let (current, crates) = levels_and_scopes(&source);
+
+    let output = std::process::Command::new("git")
+        .args(["show", &format!("HEAD:{REGISTRY_FILE}")])
+        .current_dir(root)
+        .output();
+    let committed = match output {
+        Ok(output) if output.status.success() => String::from_utf8(output.stdout)
+            .map(|text| levels_and_scopes(&text).0)
+            .unwrap_or_default(),
+        _ => BTreeMap::new(),
+    };
+
+    Ok(CapabilityLevels {
+        current,
+        committed,
+        crates,
+    })
+}
+
 /// One registry entry, reduced to what the check reasons about.
 struct Entry {
     id: String,
+    title: String,
     level: String,
+    crates: Vec<String>,
+    notes: String,
     kinds: BTreeSet<String>,
 }
 
@@ -202,27 +293,251 @@ fn parse_registry(source: &str, entity: &str, violations: &mut Vec<Violation>) -
                 format!("capability {id:?} last_review {review:?} is not YYYY-MM-DD"),
             ));
         }
-        if field(map, "crates")
-            .and_then(arr)
-            .is_none_or(<[_]>::is_empty)
-        {
-            violations.push(violation(
+        let mut crates = Vec::new();
+        match field(map, "crates").and_then(arr) {
+            Some(items) if !items.is_empty() => {
+                for (crate_index, item) in items.iter().enumerate() {
+                    match text(item).filter(|name| !name.is_empty()) {
+                        Some(name) => crates.push(name.to_string()),
+                        None => violations.push(violation(
+                            id,
+                            format!(
+                                "capability {id:?} crate scope #{crate_index} is not a non-empty string"
+                            ),
+                        )),
+                    }
+                }
+            }
+            _ => violations.push(violation(
                 id,
                 format!(
                     "capability {id:?} has no non-empty \"crates\" scope array; scope is what the \
                      claim-integrity promotion gate matches on, and an unscoped capability would \
                      have to be treated as global"
                 ),
-            ));
+            )),
         }
         let kinds = collect_evidence(map, id, violations);
         entries.push(Entry {
             id: id.to_string(),
+            title: field(map, "title")
+                .and_then(text)
+                .unwrap_or_default()
+                .to_string(),
             level: level.to_string(),
+            crates,
+            notes: field(map, "notes")
+                .and_then(text)
+                .unwrap_or_default()
+                .to_string(),
             kinds,
         });
     }
     entries
+}
+
+fn markdown_cell(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('|', "\\|")
+}
+
+fn render_readme_matrix(entries: &[Entry]) -> String {
+    let mut ordered: Vec<&Entry> = entries.iter().collect();
+    ordered.sort_by(|left, right| left.id.cmp(&right.id));
+    let mut output = format!(
+        "{README_MATRIX_BEGIN}\n\
+| Capability | Registry level | Crate scope | Registry boundary |\n\
+|------------|----------------|-------------|-------------------|\n"
+    );
+    for entry in ordered {
+        let crates = entry
+            .crates
+            .iter()
+            .map(|name| format!("`{}`", markdown_cell(name)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        output.push_str(&format!(
+            "| `{}` — {} | {} | {crates} | {} |\n",
+            markdown_cell(&entry.id),
+            markdown_cell(&entry.title),
+            entry.level,
+            markdown_cell(&entry.notes),
+        ));
+    }
+    output.push_str(README_MATRIX_END);
+    output
+}
+
+fn readme_matrix_block<'a>(source: &'a str) -> Result<&'a str, String> {
+    let starts: Vec<usize> = source
+        .match_indices(README_MATRIX_BEGIN)
+        .map(|(index, _)| index)
+        .collect();
+    let ends: Vec<usize> = source
+        .match_indices(README_MATRIX_END)
+        .map(|(index, _)| index)
+        .collect();
+    if starts.len() != 1 || ends.len() != 1 {
+        return Err(format!(
+            "expected exactly one generated capability-matrix marker pair, found {} starts and {} ends",
+            starts.len(),
+            ends.len()
+        ));
+    }
+    let start = starts[0];
+    let finish = ends[0]
+        .checked_add(README_MATRIX_END.len())
+        .ok_or_else(|| "capability-matrix end offset overflow".to_string())?;
+    if ends[0] <= start {
+        return Err("capability-matrix end marker precedes its start marker".to_string());
+    }
+    Ok(&source[start..finish])
+}
+
+fn check_readme_matrix_text(readme: &str, entries: &[Entry]) -> Vec<Violation> {
+    let expected = render_readme_matrix(entries);
+    match readme_matrix_block(readme) {
+        Ok(actual) if actual == expected => Vec::new(),
+        Ok(_) => vec![violation(
+            "README.md",
+            format!(
+                "README generated capability matrix is stale; replace it with the exact registry projection:\n{expected}"
+            ),
+        )],
+        Err(error) => vec![violation(
+            "README.md",
+            format!("README generated capability matrix is malformed: {error}"),
+        )],
+    }
+}
+
+fn check_readme_summary_counts(readme: &str, entries: &[Entry]) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for entry in entries {
+        *counts.entry(entry.level.as_str()).or_default() += 1;
+    }
+    for level in LEVELS {
+        let rows: Vec<&str> = readme
+            .lines()
+            .filter(|line| line.starts_with(&format!("| {level} |")))
+            .collect();
+        if rows.len() != 1 {
+            violations.push(violation(
+                "README.md",
+                format!(
+                    "README maturity summary must contain exactly one {level} row, found {}",
+                    rows.len()
+                ),
+            ));
+            continue;
+        }
+        let cells: Vec<&str> = rows[0].split('|').map(str::trim).collect();
+        let claimed = cells.get(3).and_then(|cell| cell.parse::<usize>().ok());
+        let actual = counts.get(level).copied().unwrap_or(0);
+        if claimed != Some(actual) {
+            violations.push(violation(
+                "README.md",
+                format!(
+                    "README maturity summary claims {level}={claimed:?}, but {REGISTRY_FILE} has {actual}"
+                ),
+            ));
+        }
+    }
+    for line in readme
+        .lines()
+        .filter(|line| line.contains(" product-meaningful capabilities"))
+    {
+        let marker = " product-meaningful capabilities";
+        let Some(position) = line.find(marker) else {
+            continue;
+        };
+        let digits: String = line[..position]
+            .chars()
+            .rev()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        if digits.parse::<usize>().ok() != Some(entries.len()) {
+            violations.push(violation(
+                "README.md",
+                format!(
+                    "README capability total {digits:?} does not match the {} registry entries",
+                    entries.len()
+                ),
+            ));
+        }
+    }
+    violations
+}
+
+fn check_readme_projection_entries(root: &Path, entries: &[Entry]) -> MaturityReport {
+    let readme = match std::fs::read_to_string(root.join("README.md")) {
+        Ok(readme) => readme,
+        Err(error) => {
+            return MaturityReport {
+                violations: vec![violation(
+                    "README.md",
+                    format!("cannot read README.md for capability-matrix drift check: {error}"),
+                )],
+                decisions: Vec::new(),
+            };
+        }
+    };
+    let mut violations = check_readme_matrix_text(&readme, entries);
+    violations.extend(check_readme_summary_counts(&readme, entries));
+    let decisions = if violations.is_empty() {
+        entries
+            .iter()
+            .map(|entry| {
+                note(
+                    &entry.id,
+                    "verified",
+                    format!(
+                        "README capability projection matches {REGISTRY_FILE}: level={} crates={}",
+                        entry.level,
+                        entry.crates.join(",")
+                    ),
+                )
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    MaturityReport {
+        violations,
+        decisions,
+    }
+}
+
+pub fn check_readme_projection(root: &Path) -> MaturityReport {
+    let mut violations = Vec::new();
+    let path = root.join(REGISTRY_FILE);
+    let source = match std::fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(error) => {
+            return MaturityReport {
+                violations: vec![violation(
+                    REGISTRY_FILE,
+                    format!("cannot read {REGISTRY_FILE}: {error}"),
+                )],
+                decisions: Vec::new(),
+            };
+        }
+    };
+    let entries = parse_registry(&source, REGISTRY_FILE, &mut violations);
+    if !violations.is_empty() {
+        return MaturityReport {
+            violations,
+            decisions: Vec::new(),
+        };
+    }
+    check_readme_projection_entries(root, &entries)
 }
 
 /// Validate the evidence array and return the set of kinds present. Refs are
@@ -497,6 +812,11 @@ pub fn check_maturity(root: &Path) -> MaturityReport {
     };
 
     let entries = parse_registry(&source, REGISTRY_FILE, &mut violations);
+    if violations.is_empty() {
+        let projection = check_readme_projection_entries(root, &entries);
+        violations.extend(projection.violations);
+        decisions.extend(projection.decisions);
+    }
     resolve_refs(root, &source, &mut violations);
     check_level_bars(&entries, &mut violations);
     check_transitions(root, &entries, &mut decisions);
@@ -628,7 +948,10 @@ mod tests {
         let bar = |level: &str, kinds: &[&str]| {
             let entries = vec![Entry {
                 id: "cap".to_string(),
+                title: "Capability".to_string(),
                 level: level.to_string(),
+                crates: vec!["fs-cap".to_string()],
+                notes: "Boundary".to_string(),
                 kinds: kinds.iter().map(|k| (*k).to_string()).collect(),
             }];
             let mut v = Vec::new();
@@ -714,6 +1037,83 @@ mod tests {
         assert!(v.is_empty(), "corpus refs must not be resolved yet: {v:?}");
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn generated_capability_matrix_is_sorted_and_fails_on_one_stale_level() {
+        let entries = vec![
+            Entry {
+                id: "z.last".to_string(),
+                title: "Last".to_string(),
+                level: "L1".to_string(),
+                crates: vec!["fs-z".to_string()],
+                notes: "Experimental boundary".to_string(),
+                kinds: BTreeSet::new(),
+            },
+            Entry {
+                id: "a.first".to_string(),
+                title: "First".to_string(),
+                level: "L2".to_string(),
+                crates: vec!["fs-a".to_string(), "fs-b".to_string()],
+                notes: "Verified against A | B".to_string(),
+                kinds: BTreeSet::from(["test".to_string()]),
+            },
+        ];
+        let generated = render_readme_matrix(&entries);
+        assert!(
+            generated.find("`a.first`").unwrap() < generated.find("`z.last`").unwrap(),
+            "the projection is canonical by capability id"
+        );
+        assert!(generated.contains("A \\| B"), "Markdown pipes are escaped");
+        assert!(check_readme_matrix_text(&generated, &entries).is_empty());
+
+        let stale = generated.replacen("| L2 |", "| L3 |", 1);
+        let violations = check_readme_matrix_text(&stale, &entries);
+        assert_eq!(
+            violations.len(),
+            1,
+            "one seeded maturity drift: {violations:?}"
+        );
+        assert!(violations[0].detail.contains("matrix is stale"));
+    }
+
+    #[test]
+    fn readme_maturity_summary_is_exact_checked_against_registry_counts() {
+        let entries = vec![
+            Entry {
+                id: "a".to_string(),
+                title: "A".to_string(),
+                level: "L1".to_string(),
+                crates: vec!["fs-a".to_string()],
+                notes: String::new(),
+                kinds: BTreeSet::new(),
+            },
+            Entry {
+                id: "b".to_string(),
+                title: "B".to_string(),
+                level: "L2".to_string(),
+                crates: vec!["fs-b".to_string()],
+                notes: String::new(),
+                kinds: BTreeSet::new(),
+            },
+        ];
+        let summary = concat!(
+            "it registers 2 product-meaningful capabilities:\n",
+            "| L1 | Experimental | 1 | boundary |\n",
+            "| L2 | Verified | 1 | boundary |\n",
+            "| L3 | Integrated | 0 | boundary |\n",
+            "| L4 | Validated | 0 | boundary |\n",
+            "| L5 | Supported | 0 | boundary |\n",
+        );
+        assert!(check_readme_summary_counts(summary, &entries).is_empty());
+        let stale = summary.replacen("| L2 | Verified | 1 |", "| L2 | Verified | 9 |", 1);
+        let violations = check_readme_summary_counts(&stale, &entries);
+        assert_eq!(
+            violations.len(),
+            1,
+            "one stale summary count: {violations:?}"
+        );
+        assert!(violations[0].detail.contains("L2"));
     }
 
     #[test]

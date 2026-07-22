@@ -19,10 +19,22 @@ FrankenSim is an active Rust source workspace for deterministic geometry, certif
 
 The tree contains 136 `fs-*` crate directories: 135 in the native Cargo workspace plus the standalone nested `fs-wasm` workspace. They include repository policy tooling, conformance contracts, integration tests, and implementations across substrate/runtime, numerical kernels, geometry representations, meshing, physics, solvers, adjoints, optimization, imaging, evidence, packaging, and ledger layers.
 
-The inventory numbers in this README are anchored to tracked files at
-[`main@55379ba`](https://github.com/Dicklesworthstone/frankensim/commit/55379baf41cf1d3584c87a81ae1dde20508a4c8f)
-on 2026-07-22. Untracked files in a developer's working tree are deliberately
-excluded.
+The inventory numbers in this README are derived from the current Git index,
+the root workspace manifest, and each crate's declared layer metadata by
+`cargo run -p xtask -- check-docs`. Untracked files in a developer's working
+tree are deliberately excluded; the layer row inventories declarations and is
+not, by itself, proof that every dependency edge is valid.
+
+<!-- BEGIN GENERATED FRANKENSIM DOC FACTS -->
+| Derived repository fact | Value |
+|-------------------------|-------|
+| Native workspace `fs-*` crates | 135 |
+| Standalone `fs-*` workspaces | 1 (`fs-wasm`) |
+| Tracked `fs-*` crate directories | 136 |
+| Tracked `CONTRACT.md` files | 136 of 136 |
+| Tracked crate integration-test files | 509 |
+| `fs-*` layer inventory | `UTIL=15`, `L0=7`, `L1=13`, `L2=18`, `L3=24`, `L4=32`, `L5=4`, `L6=23` |
+<!-- END GENERATED FRANKENSIM DOC FACTS -->
 
 There is not yet a packaged end-user simulation application or crates.io release. Today, FrankenSim is usable as a source workspace and library substrate.
 
@@ -60,6 +72,25 @@ are enforced from [`docs/MATURITY_LEVELS.md`](docs/MATURITY_LEVELS.md). As of
 | L3 | Integrated workflow | 0 | No registered capability currently carries an admitted end-to-end integration claim |
 | L4 | Experimentally validated | 0 | No external validation corpus and validity-domain evidence are registered |
 | L5 | Supported product | 0 | No written support and migration policy exists |
+
+<!-- BEGIN GENERATED FRANKENSIM CAPABILITY MATRIX -->
+| Capability | Registry level | Crate scope | Registry boundary |
+|------------|----------------|-------------|-------------------|
+| `campaign.quality-diversity` — Certify-or-escalate quality-diversity campaign (point-vortex thruster) | L2 | `fs-thrust-e2e` | Deliberately NOT L3 despite being an e2e crate: impulse conservation is a screen, every drift is Estimated, and no interval certificate exists for the QoI. A validated drift bound needs validated integration in fs-vpm. |
+| `evidence.colour-algebra` — Evidence colours and conservative composition | L2 | `fs-evidence` | G0 algebraic laws green: composition cannot outrank its weakest operand. Not L3 -- no e2e lane exercises colour composition across a full study. |
+| `evidence.packaging` — Content-addressed evidence packages and solver-free re-checking | L2 | `fs-package`, `fs-checker`, `fs-crosswalk` | Merkle roots, deny-all verification and the Phase-0A release gate are tested. Structural integrity is NOT authenticity: authority requires a caller-supplied verifier and an independent trust channel. |
+| `geometry.chart-conversion` — Region/chart abstraction and conversion with recorded error authority | L2 | `fs-geom` | Conversion promotes to Enclosure only from an ExactDistance source; everything else stays Estimate. The sheaf seam result means agreement at retained finite interface samples -- not watertightness. |
+| `geometry.topology-certificates` — Self-intersection and manifoldness certificates on triangle soups | L2 | `fs-topo` | Exact predicates decide every pair including vertex-sharing ones; non-finite input refuses rather than passing. Exactly-degenerate faces are REFUSED, not analysed -- a soup containing one carries no non-intersection claim. |
+| `governance.capability-maturity` — Capability maturity registry and promotion events | L1 | `xtask` | This registry itself. L1 until a rehearsed promotion and a rehearsed blocked-promotion are both demonstrated through the e02 gate. |
+| `governance.claim-integrity` — Claim-integrity defect class, inventory, and burn-down | L2 | `xtask` | Definition, taxonomy, doc lint, inventory lane, one full sweep (40 of 47 defects closed) and the promotion gate are all live; the gate demonstrably blocks a real in-scope promotion and admits a clean one. Still L2, not L3: no e2e lane composes it with a downstream consumer. |
+| `gradients.adjoint-verification` — IFT adjoints and the gradient verification gate | L2 | `fs-adjoint` | Finite differences are the independent check. The gate now counts informative directions, so a bit-insensitive probe cannot score a pass. |
+| `ledger.design-ledger` — Design ledger: artifacts, operations, lineage, time travel | L1 | `fs-ledger` | Partially repaired: b4ece64b froze semantically bound evidence bodies (a confirmed claim-integrity defect) and 60b3041b adapted the FrankenSQLite rowid-migration probes. FOUR GC tests remain red on one upstream root cause -- FrankenSQLite runs ON DELETE CASCADE actions before deleting the parent row (bead frankensim-fsqlite-fk-cascade-ordering-f2jag). No test evidence is cited and the level stays L1 rather than inferring closure from two targeted repairs. |
+| `numerics.certified-arithmetic` — Outward-rounded intervals and exact geometric predicates | L2 | `fs-ivl` | Containment under randomized expression trees is the independent oracle. Rigor is conditional on fs-math ULP budgets, per the crate's own no-claim section. |
+| `numerics.sparse-assembly` — Deterministic sparse assembly and cross-format SpMV | L2 | `fs-sparse` | Cross-format bitwise equality is an independent check, not only a golden: COO/CSR/BSR/SELL are separate implementations agreeing exactly. |
+| `solvers.krylov` — Resumable Krylov solves with typed residual provenance | L2 | `fs-solver` | SolveReport now carries a private ResidualClaim plus fail-closed Euclidean accessors (commit 8493ab35), so a driver holding only the report can distinguish recomputed-Euclidean, recursive-estimate and M-norm quantities; bead f85xj.2.24 is closed. Still L2, not L3: no admitted end-to-end lane exercises it, and the untyped rel_residual field remains readable pending a 3-crate slice named in the CONTRACT. |
+| `thermal.conduction-solve` — Steady conduction FEM solve on solids | L1 | `fs-feec`, `fs-solid` | The cooling vertical's core capability, bead f85xj.5.1, is NOT yet built -- the exterior-calculus and elasticity substrate it will sit on exists, the thermal solve does not. L1 is the honest level and the registry says so rather than crediting the substrate. |
+| `wasm.browser-flagships` — Browser-facing reduced flagship campaigns | L1 | `fs-wasm` | Builds again as of the safe-step propagation (bead f85xj.2.39): the browser payload now carries an interval-derived certified sign margin at schema v2 instead of a nominal \|f\|/L quotient. Still L1: two campaign tests (grammarforge, sensorforge) are red from an earlier code-first slice, so no test evidence is cited yet. |
+<!-- END GENERATED FRANKENSIM CAPABILITY MATRIX -->
 
 These levels apply to capabilities, not crates. A crate can contain multiple
 capabilities, and one capability can span several crates. The broad workspace

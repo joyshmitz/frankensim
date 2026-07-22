@@ -182,7 +182,7 @@
           "ref": "crates/fs-solver/tests/claim_integrity.rs::pminres_happy_breakdown_still_solves_exactly"
         }
       ],
-      "notes": "Held at L2 with a known gap: bead f85xj.2.24 is open -- SolveReport itself still does not carry which of three residual quantities it holds, so a driver seeing only a report cannot tell. Do not promote until that closes."
+      "notes": "SolveReport now carries a private ResidualClaim plus fail-closed Euclidean accessors (commit 8493ab35), so a driver holding only the report can distinguish recomputed-Euclidean, recursive-estimate and M-norm quantities; bead f85xj.2.24 is closed. Still L2, not L3: no admitted end-to-end lane exercises it, and the untyped rel_residual field remains readable pending a 3-crate slice named in the CONTRACT."
     },
     {
       "id": "gradients.adjoint-verification",
@@ -265,7 +265,7 @@
           "ref": "xtask/src/claims.rs::claim_integrity_lint_fails_closed_on_each_single_mutation"
         }
       ],
-      "notes": "Definition, taxonomy, doc lint and inventory lane are live; one full sweep completed and 40 of 47 defects closed. Not L3 until the promotion gate (f85xj.2.3) actually blocks a promotion."
+      "notes": "Definition, taxonomy, doc lint, inventory lane, one full sweep (40 of 47 defects closed) and the promotion gate are all live; the gate demonstrably blocks a real in-scope promotion and admits a clean one. Still L2, not L3: no e2e lane composes it with a downstream consumer."
     },
     {
       "id": "governance.capability-maturity",
@@ -321,7 +321,7 @@
           "ref": "crates/fs-ledger/CONTRACT.md"
         }
       ],
-      "notes": "DEMOTED in substance, not in record -- this crate did not compile until 2026-07-22 and its suite now shows 5 failures (bead frankensim-fs-ledger-latent-failures-xys1z), including an evidence-binding guard that does not hold. No test evidence is cited here because none currently passes that would justify L2."
+      "notes": "Partially repaired: b4ece64b froze semantically bound evidence bodies (a confirmed claim-integrity defect) and 60b3041b adapted the FrankenSQLite rowid-migration probes. FOUR GC tests remain red on one upstream root cause -- FrankenSQLite runs ON DELETE CASCADE actions before deleting the parent row (bead frankensim-fsqlite-fk-cascade-ordering-f2jag). No test evidence is cited and the level stays L1 rather than inferring closure from two targeted repairs."
     },
     {
       "id": "wasm.browser-flagships",
@@ -338,7 +338,7 @@
           "ref": "crates/fs-wasm/CONTRACT.md"
         }
       ],
-      "notes": "Does not currently build against the working tree (bead f85xj.2.39: reads a field the in-flight fs-neuroshape-e2e change removed). No test evidence cited because the crate cannot be exercised in place."
+      "notes": "Builds again as of the safe-step propagation (bead f85xj.2.39): the browser payload now carries an interval-derived certified sign margin at schema v2 instead of a nominal |f|/L quotient. Still L1: two campaign tests (grammarforge, sensorforge) are red from an earlier code-first slice, so no test evidence is cited yet."
     }
   ]
 }

@@ -33,6 +33,7 @@
 //! our files, and the conventions are enforced, not inferred.
 
 mod bootstrap_provenance;
+mod claim_integrity_gate;
 mod claims;
 mod closures;
 pub mod constellation_admission;
@@ -6865,6 +6866,11 @@ fn main() -> ExitCode {
             policy_notes = report.decisions;
             (report.violations, vec!["manifest-fixture"])
         }
+        "check-claim-integrity" => {
+            let report = claim_integrity_gate::check_claim_integrity_gate(&root);
+            policy_notes = report.decisions;
+            (report.violations, vec!["claim-integrity-gate"])
+        }
         "check-maturity" => {
             let report = maturity::check_maturity(&root);
             policy_notes = report.decisions;
@@ -6892,6 +6898,9 @@ fn main() -> ExitCode {
             let maturity_report = maturity::check_maturity(&root);
             v.extend(maturity_report.violations);
             policy_notes.extend(maturity_report.decisions);
+            let gate_report = claim_integrity_gate::check_claim_integrity_gate(&root);
+            v.extend(gate_report.violations);
+            policy_notes.extend(gate_report.decisions);
             v.extend(claims::check_claims(&root));
             v.extend(closures::check_closures(&root));
             v.extend(check_citable_producers(&root));
@@ -6912,6 +6921,7 @@ fn main() -> ExitCode {
                     "semantic-identities",
                     "manifest-fixture",
                     "capability-maturity",
+                    "claim-integrity-gate",
                     "claim-state",
                     "closure-evidence",
                     CITABLE_PRODUCER_CHECK,
@@ -6922,7 +6932,7 @@ fn main() -> ExitCode {
             eprintln!(
                 "unknown command {other:?}; use check-layers|check-deps|check-contracts|\
                  check-unsafe|check-powi|check-obs-events|check-casual-print|check-terminology|\
-                 check-goldens|check-claims|check-closures|check-maturity|\
+                 check-goldens|check-claims|check-closures|check-maturity|check-claim-integrity|\
                  check-identities|check-manifest-fixture|check-citable-producers|check-all|generate-identities|\
                  lock-constellation|check-constellation|depgraph-receipt|matdb-pack"
             );
