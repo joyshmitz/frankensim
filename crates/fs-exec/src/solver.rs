@@ -2,8 +2,8 @@
 //! state machines. The architectural target is typed
 //! pause/serialize/migrate/resume/fork; this module currently contains the
 //! legacy reference path and a code-first v2 identity/envelope tranche. The
-//! session, migration, fork-lineage, and retained-proof boundaries still open
-//! are stated in `CONTRACT.md`.
+//! session integration, registered migration-era, fork-lineage, and wider
+//! retained-proof boundaries still open are stated in `CONTRACT.md`.
 //!
 //! Distribution-readiness target (plan §17): state payloads are self-contained
 //! bytes — no pointers or shared-memory assumptions, with large artifacts
@@ -314,6 +314,20 @@ pub mod envelope {
     }
 
     impl SnapshotEnvelopeInfo {
+        pub(super) const fn from_validated(
+            type_id: u64,
+            schema_version: u32,
+            provenance: u64,
+            payload_len: u64,
+        ) -> Self {
+            Self {
+                type_id,
+                schema_version,
+                provenance,
+                payload_len,
+            }
+        }
+
         /// Stable solver-state type identity carried by the envelope.
         #[must_use]
         pub const fn type_id(self) -> u64 {
@@ -525,17 +539,444 @@ impl<'a> LegacySnapshotV1<'a> {
     }
 }
 
+/// Caller-retained exact expectations required to admit a legacy v1 snapshot.
+///
+/// Constructing this value does not authenticate its contents. It records the
+/// exact root and historical header fields that an outer ledger, manifest, or
+/// quarantine policy already pinned independently of the candidate bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LegacySnapshotExpectationV1 {
+    exact_bytes: fs_blake3::identity::ContentId,
+    type_id: u64,
+    schema_version: u32,
+    provenance: u64,
+}
+
+impl LegacySnapshotExpectationV1 {
+    /// Bind an independently retained exact-byte root and unchanged v1 fields.
+    #[must_use]
+    pub const fn new(
+        exact_bytes: fs_blake3::identity::ContentId,
+        type_id: u64,
+        schema_version: u32,
+        provenance: u64,
+    ) -> Self {
+        Self {
+            exact_bytes,
+            type_id,
+            schema_version,
+            provenance,
+        }
+    }
+
+    /// Caller-pinned plain BLAKE3 root of the complete legacy envelope.
+    #[must_use]
+    pub const fn exact_bytes_id(self) -> fs_blake3::identity::ContentId {
+        self.exact_bytes
+    }
+
+    /// Exact historical type id expected by the caller.
+    #[must_use]
+    pub const fn type_id(self) -> u64 {
+        self.type_id
+    }
+
+    /// Exact historical schema version expected by the caller.
+    #[must_use]
+    pub const fn schema_version(self) -> u32 {
+        self.schema_version
+    }
+
+    /// Exact historical provenance value expected by the caller.
+    #[must_use]
+    pub const fn provenance(self) -> u64 {
+        self.provenance
+    }
+}
+
+/// Explicit resource envelope for legacy v1 quarantine admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LegacySnapshotLimitsV1 {
+    max_envelope_bytes: u64,
+    hash_poll_bytes: u32,
+}
+
+impl LegacySnapshotLimitsV1 {
+    /// Construct a whole-envelope cap and maximum bytes between hash polls.
+    #[must_use]
+    pub const fn new(max_envelope_bytes: u64, hash_poll_bytes: u32) -> Self {
+        Self {
+            max_envelope_bytes,
+            hash_poll_bytes,
+        }
+    }
+
+    /// Maximum complete candidate bytes admitted before any payload work.
+    #[must_use]
+    pub const fn max_envelope_bytes(self) -> u64 {
+        self.max_envelope_bytes
+    }
+
+    /// Maximum exact bytes absorbed between cancellation observations.
+    #[must_use]
+    pub const fn hash_poll_bytes(self) -> u32 {
+        self.hash_poll_bytes
+    }
+}
+
+/// Fail-closed refusal from expected legacy admission or v1-to-v2 migration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LegacySnapshotV1Error {
+    /// A zero cap or poll interval would make the resource contract vacuous.
+    InvalidLimits(&'static str),
+    /// Candidate bytes exceed the caller's pre-inspection cap.
+    EnvelopeLimitExceeded {
+        /// Exact supplied bytes.
+        supplied: u64,
+        /// Caller-supplied maximum.
+        limit: u64,
+    },
+    /// A bounded inspection, codec boundary, identity, or publication poll
+    /// observed cancellation.
+    Cancelled {
+        /// Stable operation phase.
+        phase: &'static str,
+        /// Phase-relative byte cursor.
+        at: u64,
+    },
+    /// Structural v1 envelope refusal.
+    Envelope(envelope::EnvelopeError),
+    /// Candidate complete bytes differ from the independently pinned root.
+    ExpectedContentMismatch {
+        /// Caller-pinned exact root.
+        expected: fs_blake3::identity::ContentId,
+        /// Root recomputed from the capped candidate.
+        computed: fs_blake3::identity::ContentId,
+    },
+    /// Candidate historical type id differs from the caller's exact value.
+    ExpectedTypeIdMismatch {
+        /// Caller-pinned u64.
+        expected: u64,
+        /// Candidate u64.
+        found: u64,
+    },
+    /// Candidate historical schema differs from the caller's exact value.
+    ExpectedSchemaMismatch {
+        /// Caller-pinned u32.
+        expected: u32,
+        /// Candidate u32.
+        found: u32,
+    },
+    /// Candidate historical provenance differs from the caller's exact value.
+    ExpectedProvenanceMismatch {
+        /// Caller-pinned u64.
+        expected: u64,
+        /// Candidate u64.
+        found: u64,
+    },
+    /// The typed adapter does not own the caller's expected legacy identity.
+    AdapterIdentityMismatch {
+        /// Stable mismatching field.
+        field: &'static str,
+    },
+    /// Legacy payload decoding refused.
+    Payload(codec::CodecError),
+    /// V2 encoding, sealing, context, or identity construction refused.
+    Target(snapshot_v2::SnapshotV2Error),
+    /// Canonical migration-receipt construction refused.
+    Receipt(fs_blake3::identity::CanonicalError),
+}
+
+impl core::fmt::Display for LegacySnapshotV1Error {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidLimits(reason) => {
+                write!(formatter, "invalid legacy snapshot limits: {reason}")
+            }
+            Self::EnvelopeLimitExceeded { supplied, limit } => write!(
+                formatter,
+                "legacy snapshot supplies {supplied} bytes, above the {limit}-byte cap"
+            ),
+            Self::Cancelled { phase, at } => write!(
+                formatter,
+                "legacy snapshot operation cancelled during {phase} at byte {at}"
+            ),
+            Self::Envelope(error) => write!(formatter, "{error}"),
+            Self::ExpectedContentMismatch { .. } => formatter
+                .write_str("legacy snapshot bytes differ from the caller-pinned exact root"),
+            Self::ExpectedTypeIdMismatch { expected, found } => write!(
+                formatter,
+                "legacy snapshot type id {found:#018x} differs from caller-pinned {expected:#018x}"
+            ),
+            Self::ExpectedSchemaMismatch { expected, found } => write!(
+                formatter,
+                "legacy snapshot schema v{found} differs from caller-pinned v{expected}"
+            ),
+            Self::ExpectedProvenanceMismatch { expected, found } => write!(
+                formatter,
+                "legacy snapshot provenance {found:#018x} differs from caller-pinned {expected:#018x}"
+            ),
+            Self::AdapterIdentityMismatch { field } => write!(
+                formatter,
+                "legacy snapshot expectation does not belong to this adapter field {field}"
+            ),
+            Self::Payload(error) => write!(formatter, "{error}"),
+            Self::Target(error) => write!(formatter, "legacy migration target refused: {error}"),
+            Self::Receipt(error) => write!(formatter, "legacy migration receipt refused: {error}"),
+        }
+    }
+}
+
+impl core::error::Error for LegacySnapshotV1Error {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Envelope(error) => Some(error),
+            Self::Payload(error) => Some(error),
+            Self::Target(error) => Some(error),
+            Self::Receipt(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+fn validate_legacy_limits(limits: LegacySnapshotLimitsV1) -> Result<(), LegacySnapshotV1Error> {
+    if limits.max_envelope_bytes == 0 {
+        return Err(LegacySnapshotV1Error::InvalidLimits(
+            "max_envelope_bytes must be positive",
+        ));
+    }
+    if limits.hash_poll_bytes == 0 {
+        return Err(LegacySnapshotV1Error::InvalidLimits(
+            "hash_poll_bytes must be positive",
+        ));
+    }
+    Ok(())
+}
+
+fn poll_legacy<C: fs_blake3::identity::CancellationProbe>(
+    cancellation: &mut C,
+    phase: &'static str,
+    at: u64,
+) -> Result<(), LegacySnapshotV1Error> {
+    if cancellation.is_cancelled() {
+        return Err(LegacySnapshotV1Error::Cancelled { phase, at });
+    }
+    Ok(())
+}
+
+fn hash_legacy_exact<C: fs_blake3::identity::CancellationProbe>(
+    bytes: &[u8],
+    poll_bytes: u32,
+    phase: &'static str,
+    cancellation: &mut C,
+) -> Result<fs_blake3::identity::ContentId, LegacySnapshotV1Error> {
+    poll_legacy(cancellation, phase, 0)?;
+    let chunk_len = usize::try_from(poll_bytes).map_err(|_| {
+        LegacySnapshotV1Error::InvalidLimits("hash_poll_bytes exceeds platform usize")
+    })?;
+    let mut hasher = fs_blake3::Blake3::new();
+    let mut absorbed = 0_u64;
+    for chunk in bytes.chunks(chunk_len) {
+        hasher.update(chunk);
+        absorbed = absorbed
+            .checked_add(u64::try_from(chunk.len()).map_err(|_| {
+                LegacySnapshotV1Error::InvalidLimits("candidate length exceeds u64")
+            })?)
+            .ok_or(LegacySnapshotV1Error::InvalidLimits(
+                "candidate length arithmetic overflowed",
+            ))?;
+        poll_legacy(cancellation, phase, absorbed)?;
+    }
+    Ok(
+        fs_blake3::identity::ContentId::parse_slice(hasher.finalize().as_bytes())
+            .expect("a BLAKE3 root is exactly one ContentId"),
+    )
+}
+
+fn legacy_payload_checksum_bounded<C: fs_blake3::identity::CancellationProbe>(
+    payload: &[u8],
+    poll_bytes: u32,
+    cancellation: &mut C,
+) -> Result<u64, LegacySnapshotV1Error> {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    poll_legacy(cancellation, "legacy payload checksum", 0)?;
+    let chunk_len = usize::try_from(poll_bytes).map_err(|_| {
+        LegacySnapshotV1Error::InvalidLimits("hash_poll_bytes exceeds platform usize")
+    })?;
+    let mut hash = OFFSET;
+    let mut absorbed = 0_u64;
+    for chunk in payload.chunks(chunk_len) {
+        for &byte in chunk {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(PRIME);
+        }
+        absorbed =
+            absorbed
+                .checked_add(u64::try_from(chunk.len()).map_err(|_| {
+                    LegacySnapshotV1Error::InvalidLimits("payload length exceeds u64")
+                })?)
+                .ok_or(LegacySnapshotV1Error::InvalidLimits(
+                    "payload length arithmetic overflowed",
+                ))?;
+        poll_legacy(cancellation, "legacy payload checksum", absorbed)?;
+    }
+    Ok(hash)
+}
+
+/// Admit one exact legacy v1 snapshot under caller-pinned identity, header,
+/// resource, and cancellation expectations.
+///
+/// The returned content identity proves only equality with the supplied root;
+/// the caller remains responsible for how that root and the expected header
+/// fields were authenticated.
+///
+/// # Errors
+/// Every cap, cancellation, structure, checksum, exact-root, or expected-field
+/// mismatch is refused before a typed legacy decoder can run.
+pub fn inspect_expected_legacy_snapshot_v1<'a, C>(
+    bytes: &'a [u8],
+    expected: LegacySnapshotExpectationV1,
+    limits: LegacySnapshotLimitsV1,
+    mut cancellation: C,
+) -> Result<LegacySnapshotV1<'a>, LegacySnapshotV1Error>
+where
+    C: fs_blake3::identity::CancellationProbe,
+{
+    validate_legacy_limits(limits)?;
+    let supplied = u64::try_from(bytes.len())
+        .map_err(|_| LegacySnapshotV1Error::InvalidLimits("candidate length exceeds u64"))?;
+    if supplied > limits.max_envelope_bytes {
+        return Err(LegacySnapshotV1Error::EnvelopeLimitExceeded {
+            supplied,
+            limit: limits.max_envelope_bytes,
+        });
+    }
+    poll_legacy(&mut cancellation, "legacy header inspection", 0)?;
+    if bytes.len() < envelope::HEADER_LEN {
+        if bytes.len() >= envelope::MAGIC.len() && bytes[..8] != envelope::MAGIC {
+            return Err(LegacySnapshotV1Error::Envelope(
+                envelope::EnvelopeError::BadMagic,
+            ));
+        }
+        return Err(LegacySnapshotV1Error::Envelope(
+            envelope::EnvelopeError::Truncated {
+                needed: envelope::HEADER_LEN,
+                have: bytes.len(),
+            },
+        ));
+    }
+    if bytes[..8] != envelope::MAGIC {
+        return Err(LegacySnapshotV1Error::Envelope(
+            envelope::EnvelopeError::BadMagic,
+        ));
+    }
+    let u32_at = |offset: usize| {
+        u32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .expect("legacy header length"),
+        )
+    };
+    let u64_at = |offset: usize| {
+        u64::from_le_bytes(
+            bytes[offset..offset + 8]
+                .try_into()
+                .expect("legacy header length"),
+        )
+    };
+    let envelope_version = u32_at(8);
+    if envelope_version != envelope::ENVELOPE_VERSION {
+        return Err(LegacySnapshotV1Error::Envelope(
+            envelope::EnvelopeError::UnknownEnvelopeVersion {
+                found: envelope_version,
+            },
+        ));
+    }
+    let payload_len = u64_at(32);
+    let payload = &bytes[envelope::HEADER_LEN..];
+    let actual_payload_len = u64::try_from(payload.len())
+        .map_err(|_| LegacySnapshotV1Error::InvalidLimits("payload length exceeds u64"))?;
+    if payload_len != actual_payload_len {
+        return Err(LegacySnapshotV1Error::Envelope(
+            envelope::EnvelopeError::LengthMismatch {
+                declared: payload_len,
+                actual: actual_payload_len,
+            },
+        ));
+    }
+    let computed_exact = hash_legacy_exact(
+        bytes,
+        limits.hash_poll_bytes,
+        "legacy exact-byte hashing",
+        &mut cancellation,
+    )?;
+    if computed_exact != expected.exact_bytes {
+        return Err(LegacySnapshotV1Error::ExpectedContentMismatch {
+            expected: expected.exact_bytes,
+            computed: computed_exact,
+        });
+    }
+    let found_type = u64_at(12);
+    if found_type != expected.type_id {
+        return Err(LegacySnapshotV1Error::ExpectedTypeIdMismatch {
+            expected: expected.type_id,
+            found: found_type,
+        });
+    }
+    let found_schema = u32_at(20);
+    if found_schema != expected.schema_version {
+        return Err(LegacySnapshotV1Error::ExpectedSchemaMismatch {
+            expected: expected.schema_version,
+            found: found_schema,
+        });
+    }
+    let found_provenance = u64_at(24);
+    if found_provenance != expected.provenance {
+        return Err(LegacySnapshotV1Error::ExpectedProvenanceMismatch {
+            expected: expected.provenance,
+            found: found_provenance,
+        });
+    }
+    let declared_checksum = u64_at(40);
+    let computed_checksum =
+        legacy_payload_checksum_bounded(payload, limits.hash_poll_bytes, &mut cancellation)?;
+    if declared_checksum != computed_checksum {
+        return Err(LegacySnapshotV1Error::Envelope(
+            envelope::EnvelopeError::ChecksumMismatch {
+                declared: declared_checksum,
+                computed: computed_checksum,
+            },
+        ));
+    }
+    poll_legacy(&mut cancellation, "legacy inspection publication", supplied)?;
+    Ok(LegacySnapshotV1 {
+        bytes,
+        info: envelope::SnapshotEnvelopeInfo::from_validated(
+            found_type,
+            found_schema,
+            found_provenance,
+            payload_len,
+        ),
+        exact_bytes: computed_exact,
+        payload_checksum: declared_checksum,
+    })
+}
+
 /// Validate and quarantine an exact legacy v1 snapshot.
 ///
 /// # Resource no-claim
 /// This compatibility entry point performs the historical unbounded FNV pass
 /// followed by an unbounded BLAKE3 pass and has no cancellation probe. Call it
-/// only on bytes already bounded by a trusted outer transport. The explicit
-/// capped/cancellable legacy migration boundary is successor work.
+/// only on bytes already bounded by a trusted outer transport. Use
+/// [`inspect_expected_legacy_snapshot_v1`] or
+/// [`LegacySnapshotV1Adapter::migrate_expected`] for caller-pinned,
+/// capped/cancellable admission.
 ///
 /// # Errors
 /// The same structural refusals as [`envelope::inspect`].
-pub fn inspect_legacy_snapshot_v1(
+pub fn inspect_untrusted_legacy_snapshot_v1(
     bytes: &[u8],
 ) -> Result<LegacySnapshotV1<'_>, envelope::EnvelopeError> {
     let info = envelope::inspect(bytes)?;
@@ -550,6 +991,21 @@ pub fn inspect_legacy_snapshot_v1(
         exact_bytes: fs_blake3::identity::ContentId::of_bytes(bytes),
         payload_checksum,
     })
+}
+
+/// Historical alias for unbounded compatibility parsing.
+///
+/// Prefer [`inspect_expected_legacy_snapshot_v1`] for every admission or
+/// migration path. This alias cannot establish a caller-pinned root or bound
+/// CPU/cancellation work.
+#[deprecated(
+    since = "0.1.0",
+    note = "use inspect_expected_legacy_snapshot_v1; this alias is unbounded and untrusted"
+)]
+pub fn inspect_legacy_snapshot_v1(
+    bytes: &[u8],
+) -> Result<LegacySnapshotV1<'_>, envelope::EnvelopeError> {
+    inspect_untrusted_legacy_snapshot_v1(bytes)
 }
 
 /// Strongly identified snapshot envelope v2.
@@ -3892,6 +4348,376 @@ pub mod snapshot_v2 {
     }
 }
 
+macro_rules! legacy_migration_binding_id {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub struct $name([u8; 32]);
+
+        impl $name {
+            /// Declare an exact identity supplied by the migration owner.
+            /// Presence is not authority; an outer policy still admits it.
+            #[must_use]
+            pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+                Self(bytes)
+            }
+
+            /// Exact retained identity bytes.
+            #[must_use]
+            pub const fn as_bytes(&self) -> &[u8; 32] {
+                &self.0
+            }
+        }
+    };
+}
+
+legacy_migration_binding_id!(
+    /// Identity of the exact migration implementation/code contract.
+    LegacyMigrationCodeIdV1
+);
+legacy_migration_binding_id!(
+    /// Identity of the source-to-target field/schema mapping.
+    LegacyMigrationSchemaIdV1
+);
+legacy_migration_binding_id!(
+    /// Identity of caller-admitted units, policy, and migration context.
+    LegacyMigrationContextIdV1
+);
+
+/// Stable migration declarations supplied independently of candidate bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LegacyMigrationPlanV1 {
+    code: LegacyMigrationCodeIdV1,
+    schema: LegacyMigrationSchemaIdV1,
+    context: LegacyMigrationContextIdV1,
+}
+
+impl LegacyMigrationPlanV1 {
+    /// Bind exact code, mapping-schema, and contextual policy identities.
+    #[must_use]
+    pub const fn new(
+        code: LegacyMigrationCodeIdV1,
+        schema: LegacyMigrationSchemaIdV1,
+        context: LegacyMigrationContextIdV1,
+    ) -> Self {
+        Self {
+            code,
+            schema,
+            context,
+        }
+    }
+
+    /// Exact migration implementation identity.
+    #[must_use]
+    pub const fn code(self) -> LegacyMigrationCodeIdV1 {
+        self.code
+    }
+
+    /// Exact migration field/schema mapping identity.
+    #[must_use]
+    pub const fn schema(self) -> LegacyMigrationSchemaIdV1 {
+        self.schema
+    }
+
+    /// Exact admitted migration context identity.
+    #[must_use]
+    pub const fn context(self) -> LegacyMigrationContextIdV1 {
+        self.context
+    }
+}
+
+/// Canonical typed schema for one explicit v1-to-v2 migration result.
+pub enum LegacySnapshotMigrationReceiptSchemaV1 {}
+
+static LEGACY_MIGRATION_TARGET_RESUME_CHILD: fs_blake3::identity::ChildSpec =
+    fs_blake3::identity::ChildSpec::for_identity::<snapshot_v2::SnapshotResumeIdV2>();
+static LEGACY_MIGRATION_TARGET_AUTHORITY_CHILD: fs_blake3::identity::ChildSpec =
+    fs_blake3::identity::ChildSpec::for_identity::<snapshot_v2::SnapshotAuthoritySubjectIdV2>();
+
+impl fs_blake3::identity::CanonicalSchema for LegacySnapshotMigrationReceiptSchemaV1 {
+    const DOMAIN: &'static str = "org.frankensim.fs-exec.legacy-snapshot-migration-receipt.v1";
+    const NAME: &'static str = "legacy-snapshot-migration-receipt";
+    const VERSION: u32 = 1;
+    const CONTEXT: &'static str = "transactional record binding exact legacy bytes and unchanged v1 header/checksum fields to one explicitly identified migration and one exact v2 snapshot; no legacy producer authenticity";
+    const FIELDS: &'static [fs_blake3::identity::FieldSpec] = &[
+        fs_blake3::identity::FieldSpec::required(
+            "source-content",
+            fs_blake3::identity::WireType::Bytes,
+        ),
+        fs_blake3::identity::FieldSpec::required(
+            "source-envelope-version",
+            fs_blake3::identity::WireType::U64,
+        ),
+        fs_blake3::identity::FieldSpec::required(
+            "source-type-id",
+            fs_blake3::identity::WireType::U64,
+        ),
+        fs_blake3::identity::FieldSpec::required(
+            "source-schema-version",
+            fs_blake3::identity::WireType::U64,
+        ),
+        fs_blake3::identity::FieldSpec::required(
+            "source-provenance",
+            fs_blake3::identity::WireType::U64,
+        ),
+        fs_blake3::identity::FieldSpec::required(
+            "source-payload-length",
+            fs_blake3::identity::WireType::U64,
+        ),
+        fs_blake3::identity::FieldSpec::required(
+            "source-payload-checksum",
+            fs_blake3::identity::WireType::U64,
+        ),
+        fs_blake3::identity::FieldSpec::required(
+            "migration-code",
+            fs_blake3::identity::WireType::Bytes,
+        ),
+        fs_blake3::identity::FieldSpec::required(
+            "migration-schema",
+            fs_blake3::identity::WireType::Bytes,
+        ),
+        fs_blake3::identity::FieldSpec::required(
+            "migration-context",
+            fs_blake3::identity::WireType::Bytes,
+        ),
+        fs_blake3::identity::FieldSpec::required(
+            "target-content",
+            fs_blake3::identity::WireType::Bytes,
+        ),
+        fs_blake3::identity::FieldSpec::child_of(
+            "target-resume",
+            &LEGACY_MIGRATION_TARGET_RESUME_CHILD,
+        ),
+        fs_blake3::identity::FieldSpec::child_of(
+            "target-authority-subject",
+            &LEGACY_MIGRATION_TARGET_AUTHORITY_CHILD,
+        ),
+    ];
+}
+
+/// Typed canonical identity of one complete migration receipt.
+pub type LegacySnapshotMigrationReceiptIdV1 =
+    fs_blake3::identity::SemanticId<LegacySnapshotMigrationReceiptSchemaV1>;
+
+/// Canonical receipt binding one exact admitted legacy source to one exact v2
+/// target and the migration declarations that produced it.
+#[must_use = "migration evidence must be retained, ledgered, or explicitly discharged"]
+pub struct LegacySnapshotMigrationReceiptV1 {
+    identity: fs_blake3::identity::IdentityReceipt<LegacySnapshotMigrationReceiptIdV1>,
+    source_content: fs_blake3::identity::ContentId,
+    source_info: envelope::SnapshotEnvelopeInfo,
+    source_payload_checksum: u64,
+    plan: LegacyMigrationPlanV1,
+    target_content: snapshot_v2::SnapshotContentIdV2,
+    target_resume: snapshot_v2::SnapshotResumeIdV2,
+    target_authority_subject: snapshot_v2::SnapshotAuthoritySubjectIdV2,
+}
+
+impl core::fmt::Debug for LegacySnapshotMigrationReceiptV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("LegacySnapshotMigrationReceiptV1")
+            .field("id", &self.identity.id())
+            .field("source_content", &self.source_content)
+            .field("source_info", &self.source_info)
+            .field("source_payload_checksum", &self.source_payload_checksum)
+            .field("plan", &self.plan)
+            .field("target_content", &self.target_content.to_hex())
+            .field("target_resume", &self.target_resume)
+            .field("target_authority_subject", &self.target_authority_subject)
+            .finish_non_exhaustive()
+    }
+}
+
+impl LegacySnapshotMigrationReceiptV1 {
+    /// Typed canonical migration receipt identity.
+    #[must_use]
+    pub const fn id(&self) -> LegacySnapshotMigrationReceiptIdV1 {
+        self.identity.id()
+    }
+
+    /// Complete canonical identity receipt and preimage evidence.
+    #[must_use]
+    pub const fn identity_receipt(
+        &self,
+    ) -> fs_blake3::identity::IdentityReceipt<LegacySnapshotMigrationReceiptIdV1> {
+        self.identity
+    }
+
+    /// Exact complete source-byte identity.
+    #[must_use]
+    pub const fn source_content_id(&self) -> fs_blake3::identity::ContentId {
+        self.source_content
+    }
+
+    /// Unchanged historical header fields.
+    #[must_use]
+    pub const fn source_info(&self) -> envelope::SnapshotEnvelopeInfo {
+        self.source_info
+    }
+
+    /// Unchanged historical payload-only FNV checksum.
+    #[must_use]
+    pub const fn source_payload_checksum(&self) -> u64 {
+        self.source_payload_checksum
+    }
+
+    /// Exact migration code/schema/context declarations.
+    #[must_use]
+    pub const fn plan(&self) -> LegacyMigrationPlanV1 {
+        self.plan
+    }
+
+    /// Exact complete v2 target-byte identity.
+    #[must_use]
+    pub const fn target_content_id(&self) -> snapshot_v2::SnapshotContentIdV2 {
+        self.target_content
+    }
+
+    /// Exact typed v2 resume identity.
+    #[must_use]
+    pub const fn target_resume_id(&self) -> snapshot_v2::SnapshotResumeIdV2 {
+        self.target_resume
+    }
+
+    /// Exact composite v2 authority subject. This is subject identity only,
+    /// not an admission or signature claim.
+    #[must_use]
+    pub const fn target_authority_subject_id(&self) -> snapshot_v2::SnapshotAuthoritySubjectIdV2 {
+        self.target_authority_subject
+    }
+}
+
+/// Transactional migration result. Exact source bytes, target bytes, and the
+/// typed crosswalk receipt remain attached until explicitly discharged.
+#[must_use = "source, target, and migration receipt must remain attached"]
+pub struct MigratedLegacySnapshotV1ToV2<'a> {
+    source: LegacySnapshotV1<'a>,
+    target: snapshot_v2::SealedSnapshotV2,
+    receipt: LegacySnapshotMigrationReceiptV1,
+}
+
+impl core::fmt::Debug for MigratedLegacySnapshotV1ToV2<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("MigratedLegacySnapshotV1ToV2")
+            .field("source", &self.source)
+            .field("target", &self.target)
+            .field("receipt", &self.receipt)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> MigratedLegacySnapshotV1ToV2<'a> {
+    /// Exact admitted legacy source bytes and metadata.
+    #[must_use]
+    pub const fn source(&self) -> LegacySnapshotV1<'a> {
+        self.source
+    }
+
+    /// Exact sealed v2 target with attached identity evidence.
+    #[must_use]
+    pub const fn target(&self) -> &snapshot_v2::SealedSnapshotV2 {
+        &self.target
+    }
+
+    /// Typed canonical source-to-target migration receipt.
+    #[must_use]
+    pub const fn receipt(&self) -> &LegacySnapshotMigrationReceiptV1 {
+        &self.receipt
+    }
+
+    /// Explicitly discharge the attached source, target, and receipt together.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        LegacySnapshotV1<'a>,
+        snapshot_v2::SealedSnapshotV2,
+        LegacySnapshotMigrationReceiptV1,
+    ) {
+        (self.source, self.target, self.receipt)
+    }
+}
+
+fn migration_receipt_error(error: fs_blake3::identity::CanonicalError) -> LegacySnapshotV1Error {
+    match error {
+        fs_blake3::identity::CanonicalError::Cancelled { absorbed_bytes } => {
+            LegacySnapshotV1Error::Cancelled {
+                phase: "legacy migration receipt",
+                at: absorbed_bytes,
+            }
+        }
+        other => LegacySnapshotV1Error::Receipt(other),
+    }
+}
+
+fn build_legacy_migration_receipt<C>(
+    source: LegacySnapshotV1<'_>,
+    plan: LegacyMigrationPlanV1,
+    target: &snapshot_v2::SealedSnapshotV2,
+    limits: fs_blake3::identity::CanonicalLimits,
+    cancellation: &mut C,
+) -> Result<LegacySnapshotMigrationReceiptV1, LegacySnapshotV1Error>
+where
+    C: fs_blake3::identity::CancellationProbe,
+{
+    use fs_blake3::identity::{CanonicalEncoder, Field};
+
+    let source_info = source.info();
+    let mut build = || {
+        CanonicalEncoder::<LegacySnapshotMigrationReceiptIdV1, _>::new(limits, || {
+            cancellation.is_cancelled()
+        })?
+        .bytes(
+            Field::new(0, "source-content"),
+            source.exact_bytes_id().as_bytes(),
+        )?
+        .u64(
+            Field::new(1, "source-envelope-version"),
+            u64::from(envelope::ENVELOPE_VERSION),
+        )?
+        .u64(Field::new(2, "source-type-id"), source_info.type_id())?
+        .u64(
+            Field::new(3, "source-schema-version"),
+            u64::from(source_info.schema_version()),
+        )?
+        .u64(Field::new(4, "source-provenance"), source_info.provenance())?
+        .u64(
+            Field::new(5, "source-payload-length"),
+            source_info.payload_len(),
+        )?
+        .u64(
+            Field::new(6, "source-payload-checksum"),
+            source.payload_checksum(),
+        )?
+        .bytes(Field::new(7, "migration-code"), plan.code.as_bytes())?
+        .bytes(Field::new(8, "migration-schema"), plan.schema.as_bytes())?
+        .bytes(Field::new(9, "migration-context"), plan.context.as_bytes())?
+        .bytes(
+            Field::new(10, "target-content"),
+            target.content_id().as_bytes(),
+        )?
+        .child(Field::new(11, "target-resume"), target.resume_id())?
+        .child(
+            Field::new(12, "target-authority-subject"),
+            target.authority_subject_receipt().id(),
+        )?
+        .finish()
+    };
+    let identity = build().map_err(migration_receipt_error)?;
+    Ok(LegacySnapshotMigrationReceiptV1 {
+        identity,
+        source_content: source.exact_bytes_id(),
+        source_info,
+        source_payload_checksum: source.payload_checksum(),
+        plan,
+        target_content: target.content_id(),
+        target_resume: target.resume_id(),
+        target_authority_subject: target.authority_subject_receipt().id(),
+    })
+}
+
 /// A snapshot failure: envelope refusal or payload decode error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnapshotError {
@@ -4005,8 +4831,9 @@ impl<S: LegacySolverStateV1> LegacySnapshotV1Adapter<S> {
     ///
     /// # Errors
     /// [`SnapshotError`] — envelope refusals never reach the decoder.
-    pub fn open(bytes: &[u8]) -> Result<OpenedLegacySnapshotV1<'_, S>, SnapshotError> {
-        let source = inspect_legacy_snapshot_v1(bytes).map_err(SnapshotError::Envelope)?;
+    pub fn open_untrusted(bytes: &[u8]) -> Result<OpenedLegacySnapshotV1<'_, S>, SnapshotError> {
+        let source =
+            inspect_untrusted_legacy_snapshot_v1(bytes).map_err(SnapshotError::Envelope)?;
         let (payload, _) = envelope::open(bytes, S::TYPE_ID_V1, S::SCHEMA_VERSION_V1)
             .map_err(SnapshotError::Envelope)?;
         let mut decoder = codec::Dec::new(payload);
@@ -4022,6 +4849,69 @@ impl<S: LegacySolverStateV1> LegacySnapshotV1Adapter<S> {
         Ok(OpenedLegacySnapshotV1 { state, source })
     }
 
+    /// Historical alias for unbounded compatibility decoding.
+    ///
+    /// Prefer [`Self::open_expected`] for every admission or migration path.
+    #[deprecated(
+        since = "0.1.0",
+        note = "use open_expected; open is unbounded and has no caller-pinned root"
+    )]
+    pub fn open(bytes: &[u8]) -> Result<OpenedLegacySnapshotV1<'_, S>, SnapshotError> {
+        Self::open_untrusted(bytes)
+    }
+
+    /// Admit and decode only after a capped, cancellable, caller-pinned exact
+    /// byte and historical-header match.
+    ///
+    /// The legacy decoder receives at most the caller-capped payload. It is an
+    /// historical trait and cannot be forced to poll inside arbitrary custom
+    /// decode code, so this adapter polls immediately before and after decode;
+    /// migration owners must keep their v1 decoder bounded and side-effect
+    /// free.
+    ///
+    /// # Errors
+    /// Any adapter-identity, resource, cancellation, exact-root, envelope, or
+    /// payload refusal prevents publication.
+    pub fn open_expected<'a, C>(
+        bytes: &'a [u8],
+        expected: LegacySnapshotExpectationV1,
+        limits: LegacySnapshotLimitsV1,
+        mut cancellation: C,
+    ) -> Result<OpenedLegacySnapshotV1<'a, S>, LegacySnapshotV1Error>
+    where
+        C: fs_blake3::identity::CancellationProbe,
+    {
+        if expected.type_id() != S::TYPE_ID_V1 {
+            return Err(LegacySnapshotV1Error::AdapterIdentityMismatch { field: "type-id" });
+        }
+        if expected.schema_version() != S::SCHEMA_VERSION_V1 {
+            return Err(LegacySnapshotV1Error::AdapterIdentityMismatch {
+                field: "schema-version",
+            });
+        }
+        let source = inspect_expected_legacy_snapshot_v1(bytes, expected, limits, || {
+            cancellation.is_cancelled()
+        })?;
+        let payload = &bytes[envelope::HEADER_LEN..];
+        poll_legacy(&mut cancellation, "legacy payload decode", 0)?;
+        let mut decoder = codec::Dec::new(payload);
+        let state = S::decode_v1(&mut decoder).map_err(LegacySnapshotV1Error::Payload)?;
+        if !decoder.is_empty() {
+            return Err(LegacySnapshotV1Error::Payload(codec::CodecError {
+                at: decoder.position(),
+                what: "end of legacy v1 snapshot payload",
+                needed: 0,
+                remaining: decoder.remaining(),
+            }));
+        }
+        poll_legacy(
+            &mut cancellation,
+            "legacy payload decode",
+            source.info().payload_len(),
+        )?;
+        Ok(OpenedLegacySnapshotV1 { state, source })
+    }
+
     /// Seal with unattributed historical provenance zero.
     #[must_use]
     pub fn to_bytes(state: &S) -> Vec<u8> {
@@ -4033,8 +4923,17 @@ impl<S: LegacySolverStateV1> LegacySnapshotV1Adapter<S> {
     ///
     /// # Errors
     /// [`SnapshotError`] on any v1 envelope or codec refusal.
+    pub fn from_bytes_untrusted(bytes: &[u8]) -> Result<S, SnapshotError> {
+        Self::open_untrusted(bytes).map(|opened| opened.into_parts().0)
+    }
+
+    /// Historical alias for unbounded compatibility decoding.
+    #[deprecated(
+        since = "0.1.0",
+        note = "use open_expected; from_bytes is unbounded and discards source evidence"
+    )]
     pub fn from_bytes(bytes: &[u8]) -> Result<S, SnapshotError> {
-        Self::open(bytes).map(|opened| opened.into_parts().0)
+        Self::from_bytes_untrusted(bytes)
     }
 
     /// Historical FNV-1a correlation hash of the complete unattributed v1
@@ -4051,8 +4950,72 @@ impl<S: LegacySolverStateV1> LegacySnapshotV1Adapter<S> {
     ///
     /// # Errors
     /// [`SnapshotError`] when the legacy encoder and decoder disagree.
+    pub fn round_trip_untrusted(state: &S) -> Result<S, SnapshotError> {
+        Self::from_bytes_untrusted(&Self::to_bytes(state))
+    }
+
+    /// Historical alias for unbounded in-memory compatibility testing.
+    #[deprecated(
+        since = "0.1.0",
+        note = "use round_trip_untrusted or the caller-pinned migration path"
+    )]
     pub fn round_trip(state: &S) -> Result<S, SnapshotError> {
-        Self::from_bytes(&Self::to_bytes(state))
+        Self::round_trip_untrusted(state)
+    }
+
+    /// Transactionally admit, decode, encode, seal, and receipt one exact
+    /// legacy source as one exact v2 target.
+    ///
+    /// The target and receipt remain local until every cap, cancellation,
+    /// codec, expected-context, canonical-identity, and final publication poll
+    /// succeeds. Failure returns neither partial target bytes nor a receipt.
+    /// The receipt records a deterministic crosswalk but does not authenticate
+    /// the legacy producer or admit the target for resume.
+    ///
+    /// # Errors
+    /// Any source admission, decode, v2 encode/seal/context, receipt, or final
+    /// publication refusal aborts the whole transaction.
+    pub fn migrate_expected<'a, C>(
+        bytes: &'a [u8],
+        expected_source: LegacySnapshotExpectationV1,
+        migration: LegacyMigrationPlanV1,
+        expected_target_context: &snapshot_v2::ExpectedResumeContextV2,
+        legacy_limits: LegacySnapshotLimitsV1,
+        target_limits: snapshot_v2::SnapshotLimitsV2,
+        mut cancellation: C,
+    ) -> Result<MigratedLegacySnapshotV1ToV2<'a>, LegacySnapshotV1Error>
+    where
+        S: SolverStateV2,
+        C: fs_blake3::identity::CancellationProbe,
+    {
+        let opened = Self::open_expected(bytes, expected_source, legacy_limits, || {
+            cancellation.is_cancelled()
+        })?;
+        let (state, source) = opened.into_parts();
+        poll_legacy(&mut cancellation, "legacy migration target encoding", 0)?;
+        let target = state
+            .seal_v2(expected_target_context, target_limits, || {
+                cancellation.is_cancelled()
+            })
+            .map_err(LegacySnapshotV1Error::Target)?;
+        let receipt = build_legacy_migration_receipt(
+            source,
+            migration,
+            &target,
+            target_limits.identity(),
+            &mut cancellation,
+        )?;
+        poll_legacy(
+            &mut cancellation,
+            "legacy migration publication",
+            u64::try_from(target.bytes().len())
+                .map_err(|_| LegacySnapshotV1Error::InvalidLimits("target length exceeds u64"))?,
+        )?;
+        Ok(MigratedLegacySnapshotV1ToV2 {
+            source,
+            target,
+            receipt,
+        })
     }
 }
 
@@ -4301,7 +5264,7 @@ pub fn drive_v2<R: ResumableSolverV2>(
 /// # Errors
 /// [`SnapshotError`] when the legacy encoder and decoder disagree.
 pub fn round_trip_legacy_v1<S: LegacySolverStateV1>(state: &S) -> Result<S, SnapshotError> {
-    LegacySnapshotV1Adapter::<S>::round_trip(state)
+    LegacySnapshotV1Adapter::<S>::round_trip_untrusted(state)
 }
 
 #[cfg(test)]
@@ -4349,7 +5312,8 @@ mod tests {
             u64::try_from(sealed.len() - envelope::HEADER_LEN).expect("bounded fixture")
         );
         // The happy path round-trips bit-exactly WITH provenance.
-        let opened = LegacySnapshotV1Adapter::<JacobiState>::open(&sealed).expect("valid seal");
+        let opened =
+            LegacySnapshotV1Adapter::<JacobiState>::open_untrusted(&sealed).expect("valid seal");
         let (back, source) = opened.into_parts();
         let prov = source.info().provenance();
         assert_eq!(back, state);
@@ -4362,7 +5326,7 @@ mod tests {
         );
         // Cross-type: identical payload layout, refused by TYPE ID.
         assert!(matches!(
-            LegacySnapshotV1Adapter::<TwinState>::open(&sealed),
+            LegacySnapshotV1Adapter::<TwinState>::open_untrusted(&sealed),
             Err(SnapshotError::Envelope(
                 envelope::EnvelopeError::WrongTypeId { .. }
             ))
@@ -4372,7 +5336,7 @@ mod tests {
         let last = flipped.len() - 1;
         flipped[last] ^= 0x40;
         assert!(matches!(
-            LegacySnapshotV1Adapter::<JacobiState>::open(&flipped),
+            LegacySnapshotV1Adapter::<JacobiState>::open_untrusted(&flipped),
             Err(SnapshotError::Envelope(
                 envelope::EnvelopeError::ChecksumMismatch { .. }
             ))
@@ -4381,18 +5345,18 @@ mod tests {
         let mut bad_magic = sealed.clone();
         bad_magic[0] ^= 0x01;
         assert!(matches!(
-            LegacySnapshotV1Adapter::<JacobiState>::open(&bad_magic),
+            LegacySnapshotV1Adapter::<JacobiState>::open_untrusted(&bad_magic),
             Err(SnapshotError::Envelope(envelope::EnvelopeError::BadMagic))
         ));
         // Truncation: header-level and payload-level both refuse.
         assert!(matches!(
-            LegacySnapshotV1Adapter::<JacobiState>::open(&sealed[..10]),
+            LegacySnapshotV1Adapter::<JacobiState>::open_untrusted(&sealed[..10]),
             Err(SnapshotError::Envelope(
                 envelope::EnvelopeError::Truncated { .. }
             ))
         ));
         assert!(matches!(
-            LegacySnapshotV1Adapter::<JacobiState>::open(&sealed[..sealed.len() - 3]),
+            LegacySnapshotV1Adapter::<JacobiState>::open_untrusted(&sealed[..sealed.len() - 3]),
             Err(SnapshotError::Envelope(
                 envelope::EnvelopeError::LengthMismatch { .. }
             ))
@@ -4401,7 +5365,7 @@ mod tests {
         let mut appended = sealed.clone();
         appended.extend_from_slice(&[0u8; 5]);
         assert!(matches!(
-            LegacySnapshotV1Adapter::<JacobiState>::open(&appended),
+            LegacySnapshotV1Adapter::<JacobiState>::open_untrusted(&appended),
             Err(SnapshotError::Envelope(
                 envelope::EnvelopeError::LengthMismatch { .. }
             ))
@@ -4410,7 +5374,7 @@ mod tests {
         let mut future = sealed.clone();
         future[8..12].copy_from_slice(&9u32.to_le_bytes());
         assert!(matches!(
-            LegacySnapshotV1Adapter::<JacobiState>::open(&future),
+            LegacySnapshotV1Adapter::<JacobiState>::open_untrusted(&future),
             Err(SnapshotError::Envelope(
                 envelope::EnvelopeError::UnknownEnvelopeVersion { found: 9 }
             ))
@@ -4419,7 +5383,7 @@ mod tests {
         let mut stale = sealed;
         stale[20..24].copy_from_slice(&7u32.to_le_bytes());
         assert!(matches!(
-            LegacySnapshotV1Adapter::<JacobiState>::open(&stale),
+            LegacySnapshotV1Adapter::<JacobiState>::open_untrusted(&stale),
             Err(SnapshotError::Envelope(
                 envelope::EnvelopeError::IncompatibleSchema {
                     expected: 1,
@@ -4483,6 +5447,95 @@ mod tests {
                 iter: decoder.get_u64()?,
                 x: decoder.get_f64_vec()?,
             })
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct DecodeRefusingMigrationState;
+
+    impl LegacySolverStateV1 for DecodeRefusingMigrationState {
+        const TYPE_ID_V1: u64 = 0x4d49_4752_4445_4301;
+        const SCHEMA_VERSION_V1: u32 = 1;
+
+        fn encode_v1(&self, encoder: &mut codec::Enc) {
+            encoder.put_u64(1);
+        }
+
+        fn decode_v1(decoder: &mut codec::Dec<'_>) -> Result<Self, codec::CodecError> {
+            Err(codec::CodecError {
+                at: decoder.position(),
+                what: "adversarial legacy migration decode",
+                needed: 9,
+                remaining: decoder.remaining(),
+            })
+        }
+    }
+
+    impl SolverStateV2 for DecodeRefusingMigrationState {
+        const STATE_TYPE_ID_V2: snapshot_v2::SnapshotStateTypeIdV2 =
+            snapshot_v2::SnapshotStateTypeIdV2::from_bytes([0xd1; 32]);
+        const STATE_SCHEMA_ID_V2: snapshot_v2::SnapshotStateSchemaIdV2 =
+            snapshot_v2::SnapshotStateSchemaIdV2::from_bytes([0xd2; 32]);
+        const STATE_CODEC_ID_V2: snapshot_v2::SnapshotStateCodecIdV2 =
+            snapshot_v2::SnapshotStateCodecIdV2::from_bytes([0xd3; 32]);
+        const STATE_CODEC_VERSION_V2: u32 = 1;
+
+        fn encode_v2(
+            &self,
+            encoder: &mut snapshot_v2::SnapshotEncoderV2<'_>,
+        ) -> Result<(), snapshot_v2::SnapshotV2Error> {
+            encoder.put_u64(1)
+        }
+
+        fn decode_v2(
+            _decoder: &mut snapshot_v2::SnapshotDecoderV2<'_, '_>,
+        ) -> Result<Self, snapshot_v2::SnapshotV2Error> {
+            Ok(Self)
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct EncodeRefusingMigrationState;
+
+    impl LegacySolverStateV1 for EncodeRefusingMigrationState {
+        const TYPE_ID_V1: u64 = 0x4d49_4752_454e_4301;
+        const SCHEMA_VERSION_V1: u32 = 1;
+
+        fn encode_v1(&self, encoder: &mut codec::Enc) {
+            encoder.put_u64(1);
+        }
+
+        fn decode_v1(decoder: &mut codec::Dec<'_>) -> Result<Self, codec::CodecError> {
+            let _ = decoder.get_u64()?;
+            Ok(Self)
+        }
+    }
+
+    impl SolverStateV2 for EncodeRefusingMigrationState {
+        const STATE_TYPE_ID_V2: snapshot_v2::SnapshotStateTypeIdV2 =
+            snapshot_v2::SnapshotStateTypeIdV2::from_bytes([0xe1; 32]);
+        const STATE_SCHEMA_ID_V2: snapshot_v2::SnapshotStateSchemaIdV2 =
+            snapshot_v2::SnapshotStateSchemaIdV2::from_bytes([0xe2; 32]);
+        const STATE_CODEC_ID_V2: snapshot_v2::SnapshotStateCodecIdV2 =
+            snapshot_v2::SnapshotStateCodecIdV2::from_bytes([0xe3; 32]);
+        const STATE_CODEC_VERSION_V2: u32 = 1;
+
+        fn encode_v2(
+            &self,
+            _encoder: &mut snapshot_v2::SnapshotEncoderV2<'_>,
+        ) -> Result<(), snapshot_v2::SnapshotV2Error> {
+            Err(snapshot_v2::SnapshotV2Error::Payload(codec::CodecError {
+                at: 0,
+                what: "adversarial v2 migration encode",
+                needed: 1,
+                remaining: 0,
+            }))
+        }
+
+        fn decode_v2(
+            _decoder: &mut snapshot_v2::SnapshotDecoderV2<'_, '_>,
+        ) -> Result<Self, snapshot_v2::SnapshotV2Error> {
+            Ok(Self)
         }
     }
 
@@ -4752,6 +5805,51 @@ mod tests {
         }
     }
 
+    fn legacy_limits(max_envelope_bytes: u64) -> LegacySnapshotLimitsV1 {
+        LegacySnapshotLimitsV1::new(max_envelope_bytes, 16)
+    }
+
+    fn legacy_expectation(
+        bytes: &[u8],
+        type_id: u64,
+        schema_version: u32,
+        provenance: u64,
+    ) -> LegacySnapshotExpectationV1 {
+        LegacySnapshotExpectationV1::new(
+            fs_blake3::identity::ContentId::of_bytes(bytes),
+            type_id,
+            schema_version,
+            provenance,
+        )
+    }
+
+    fn legacy_migration_plan(tag: u8) -> LegacyMigrationPlanV1 {
+        legacy_migration_plan_axes(tag, 0x82, 0x93)
+    }
+
+    fn legacy_migration_plan_axes(code: u8, schema: u8, context: u8) -> LegacyMigrationPlanV1 {
+        LegacyMigrationPlanV1::new(
+            LegacyMigrationCodeIdV1::from_bytes([code; 32]),
+            LegacyMigrationSchemaIdV1::from_bytes([schema; 32]),
+            LegacyMigrationContextIdV1::from_bytes([context; 32]),
+        )
+    }
+
+    struct CancelAfterPolls {
+        remaining: usize,
+    }
+
+    impl fs_blake3::identity::CancellationProbe for CancelAfterPolls {
+        fn is_cancelled(&mut self) -> bool {
+            if self.remaining == 0 {
+                true
+            } else {
+                self.remaining -= 1;
+                false
+            }
+        }
+    }
+
     fn v2_limits(hash_poll_bytes: u32, identity_poll_bytes: u32) -> snapshot_v2::SnapshotLimitsV2 {
         snapshot_v2::SnapshotLimitsV2::new(
             1 << 20,
@@ -4994,7 +6092,7 @@ mod tests {
         let (_, s0) = jacobi();
         let mut noisy = LegacySnapshotV1Adapter::<JacobiState>::to_bytes(&s0);
         noisy.push(0xFF);
-        assert!(LegacySnapshotV1Adapter::<JacobiState>::from_bytes(&noisy).is_err());
+        assert!(LegacySnapshotV1Adapter::<JacobiState>::from_bytes_untrusted(&noisy).is_err());
 
         let mut encoder = codec::Enc::new();
         s0.encode_v1(&mut encoder);
@@ -5008,7 +6106,7 @@ mod tests {
             &payload,
         );
         let Err(SnapshotError::Payload(tail)) =
-            LegacySnapshotV1Adapter::<JacobiState>::from_bytes(&sealed_with_schema_tail)
+            LegacySnapshotV1Adapter::<JacobiState>::from_bytes_untrusted(&sealed_with_schema_tail)
         else {
             panic!("checksummed trailing schema bytes must reach the payload refusal");
         };
@@ -5020,8 +6118,8 @@ mod tests {
     fn legacy_v1_receipt_quarantines_exact_bytes_without_u64_widening() {
         let (_, state) = jacobi();
         let bytes = LegacySnapshotV1Adapter::<JacobiState>::seal(&state, 0xCAFE);
-        let opened =
-            LegacySnapshotV1Adapter::<JacobiState>::open(&bytes).expect("valid legacy adapter");
+        let opened = LegacySnapshotV1Adapter::<JacobiState>::open_untrusted(&bytes)
+            .expect("valid legacy adapter");
         let (decoded, legacy) = opened.into_parts();
         assert_eq!(decoded, state);
         assert_eq!(legacy.bytes(), bytes);
@@ -5038,6 +6136,567 @@ mod tests {
             legacy.payload_checksum(),
             fs_obs::fnv1a64(&bytes[envelope::HEADER_LEN..])
         );
+    }
+
+    #[test]
+    fn legacy_v1_expected_admission_is_capped_cancellable_and_exact() {
+        let (_, state) = jacobi();
+        let provenance = 0xfeed_beef_dead_cafe;
+        let bytes = LegacySnapshotV1Adapter::<JacobiState>::seal(&state, provenance);
+        let expected = legacy_expectation(
+            &bytes,
+            JacobiState::TYPE_ID_V1,
+            JacobiState::SCHEMA_VERSION_V1,
+            provenance,
+        );
+        let limits = legacy_limits(u64::try_from(bytes.len()).expect("fixture length"));
+        let opened =
+            LegacySnapshotV1Adapter::<JacobiState>::open_expected(&bytes, expected, limits, || {
+                false
+            })
+            .expect("exact caller-pinned source admits");
+        assert_eq!(opened.state(), &state);
+        assert_eq!(opened.source().bytes(), bytes);
+        assert_eq!(opened.source().exact_bytes_id(), expected.exact_bytes_id());
+        assert_eq!(opened.source().info().type_id(), expected.type_id());
+        assert_eq!(
+            opened.source().info().schema_version(),
+            expected.schema_version()
+        );
+        assert_eq!(opened.source().info().provenance(), expected.provenance());
+
+        assert!(matches!(
+            LegacySnapshotV1Adapter::<JacobiState>::open_expected(
+                &bytes,
+                expected,
+                legacy_limits(u64::try_from(bytes.len() - 1).expect("fixture length")),
+                || false,
+            ),
+            Err(LegacySnapshotV1Error::EnvelopeLimitExceeded { .. })
+        ));
+        assert!(matches!(
+            LegacySnapshotV1Adapter::<JacobiState>::open_expected(
+                &bytes,
+                expected,
+                limits,
+                CancelAfterPolls { remaining: 2 },
+            ),
+            Err(LegacySnapshotV1Error::Cancelled {
+                phase: "legacy exact-byte hashing",
+                ..
+            })
+        ));
+        assert!(matches!(
+            LegacySnapshotV1Adapter::<JacobiState>::open_expected(&bytes, expected, limits, || {
+                true
+            },),
+            Err(LegacySnapshotV1Error::Cancelled {
+                phase: "legacy header inspection",
+                at: 0,
+            })
+        ));
+    }
+
+    #[test]
+    fn legacy_v1_expected_admission_refuses_every_header_axis_and_extent() {
+        let (_, state) = jacobi();
+        let provenance = 0x0102_0304_0506_0708;
+        let bytes = LegacySnapshotV1Adapter::<JacobiState>::seal(&state, provenance);
+        let generous = legacy_limits(1 << 20);
+
+        let mut wrong_magic = bytes.clone();
+        wrong_magic[0] ^= 1;
+        assert!(matches!(
+            inspect_expected_legacy_snapshot_v1(
+                &wrong_magic,
+                legacy_expectation(
+                    &wrong_magic,
+                    JacobiState::TYPE_ID_V1,
+                    JacobiState::SCHEMA_VERSION_V1,
+                    provenance,
+                ),
+                generous,
+                || false,
+            ),
+            Err(LegacySnapshotV1Error::Envelope(
+                envelope::EnvelopeError::BadMagic
+            ))
+        ));
+
+        let mut wrong_version = bytes.clone();
+        wrong_version[8..12].copy_from_slice(&2_u32.to_le_bytes());
+        assert!(matches!(
+            inspect_expected_legacy_snapshot_v1(
+                &wrong_version,
+                legacy_expectation(
+                    &wrong_version,
+                    JacobiState::TYPE_ID_V1,
+                    JacobiState::SCHEMA_VERSION_V1,
+                    provenance,
+                ),
+                generous,
+                || false,
+            ),
+            Err(LegacySnapshotV1Error::Envelope(
+                envelope::EnvelopeError::UnknownEnvelopeVersion { found: 2 }
+            ))
+        ));
+
+        let mut wrong_type = bytes.clone();
+        wrong_type[12..20].copy_from_slice(&0x9999_u64.to_le_bytes());
+        assert!(matches!(
+            inspect_expected_legacy_snapshot_v1(
+                &wrong_type,
+                legacy_expectation(
+                    &wrong_type,
+                    JacobiState::TYPE_ID_V1,
+                    JacobiState::SCHEMA_VERSION_V1,
+                    provenance,
+                ),
+                generous,
+                || false,
+            ),
+            Err(LegacySnapshotV1Error::ExpectedTypeIdMismatch {
+                expected: JacobiState::TYPE_ID_V1,
+                found: 0x9999,
+            })
+        ));
+
+        let mut wrong_schema = bytes.clone();
+        wrong_schema[20..24].copy_from_slice(&9_u32.to_le_bytes());
+        assert!(matches!(
+            inspect_expected_legacy_snapshot_v1(
+                &wrong_schema,
+                legacy_expectation(
+                    &wrong_schema,
+                    JacobiState::TYPE_ID_V1,
+                    JacobiState::SCHEMA_VERSION_V1,
+                    provenance,
+                ),
+                generous,
+                || false,
+            ),
+            Err(LegacySnapshotV1Error::ExpectedSchemaMismatch {
+                expected: JacobiState::SCHEMA_VERSION_V1,
+                found: 9,
+            })
+        ));
+
+        let mut wrong_provenance = bytes.clone();
+        wrong_provenance[24..32].copy_from_slice(&17_u64.to_le_bytes());
+        assert!(matches!(
+            inspect_expected_legacy_snapshot_v1(
+                &wrong_provenance,
+                legacy_expectation(
+                    &wrong_provenance,
+                    JacobiState::TYPE_ID_V1,
+                    JacobiState::SCHEMA_VERSION_V1,
+                    provenance,
+                ),
+                generous,
+                || false,
+            ),
+            Err(LegacySnapshotV1Error::ExpectedProvenanceMismatch {
+                expected: 0x0102_0304_0506_0708,
+                found: 17,
+            })
+        ));
+
+        let mut wrong_length = bytes.clone();
+        let declared = u64::from_le_bytes(wrong_length[32..40].try_into().expect("length"));
+        wrong_length[32..40].copy_from_slice(&declared.wrapping_add(1).to_le_bytes());
+        assert!(matches!(
+            inspect_expected_legacy_snapshot_v1(
+                &wrong_length,
+                legacy_expectation(
+                    &wrong_length,
+                    JacobiState::TYPE_ID_V1,
+                    JacobiState::SCHEMA_VERSION_V1,
+                    provenance,
+                ),
+                generous,
+                || false,
+            ),
+            Err(LegacySnapshotV1Error::Envelope(
+                envelope::EnvelopeError::LengthMismatch { .. }
+            ))
+        ));
+
+        let mut hostile_length = bytes.clone();
+        hostile_length[32..40].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(matches!(
+            inspect_expected_legacy_snapshot_v1(
+                &hostile_length,
+                legacy_expectation(
+                    &hostile_length,
+                    JacobiState::TYPE_ID_V1,
+                    JacobiState::SCHEMA_VERSION_V1,
+                    provenance,
+                ),
+                generous,
+                || false,
+            ),
+            Err(LegacySnapshotV1Error::Envelope(
+                envelope::EnvelopeError::LengthMismatch {
+                    declared: u64::MAX,
+                    ..
+                }
+            ))
+        ));
+
+        let mut wrong_checksum = bytes.clone();
+        wrong_checksum[40] ^= 1;
+        assert!(matches!(
+            inspect_expected_legacy_snapshot_v1(
+                &wrong_checksum,
+                legacy_expectation(
+                    &wrong_checksum,
+                    JacobiState::TYPE_ID_V1,
+                    JacobiState::SCHEMA_VERSION_V1,
+                    provenance,
+                ),
+                generous,
+                || false,
+            ),
+            Err(LegacySnapshotV1Error::Envelope(
+                envelope::EnvelopeError::ChecksumMismatch { .. }
+            ))
+        ));
+
+        let expected = legacy_expectation(
+            &bytes,
+            JacobiState::TYPE_ID_V1,
+            JacobiState::SCHEMA_VERSION_V1,
+            provenance,
+        );
+        let wrong_root = LegacySnapshotExpectationV1::new(
+            fs_blake3::identity::ContentId::of_bytes(b"another retained root"),
+            expected.type_id(),
+            expected.schema_version(),
+            expected.provenance(),
+        );
+        assert!(matches!(
+            inspect_expected_legacy_snapshot_v1(&bytes, wrong_root, generous, || false),
+            Err(LegacySnapshotV1Error::ExpectedContentMismatch { .. })
+        ));
+        assert!(matches!(
+            inspect_expected_legacy_snapshot_v1(
+                &bytes[..bytes.len() - 1],
+                expected,
+                generous,
+                || false,
+            ),
+            Err(LegacySnapshotV1Error::Envelope(
+                envelope::EnvelopeError::LengthMismatch { .. }
+            ))
+        ));
+        let mut appended = bytes.clone();
+        appended.push(0);
+        assert!(matches!(
+            inspect_expected_legacy_snapshot_v1(&appended, expected, generous, || false),
+            Err(LegacySnapshotV1Error::Envelope(
+                envelope::EnvelopeError::LengthMismatch { .. }
+            ))
+        ));
+        let mut v2_like = vec![0_u8; envelope::HEADER_LEN];
+        v2_like[..8].copy_from_slice(&snapshot_v2::MAGIC_V2);
+        assert!(matches!(
+            inspect_expected_legacy_snapshot_v1(
+                &v2_like,
+                legacy_expectation(
+                    &v2_like,
+                    JacobiState::TYPE_ID_V1,
+                    JacobiState::SCHEMA_VERSION_V1,
+                    provenance,
+                ),
+                generous,
+                || false,
+            ),
+            Err(LegacySnapshotV1Error::Envelope(
+                envelope::EnvelopeError::BadMagic
+            ))
+        ));
+    }
+
+    #[test]
+    fn legacy_v1_migration_is_transactional_deterministic_and_receipted() {
+        use fs_blake3::identity::StrongIdentity;
+
+        let (_, state) = jacobi();
+        let provenance = 0x8877_6655_4433_2211;
+        let bytes = LegacySnapshotV1Adapter::<JacobiState>::seal(&state, provenance);
+        let expected = legacy_expectation(
+            &bytes,
+            JacobiState::TYPE_ID_V1,
+            JacobiState::SCHEMA_VERSION_V1,
+            provenance,
+        );
+        let context = base_v2_context::<JacobiState>();
+        let plan = legacy_migration_plan(0x71);
+        let limits = v2_limits(16, 16);
+        let first = LegacySnapshotV1Adapter::<JacobiState>::migrate_expected(
+            &bytes,
+            expected,
+            plan,
+            &context,
+            legacy_limits(1 << 20),
+            limits,
+            || false,
+        )
+        .expect("migration succeeds atomically");
+        let second = LegacySnapshotV1Adapter::<JacobiState>::migrate_expected(
+            &bytes,
+            expected,
+            plan,
+            &context,
+            legacy_limits(1 << 20),
+            limits,
+            || false,
+        )
+        .expect("identical replay succeeds");
+
+        assert_eq!(first.source().bytes(), bytes);
+        assert_eq!(first.source().info().type_id(), JacobiState::TYPE_ID_V1);
+        assert_eq!(
+            first.source().info().schema_version(),
+            JacobiState::SCHEMA_VERSION_V1
+        );
+        assert_eq!(first.source().info().provenance(), provenance);
+        assert_eq!(
+            first.receipt().source_payload_checksum(),
+            u64::from_le_bytes(bytes[40..48].try_into().expect("checksum"))
+        );
+        assert_eq!(
+            first.receipt().source_content_id(),
+            expected.exact_bytes_id()
+        );
+        assert_eq!(first.receipt().plan(), plan);
+        assert_eq!(
+            first.receipt().target_content_id(),
+            first.target().content_id()
+        );
+        assert_eq!(
+            first.receipt().target_resume_id(),
+            first.target().resume_id()
+        );
+        assert_eq!(
+            first.receipt().target_authority_subject_id(),
+            first.target().authority_subject_receipt().id()
+        );
+        assert_eq!(first.target().bytes(), second.target().bytes());
+        assert_eq!(first.receipt().id(), second.receipt().id());
+        assert_eq!(
+            first.receipt().identity_receipt().canonical_preimage(),
+            second.receipt().identity_receipt().canonical_preimage()
+        );
+        assert_eq!(
+            first.receipt().id().to_hex(),
+            "8d64f1b25e713277d5452d7126c8d27e5c02484094730d458a7fccd9671edba1"
+        );
+
+        let expectation = first.target().expectation();
+        let opened =
+            JacobiState::unseal_v2_expected(first.target().bytes(), &expectation, limits, || false)
+                .expect("receipt target remains independently openable");
+        assert_eq!(opened.state(), &state);
+
+        for changed_plan in [
+            legacy_migration_plan_axes(0x72, 0x82, 0x93),
+            legacy_migration_plan_axes(0x71, 0x83, 0x93),
+            legacy_migration_plan_axes(0x71, 0x82, 0x94),
+        ] {
+            let changed = LegacySnapshotV1Adapter::<JacobiState>::migrate_expected(
+                &bytes,
+                expected,
+                changed_plan,
+                &context,
+                legacy_limits(1 << 20),
+                limits,
+                || false,
+            )
+            .expect("distinct declared migration succeeds");
+            assert_eq!(changed.target().bytes(), first.target().bytes());
+            assert_ne!(changed.receipt().id(), first.receipt().id());
+        }
+    }
+
+    #[test]
+    fn legacy_v1_migration_refuses_source_target_and_publication_boundaries() {
+        let (_, state) = jacobi();
+        let bytes = LegacySnapshotV1Adapter::<JacobiState>::seal(&state, 44);
+        let expected = legacy_expectation(
+            &bytes,
+            JacobiState::TYPE_ID_V1,
+            JacobiState::SCHEMA_VERSION_V1,
+            44,
+        );
+        let wrong_context = base_v2_context::<TwinV2State>();
+        assert!(matches!(
+            LegacySnapshotV1Adapter::<JacobiState>::migrate_expected(
+                &bytes,
+                expected,
+                legacy_migration_plan(1),
+                &wrong_context,
+                legacy_limits(1 << 20),
+                v2_limits(16, 16),
+                || false,
+            ),
+            Err(LegacySnapshotV1Error::Target(
+                snapshot_v2::SnapshotV2Error::WrongStateSchema
+            ))
+        ));
+        assert!(matches!(
+            LegacySnapshotV1Adapter::<JacobiState>::migrate_expected(
+                &bytes,
+                expected,
+                legacy_migration_plan(1),
+                &base_v2_context::<JacobiState>(),
+                legacy_limits(u64::try_from(bytes.len() - 1).expect("fixture length")),
+                v2_limits(16, 16),
+                || false,
+            ),
+            Err(LegacySnapshotV1Error::EnvelopeLimitExceeded { .. })
+        ));
+        assert!(matches!(
+            LegacySnapshotV1Adapter::<JacobiState>::migrate_expected(
+                &bytes,
+                expected,
+                legacy_migration_plan(1),
+                &base_v2_context::<JacobiState>(),
+                legacy_limits(1 << 20),
+                v2_limits(16, 16),
+                || true,
+            ),
+            Err(LegacySnapshotV1Error::Cancelled { .. })
+        ));
+
+        let decode_bytes = LegacySnapshotV1Adapter::<DecodeRefusingMigrationState>::seal(
+            &DecodeRefusingMigrationState,
+            45,
+        );
+        assert!(matches!(
+            LegacySnapshotV1Adapter::<DecodeRefusingMigrationState>::migrate_expected(
+                &decode_bytes,
+                legacy_expectation(
+                    &decode_bytes,
+                    DecodeRefusingMigrationState::TYPE_ID_V1,
+                    DecodeRefusingMigrationState::SCHEMA_VERSION_V1,
+                    45,
+                ),
+                legacy_migration_plan(2),
+                &base_v2_context::<DecodeRefusingMigrationState>(),
+                legacy_limits(1 << 20),
+                v2_limits(16, 16),
+                || false,
+            ),
+            Err(LegacySnapshotV1Error::Payload(_))
+        ));
+
+        let encode_bytes = LegacySnapshotV1Adapter::<EncodeRefusingMigrationState>::seal(
+            &EncodeRefusingMigrationState,
+            46,
+        );
+        assert!(matches!(
+            LegacySnapshotV1Adapter::<EncodeRefusingMigrationState>::migrate_expected(
+                &encode_bytes,
+                legacy_expectation(
+                    &encode_bytes,
+                    EncodeRefusingMigrationState::TYPE_ID_V1,
+                    EncodeRefusingMigrationState::SCHEMA_VERSION_V1,
+                    46,
+                ),
+                legacy_migration_plan(3),
+                &base_v2_context::<EncodeRefusingMigrationState>(),
+                legacy_limits(1 << 20),
+                v2_limits(16, 16),
+                || false,
+            ),
+            Err(LegacySnapshotV1Error::Target(
+                snapshot_v2::SnapshotV2Error::Payload(_)
+            ))
+        ));
+    }
+
+    #[test]
+    fn legacy_v1_migration_cancellation_sweep_reaches_every_publication_boundary() {
+        use std::cell::Cell;
+        use std::collections::BTreeSet;
+
+        struct CountingProbe<'a>(&'a Cell<usize>);
+
+        impl fs_blake3::identity::CancellationProbe for CountingProbe<'_> {
+            fn is_cancelled(&mut self) -> bool {
+                self.0.set(self.0.get() + 1);
+                false
+            }
+        }
+
+        let (_, state) = jacobi();
+        let bytes = LegacySnapshotV1Adapter::<JacobiState>::seal(&state, 47);
+        let expected = legacy_expectation(
+            &bytes,
+            JacobiState::TYPE_ID_V1,
+            JacobiState::SCHEMA_VERSION_V1,
+            47,
+        );
+        let mut phases = BTreeSet::new();
+        let poll_count = Cell::new(0);
+
+        let _uncancelled = LegacySnapshotV1Adapter::<JacobiState>::migrate_expected(
+            &bytes,
+            expected,
+            legacy_migration_plan(4),
+            &base_v2_context::<JacobiState>(),
+            legacy_limits(1 << 20),
+            v2_limits(16, 16),
+            CountingProbe(&poll_count),
+        )
+        .expect("an uncancelled migration establishes the finite poll bound");
+        let poll_count = poll_count.get();
+        assert!(
+            poll_count <= 16_384,
+            "small-fixture migration made {poll_count} cancellation observations"
+        );
+
+        for remaining in 0..poll_count {
+            match LegacySnapshotV1Adapter::<JacobiState>::migrate_expected(
+                &bytes,
+                expected,
+                legacy_migration_plan(4),
+                &base_v2_context::<JacobiState>(),
+                legacy_limits(1 << 20),
+                v2_limits(16, 16),
+                CancelAfterPolls { remaining },
+            ) {
+                Ok(_) => panic!("migration published before its measured final poll"),
+                Err(LegacySnapshotV1Error::Cancelled { phase, .. })
+                | Err(LegacySnapshotV1Error::Target(snapshot_v2::SnapshotV2Error::Cancelled {
+                    phase,
+                    ..
+                })) => {
+                    phases.insert(phase);
+                }
+                Err(other) => panic!("cancellation sweep produced non-cancellation: {other}"),
+            }
+        }
+
+        for required in [
+            "legacy header inspection",
+            "legacy exact-byte hashing",
+            "legacy payload checksum",
+            "legacy inspection publication",
+            "legacy payload decode",
+            "legacy migration target encoding",
+            "payload encoding",
+            "snapshot publication",
+            "legacy migration receipt",
+            "legacy migration publication",
+        ] {
+            assert!(
+                phases.contains(required),
+                "cancellation sweep missed transactional phase {required}; saw {phases:?}"
+            );
+        }
     }
 
     #[test]
@@ -6171,7 +7830,7 @@ mod tests {
                 StepVerdict::Done(out) => break out,
                 StepVerdict::Continue => {
                     let bytes = LegacySnapshotV1Adapter::<JacobiState>::to_bytes(&st);
-                    state = LegacySnapshotV1Adapter::<JacobiState>::from_bytes(&bytes)
+                    state = LegacySnapshotV1Adapter::<JacobiState>::from_bytes_untrusted(&bytes)
                         .expect("round trip");
                     resumes += 1;
                 }

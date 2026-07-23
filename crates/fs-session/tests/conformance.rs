@@ -2354,7 +2354,8 @@ fn ss_005_degradation_ladder_declared_order_and_pause_resume() {
         field: (0..64).map(|i| f64::from(i) * 0.25 - 3.0).collect(),
     };
     let bytes = LegacySnapshotV1Adapter::<ToySolver>::to_bytes(&solver);
-    let resumed = LegacySnapshotV1Adapter::<ToySolver>::from_bytes(&bytes).expect("resume");
+    let resumed =
+        LegacySnapshotV1Adapter::<ToySolver>::from_bytes_untrusted(&bytes).expect("resume");
     assert_eq!(resumed, solver, "pause-serialize-resume must be lossless");
     // Events are attributed and ordinal-ordered.
     let events = gov

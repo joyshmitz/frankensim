@@ -285,10 +285,13 @@ the state is unchanged).
 Legacy-v1 resumability: `ConductionState` implements
 `fs_exec::solver::LegacySolverStateV1`
 (`TYPE_ID_V1 = 0xf5c0_4d75_c710_0001`, `SCHEMA_VERSION_V1 = 1`), and
-`snapshot()`/`restore()` name `LegacySnapshotV1Adapter` explicitly. Restore
-validates magic, type id, schema version, length, and checksum BEFORE the
-payload decoder runs. This does not claim v2 identity or migration authority.
-A flipped byte, a truncation, and an append are all refused. Evidence:
+`snapshot()`/`restore()` name `LegacySnapshotV1Adapter` explicitly. Restore is
+the adapter's unbounded compatibility path: it validates magic, type id, schema
+version, length, and checksum BEFORE the payload decoder runs, but accepts no
+caller-pinned exact root and has no cancellation probe. Admission/migration
+owners must bound and authenticate bytes before calling it. This does not claim
+v2 identity or migration authority. A flipped byte, a truncation, and an append
+are all refused. Evidence:
 `tests/conformance.rs::snapshot_envelope_refuses_tampered_bytes`.
 
 ## Unsafe boundary

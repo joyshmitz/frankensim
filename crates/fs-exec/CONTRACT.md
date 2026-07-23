@@ -403,11 +403,18 @@ reader's `usize` or whose byte extent overflows, before allocation; a 64-bit
 length can never truncate into a plausible 32-bit element count. If a valid
 envelope carries unconsumed schema bytes, the payload refusal reports the
 decoder's exact cursor and remaining-byte count.
-`LegacySnapshotV1Adapter::seal`/`open` carry the run/ledger identity while
-keeping the exact checked source attached to the decoded state;
-`to_bytes`/`from_bytes` and `round_trip_legacy_v1` are explicitly named
-historical conveniences over the same envelope. Pause → seal → open → resume
-remains bit-exact in the legacy conformance witness.
+`LegacySnapshotV1Adapter::seal` produces the historical envelope.
+`open_untrusted`, `from_bytes_untrusted`, and `round_trip_untrusted` make the
+old unbounded compatibility posture visible; their deprecated shorter aliases
+remain source-compatible but are not admission APIs. `open_expected` instead
+requires a caller-pinned exact complete-byte root plus exact historical
+type/schema/provenance fields, rejects bytes above the caller's cap before
+payload work, and polls cancellation while hashing/checksumming and immediately
+around the legacy decoder. The arbitrary historical decoder itself cannot be
+forced to poll internally, so migration owners must keep it bounded and
+side-effect free. Pause → seal → untrusted open → resume remains bit-exact in
+the legacy conformance witness, but that witness is codec compatibility rather
+than migration authority.
 `envelope::inspect` independently validates magic, envelope version, exact
 payload extent, and checksum before exposing private-field type/schema/run
 metadata; ledger consumers use it without interpreting solver-specific bytes.
@@ -415,14 +422,31 @@ metadata; ledger consumers use it without interpreting solver-specific bytes.
 V1's FNV-1a checksum is accidental-corruption evidence only. It is neither a
 content-addressing authority nor a producer signature, and its `u64` type/schema
 and provenance fields are never re-hashed or widened into v2 semantic IDs.
-`inspect_legacy_snapshot_v1` is the first quarantine boundary: it retains the
-exact v1 bytes, structurally parsed header metadata, the historical checksum as
-an unchanged `u64`, and a plain BLAKE3 `ContentId` of those exact bytes. The FNV
+`inspect_untrusted_legacy_snapshot_v1` is the explicitly unbounded quarantine
+boundary: it retains the exact v1 bytes, structurally parsed header metadata,
+the historical checksum as an unchanged `u64`, and a plain BLAKE3 `ContentId`
+of those exact bytes. `inspect_expected_legacy_snapshot_v1` is the bounded,
+cancellable boundary for independently pinned bytes and fields. The FNV
 checksum covers only the payload, so it does not authenticate the type, schema,
 or provenance header. The BLAKE3 value is raw-content identity only and cannot
-construct a v2 resume identity or authority. Expected-root legacy admission,
-bounded/cancellable legacy hashing, and an explicit source-to-v2 migration
-receipt remain successor work; new ledger/session paths must not infer them.
+construct a v2 resume identity or authority.
+
+`LegacySnapshotV1Adapter::migrate_expected` transactionally performs expected
+v1 admission, decode, v2 encode/seal, canonical receipt construction, and a
+final publication poll. A refusal returns no target or receipt. The typed
+`LegacySnapshotMigrationReceiptV1` binds the exact source `ContentId`, unchanged
+legacy envelope/type/schema/provenance/length/checksum fields, independently
+declared migration code/schema/context identities, exact target
+`SnapshotContentIdV2`, target `SnapshotResumeIdV2`, and target authority-subject
+identity. Replays are deterministic and a retained golden pins the receipt;
+changing any migration-declaration axis changes the receipt without pretending
+that the target payload changed.
+
+Neither expected admission nor the receipt authenticates the legacy producer,
+proves the migration code correct, admits the v2 target for resume, or creates
+semantic fork lineage. Durable owner registration, shared generated catalogs,
+canonical-era migration, policy-authority verification, `PreparedResume`
+activation, and session/ledger publication remain successor boundaries.
 
 ### Strong-identity v2 (code-first tranche; central proof pending)
 

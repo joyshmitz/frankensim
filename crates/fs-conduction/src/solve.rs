@@ -618,14 +618,19 @@ impl<'m> ConductionSolver<'m> {
         LegacySnapshotV1Adapter::<ConductionState>::seal(&self.state, provenance)
     }
 
-    /// Restore a sealed state, replacing the current iterate.
+    /// Restore a sealed legacy-v1 state, replacing the current iterate.
+    ///
+    /// This is an unbounded compatibility parser: it validates the historical
+    /// envelope but has no caller-pinned exact root or cancellation probe.
+    /// Admission and migration owners must bound and authenticate bytes before
+    /// calling it.
     ///
     /// # Errors
     /// [`ConductionError::Snapshot`] for any envelope or payload
     /// refusal, and [`ConductionError::FieldLength`] when the restored
     /// state does not match this problem's free-dof count.
     pub fn restore(&mut self, bytes: &[u8]) -> Result<u64, ConductionError> {
-        let opened = LegacySnapshotV1Adapter::<ConductionState>::open(bytes).map_err(
+        let opened = LegacySnapshotV1Adapter::<ConductionState>::open_untrusted(bytes).map_err(
             |e: SnapshotError| ConductionError::Snapshot {
                 upstream: e.to_string(),
             },

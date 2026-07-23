@@ -685,7 +685,7 @@ fn exec_011_solver_checkpoint_resume_fork_is_bit_exact() {
             panic!("requested gate must pause");
         };
         let bytes = LegacySnapshotV1Adapter::<ChaoticState>::to_bytes(&paused);
-        let restored = LegacySnapshotV1Adapter::<ChaoticState>::from_bytes(&bytes)
+        let restored = LegacySnapshotV1Adapter::<ChaoticState>::from_bytes_untrusted(&bytes)
             .expect("legacy v1 round trip");
         let forked = round_trip_legacy_v1(&restored).expect("v1 codec proves serializability");
         assert_eq!(

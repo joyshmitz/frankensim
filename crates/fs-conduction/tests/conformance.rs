@@ -746,7 +746,8 @@ fn snapshot_envelope_refuses_tampered_bytes() {
         last_step_norm: 0.5,
     };
     let sealed = LegacySnapshotV1Adapter::<ConductionState>::seal(&state, 0x1234);
-    let opened = LegacySnapshotV1Adapter::<ConductionState>::open(&sealed).expect("round trip");
+    let opened =
+        LegacySnapshotV1Adapter::<ConductionState>::open_untrusted(&sealed).expect("round trip");
     let (round, source) = opened.into_parts();
     let provenance = source.info().provenance();
     assert_eq!(round, state);
@@ -757,13 +758,16 @@ fn snapshot_envelope_refuses_tampered_bytes() {
     let mut tampered = sealed.clone();
     let last = tampered.len() - 1;
     tampered[last] ^= 0x01;
-    assert!(LegacySnapshotV1Adapter::<ConductionState>::open(&tampered).is_err());
+    assert!(LegacySnapshotV1Adapter::<ConductionState>::open_untrusted(&tampered).is_err());
 
     // Truncation and appended garbage are refused too.
-    assert!(LegacySnapshotV1Adapter::<ConductionState>::open(&sealed[..sealed.len() - 4]).is_err());
+    assert!(
+        LegacySnapshotV1Adapter::<ConductionState>::open_untrusted(&sealed[..sealed.len() - 4])
+            .is_err()
+    );
     let mut appended = sealed.clone();
     appended.push(0x00);
-    assert!(LegacySnapshotV1Adapter::<ConductionState>::open(&appended).is_err());
+    assert!(LegacySnapshotV1Adapter::<ConductionState>::open_untrusted(&appended).is_err());
     verdict(
         "snapshot-envelope",
         &format!(

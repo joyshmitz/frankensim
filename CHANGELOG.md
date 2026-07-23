@@ -540,6 +540,48 @@ workstream.
   fork lineage or final G4/G5 closure. Those remain explicitly owned by their
   successor work.
 
+### Post-checkpoint legacy-v1 quarantine and migration receipts
+
+- Added caller-pinned `LegacySnapshotExpectationV1` admission with an explicit
+  whole-envelope byte cap and cancellation interval. The bounded path
+  recomputes the exact complete-byte BLAKE3 root and the historical payload
+  FNV checksum, then matches the original type, schema, and provenance values
+  without widening any legacy `u64` into v2 authority.
+- Renamed the old compatibility surfaces to `open_untrusted`,
+  `from_bytes_untrusted`, `round_trip_untrusted`, and
+  `inspect_untrusted_legacy_snapshot_v1`; deprecated aliases preserve source
+  compatibility while making clear that they have no caller-pinned root or
+  cancellation/resource envelope. The conduction restore contract now states
+  the same outer-admission obligation.
+- Added transactional `migrate_expected`, which retains the exact admitted v1
+  source, seals one independently declared v2 target, and publishes them only
+  with a typed canonical migration receipt. The receipt binds the unchanged
+  legacy header/checksum, exact source content, migration code/schema/context
+  identities, exact target content and resume identities, and the composite
+  target authority-subject identity.
+- Added adversarial tests for every legacy header axis, wrong expected fields
+  and exact root, cross-format magic, truncation/append, hostile length, cap,
+  decode/encode/context refusals, deterministic replay, independent movement
+  of each migration identity axis, and cancellation at every measured
+  hash/codec/receipt/publication observation. The retained receipt golden is
+  `8d64f1b25e713277d5452d7126c8d27e5c02484094730d458a7fccd9671edba1`.
+- Dirty shared-tree RCH verification passed on worker `vmi1149989`: the exact
+  `cargo test --locked -p fs-exec -p fs-conduction --all-targets` lane reported
+  240 passed, 0 failed, and 2 ignored performance harnesses, while the exact
+  `cargo test --locked -p fs-exec --doc` lane reported 3 passed and 0 failed.
+  The required DSR command
+  `/Users/jemanuel/projects/doodlestein_self_releaser/dsr quality --tool frankensim`
+  did not certify the repository: its run at
+  `~/.local/state/dsr/quality-logs/frankensim/20260723T005352-65069/` found
+  constellation HEAD/lock drift, unrelated `fs-verify` clippy failures,
+  unrelated `fs-spectral` moved-value test failures, a malformed identity
+  discovery heredoc, and a dirty source tree that moved during the run.
+- This receipt is a deterministic crosswalk, not a legacy producer signature,
+  proof of migration-code correctness, resume admission, ledger rewrite, or
+  semantic fork. Owner registration, generated catalog integration,
+  canonical-era migration, `PreparedResume`, session/ledger publication, and
+  final G4/G5 closure remain successor work.
+
 ## Version Timeline
 
 There are no git tags and no GitHub Releases as of
