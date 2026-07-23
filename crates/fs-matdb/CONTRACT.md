@@ -5,7 +5,8 @@
 > boundary, the material/constitutive card layer with supersedes
 > lineage, the ordered interface-system card, and the query path where
 > every answer is `Evidence<PropertySample>` + `PropertyUsageReceipt`
-> with replay-verified receipt completeness. Recorded residuals for
+> with replay-verified receipt completeness. Bead f85xj.5.6 adds the
+> receipt-backed PCB laminate homogenization first rung. Recorded residuals for
 > follow-up beads: query-time joint-uncertainty correlation refs,
 > tensor/distribution payloads with frame-transform receipts (arrive
 > together), wider explicit fusion policies, and the curated seed
@@ -175,6 +176,24 @@ persistence.
   (`org.frankensim.fs-matdb.material-card.v1`) binds the id, schema
   version, lineage link, every claim/observation content id, and every
   model-card hash — so it binds the full transitive content.
+- `PcbConductivityDatum` / `CopperCoverage` / `PcbLayer` / `PcbStackup`
+  (f85xj.5.6) — an immutable PCB laminate declaration. Every copper and
+  matrix conductivity is selected from a `MaterialCard` and retains the exact
+  `PropertyUsageReceipt`; every copper-area fraction is a named
+  provenance-bearing `[lower, nominal, upper]` bound rather than an unlabelled
+  scalar. The stackup additionally carries a right-handed orthonormal principal
+  frame and a declared maximum unresolved-feature / board-thickness ratio.
+- `PcbHomogenizedConductivity` (schema v1, identity domain
+  `org.frankensim.fs-matdb.pcb-homogenization.v1`) — the deterministic
+  laminate first rung. Each physical layer first uses the parallel copper /
+  matrix mixture; layer conductivities then combine by thickness-weighted
+  parallel conduction in-plane and a thickness-weighted series rule
+  through-plane. The output retains the nominal tensor, nominal Reuss/Voigt
+  structural bracket, propagated principal bounds, one coupled x/y/z response
+  record per coverage source, every material use and receipt, scale-separation
+  evidence, and the explicit `NotModeled` via-correction status. The shared
+  coverage response is a dependency record, not a fabricated covariance or
+  probability law.
 - `SurfaceSpec` / `SystemContext` / `InterfaceSystemCard` (PR-3) — an
   ORDERED interface system: surface A (material state + opaque
   texture-frame id; blank refuses), surface B, and the system context
@@ -223,6 +242,18 @@ persistence.
 - JOINT STATISTICS STAY JOINT: covariance/correlation are never collapsed into
   nominal values or caveat text. Member order and every lower-triangle entry
   are identity-bearing normalized bytes.
+- PCB PROVENANCE STAYS ATTACHED: a constituent cannot enter the stackup without
+  a dimension-correct positive card answer and its exact query receipt.
+  Coverage cannot enter without a stable source id, complete provenance, and
+  ordered bounds inside `[0,1]`. Stack order, card/receipt identities, coverage
+  sources and bounds, frame, scale-separation rule, algorithm version, and
+  result bits are all content-identity-bearing.
+- PCB BOUNDS ARE SCOPED: nominal Reuss/Voigt values bracket structural mixture
+  choices at the selected constituent values. Propagated principal bounds
+  evaluate every endpoint corner of each coverage/material band and preserve
+  one shared source across x/y/z. If any constituent uncertainty is `Unstated`,
+  `material_uncertainty_complete` is false; the output never calls the
+  coverage-only band a complete material-property envelope.
 
 ## Error model
 
@@ -340,6 +371,14 @@ refusals.
 verified exact binary round-trip; G3 phase/EOS/positive-value/provenance gates,
 complete dimension-linked receipt coverage, pack/species identity binding,
 whole-pack tampering, untrusted-length preflight, and trailing-byte refusals.
+
+`tests/pcb.rs` (f85xj.5.6): G0 hand calculations for parallel in-plane and
+series through-plane rules; exact Reuss/Voigt ordering; single-layer and
+zero-coverage degeneracies; bounded material/coverage corner containment;
+unstated-uncertainty honesty; typed malformed-input and scale-separation
+refusals. G3 frame rotation preserves symmetry and principal values, coverage
+sources move x/y/z together, and stack-order permutations move the content
+identity even when this first rung's effective value is unchanged.
 
 `xtask/tests/interface_pack_cli.rs`: G3 two-pass compilation of a synthetic,
 explicitly non-authoritative ordered steel/bronze fixture into byte-identical,
@@ -797,6 +836,20 @@ Wankel-housing authority.
 - Frame names in normalization receipts record provenance only. Scalar/curve
   payloads do not carry tensor components, rotation matrices, or a claim that
   a frame conversion was physically valid.
+- PCB HOMOGENIZATION IS A LAMINATE FIRST RUNG, not a resolved board model.
+  Copper coverage is an area fraction over the declared representative feature
+  scale; trace hot spots, copper islands, plane splits, spreading resistance,
+  edge effects, delamination, resin-rich zones, plated holes, thermal-via
+  arrays, via contact resistance, and temperature-dependent constituent laws
+  are not modeled. `PcbViaCorrection::NotModeled` is load-bearing output, not a
+  to-do comment. The feature/thickness gate establishes only the caller's
+  declared scale-separation domain, not physical validation of its threshold.
+- The PCB structural bracket assumes positive scalar isotropic constituent
+  conductivities and this v1 nested parallel/series morphology. It is not a
+  Hashin-Shtrikman certificate, does not cover arbitrary trace geometry, and
+  does not turn source-stated confidence levels into a joint confidence region.
+  Coverage influence records retain common directional dependency without
+  claiming covariance; cross-layer coverage correlation is refused in v1.
 - `ValidityDomain` does not yet retain axis dimensions. A validity-bound
   normalization target proves that the claim/axis/endpoint exists, but its
   six-base dimensions remain compiler-supplied provenance until the shared

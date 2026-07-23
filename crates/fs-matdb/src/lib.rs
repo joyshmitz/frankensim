@@ -35,6 +35,7 @@ mod interface;
 mod interface_pack;
 mod model_pack;
 mod pack;
+mod pcb;
 mod query;
 mod species_pack;
 
@@ -58,6 +59,12 @@ pub use pack::{
     JointUsageReceipt, MATDB_PACK_SCHEMA_VERSION, MATDB_PACK_TARGET_BASIS, NormalizationReceipt,
     NormalizationTarget, NormalizedPack, PackError, StatisticComponent, StatisticMember,
     ValidityBoundSide,
+};
+pub use pcb::{
+    CopperCoverage, PCB_HOMOGENIZATION_IDENTITY_DOMAIN, PCB_HOMOGENIZATION_SCHEMA_VERSION,
+    PCB_THERMAL_CONDUCTIVITY_DIMS, PcbConductivityDatum, PcbCoverageInfluence,
+    PcbHomogenizationError, PcbHomogenizedConductivity, PcbLayer, PcbPrincipalConductivity,
+    PcbPrincipalFrame, PcbScaleSeparation, PcbStackup, PcbStructuralBounds, PcbViaCorrection,
 };
 pub use query::{
     EvaluationDecision, MATDB_EVALUATOR_VERSION, MAX_PROPERTY_USAGE_AXIS_BYTES,

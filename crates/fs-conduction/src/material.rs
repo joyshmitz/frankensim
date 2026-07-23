@@ -23,7 +23,10 @@
 //! material data is exactly the move that turns a solve into a confident
 //! wrong answer, so it is not available.
 
-use fs_matdb::{ClaimSet, PropertyUsageReceipt, QueryPoint, SelectionPolicy};
+use fs_matdb::{
+    ClaimSet, PCB_HOMOGENIZATION_SCHEMA_VERSION, PcbHomogenizedConductivity, PropertyUsageReceipt,
+    QueryPoint, SelectionPolicy,
+};
 use fs_qty::Dims;
 
 use crate::ConductionError;
@@ -352,8 +355,12 @@ impl ConductivityTable {
 
 #[derive(Debug, Clone, PartialEq)]
 enum ConductivityKind {
-    /// A general constant SPD tensor, supplied inline.
-    ConstantTensor(Box<[[f64; 3]; 3]>),
+    /// A general constant SPD tensor. An empty receipt list means it was
+    /// supplied inline; a PCB homogenization retains every constituent use.
+    ConstantTensor {
+        tensor: Box<[[f64; 3]; 3]>,
+        receipts: Vec<PropertyUsageReceipt>,
+    },
     /// `k(T)·I`.
     Isotropic(Box<ConductivityTable>),
     /// `Σ_i k_i(T)·e_i e_iᵀ` over an orthonormal principal frame.
@@ -472,7 +479,57 @@ impl ConductivityModel {
     pub fn constant_tensor(k: [[f64; 3]; 3]) -> Result<ConductivityModel, ConductionError> {
         check_spd(&k)?;
         Ok(ConductivityModel {
-            kind: ConductivityKind::ConstantTensor(Box::new(k)),
+            kind: ConductivityKind::ConstantTensor {
+                tensor: Box::new(k),
+                receipts: Vec::new(),
+            },
+        })
+    }
+
+    /// A constant anisotropic tensor from an admitted PCB homogenization.
+    ///
+    /// Unlike [`ConductivityModel::constant_tensor`], this adapter retains one
+    /// exact `fs-matdb` property-use receipt for every copper/matrix material
+    /// use in stack order. Coverage provenance and propagated bounds remain on
+    /// the caller-owned [`PcbHomogenizedConductivity`]; the conduction report
+    /// claims only receipt-backed nominal conductivity, not uncertainty
+    /// propagation through the PDE.
+    ///
+    /// # Errors
+    ///
+    /// [`ConductionError::Conductivity`] when the homogenization schema is not
+    /// the closed version this adapter knows, when it carries no material
+    /// receipts, or when its tensor is non-finite, asymmetric, or not positive
+    /// definite.
+    pub fn from_pcb_homogenization(
+        homogenized: &PcbHomogenizedConductivity,
+    ) -> Result<ConductivityModel, ConductionError> {
+        if homogenized.schema_version() != PCB_HOMOGENIZATION_SCHEMA_VERSION {
+            return Err(ConductionError::Conductivity {
+                what: format!(
+                    "PCB homogenization schema {} is not the supported schema {}",
+                    homogenized.schema_version(),
+                    PCB_HOMOGENIZATION_SCHEMA_VERSION
+                ),
+            });
+        }
+        let receipts = homogenized
+            .material_uses()
+            .iter()
+            .map(|datum| datum.receipt().clone())
+            .collect::<Vec<_>>();
+        if receipts.is_empty() {
+            return Err(ConductionError::Conductivity {
+                what: "PCB homogenization carries no material property-use receipts".to_string(),
+            });
+        }
+        let tensor = homogenized.tensor_w_mk();
+        check_spd(&tensor)?;
+        Ok(ConductivityModel {
+            kind: ConductivityKind::ConstantTensor {
+                tensor: Box::new(tensor),
+                receipts,
+            },
         })
     }
 
@@ -501,7 +558,7 @@ impl ConductivityModel {
     /// [`ConductionError::OutsideTemperatureSpan`] when a table refuses.
     pub fn tensor_at(&self, temperature: f64) -> Result<[[f64; 3]; 3], ConductionError> {
         match &self.kind {
-            ConductivityKind::ConstantTensor(k) => Ok(**k),
+            ConductivityKind::ConstantTensor { tensor, .. } => Ok(**tensor),
             ConductivityKind::Isotropic(table) => {
                 let k = table.eval(temperature)?;
                 Ok([[k, 0.0, 0.0], [0.0, k, 0.0], [0.0, 0.0, k]])
@@ -527,7 +584,7 @@ impl ConductivityModel {
     /// [`ConductionError::OutsideTemperatureSpan`] when a table refuses.
     pub fn tensor_derivative_at(&self, temperature: f64) -> Result<[[f64; 3]; 3], ConductionError> {
         match &self.kind {
-            ConductivityKind::ConstantTensor(_) => Ok([[0.0f64; 3]; 3]),
+            ConductivityKind::ConstantTensor { .. } => Ok([[0.0f64; 3]; 3]),
             ConductivityKind::Isotropic(table) => {
                 let d = table.derivative(temperature)?;
                 Ok([[d, 0.0, 0.0], [0.0, d, 0.0], [0.0, 0.0, d]])
@@ -552,7 +609,7 @@ impl ConductivityModel {
     #[must_use]
     pub fn is_temperature_dependent(&self) -> bool {
         match &self.kind {
-            ConductivityKind::ConstantTensor(_) => false,
+            ConductivityKind::ConstantTensor { .. } => false,
             ConductivityKind::Isotropic(table) => table.is_temperature_dependent(),
             ConductivityKind::Orthotropic { tables, .. } => tables
                 .iter()
@@ -564,7 +621,7 @@ impl ConductivityModel {
     #[must_use]
     pub fn temperature_span(&self) -> TemperatureSpan {
         match &self.kind {
-            ConductivityKind::ConstantTensor(_) => TemperatureSpan::Unbounded,
+            ConductivityKind::ConstantTensor { .. } => TemperatureSpan::Unbounded,
             ConductivityKind::Isotropic(table) => table.span(),
             ConductivityKind::Orthotropic { tables, .. } => tables
                 .iter()
@@ -577,7 +634,7 @@ impl ConductivityModel {
     #[must_use]
     pub fn receipts(&self) -> Vec<&PropertyUsageReceipt> {
         match &self.kind {
-            ConductivityKind::ConstantTensor(_) => Vec::new(),
+            ConductivityKind::ConstantTensor { receipts, .. } => receipts.iter().collect(),
             ConductivityKind::Isotropic(table) => table.receipts().iter().collect(),
             ConductivityKind::Orthotropic { tables, .. } => {
                 tables.iter().flat_map(|t| t.receipts().iter()).collect()
@@ -590,7 +647,7 @@ impl ConductivityModel {
     #[must_use]
     pub fn provenance(&self) -> ProvenanceClass {
         let all_backed = match &self.kind {
-            ConductivityKind::ConstantTensor(_) => false,
+            ConductivityKind::ConstantTensor { receipts, .. } => !receipts.is_empty(),
             ConductivityKind::Isotropic(table) => {
                 table.provenance() == ProvenanceClass::MatdbReceipts
             }

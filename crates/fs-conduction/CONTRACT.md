@@ -1,8 +1,9 @@
 # CONTRACT: fs-conduction
 
-> Beads `frankensim-extreal-program-f85xj.5.1`, `.5.3`, and `.5.4`. The
+> Beads `frankensim-extreal-program-f85xj.5.1`, `.5.3`, `.5.4`, and `.5.6`. The
 > cooling vertical's steady heat-conduction solve, matching-P1 contact rung,
-> and first card-backed surface-radiation rung.
+> first card-backed surface-radiation rung, and receipt-preserving PCB
+> homogenization handoff.
 
 ## Purpose and layer
 
@@ -95,7 +96,7 @@ diameter.
 | `RadiationSurface` / `GrayDiffuseEnclosure` / `RadiosityReport` | named non-overlapping P1 exterior traces, deterministic diffuse-gray radiosity, net heat rates, system residual, and enclosure energy closure |
 | `CoupledRadiationConfig` / `CoupledRadiationSolution` | a budgeted, under-relaxed outer fixed point that applies one uniform frozen radiation flux per named trace to explicit adiabatic-remainder faces |
 | `ConductivityTable` | one scalar `k(T)` as sampled knots plus the `fs-matdb` receipts that produced them |
-| `ConductivityModel` | constant tensor, isotropic `k(T)`, or orthotropic `Σ_i k_i(T) e_i e_iᵀ`; every construction is checked symmetric and positive definite |
+| `ConductivityModel` | constant tensor, isotropic `k(T)`, or orthotropic `Σ_i k_i(T) e_i e_iᵀ`; every construction is checked symmetric and positive definite. `from_pcb_homogenization` consumes fs-matdb's immutable laminate result and retains one property-use receipt per copper/matrix material use |
 | `AssembledSystem`, `DofMap` | the full `n×n` operator and load, and the free/prescribed bookkeeping the Dirichlet elimination uses |
 | `ConductionSolver`, `ConductionState` | the resumable nonlinear iteration and its snapshot payload |
 | `ConductionSolution`, `ConductionReport`, `EnergyBalance`, `LinearSolveEvidence` | the field and everything established about how it was produced |
@@ -177,7 +178,8 @@ producing solver's own typed claim is carried verbatim in
    returns `MatdbReceipts` only when EVERY component came from an `fs-matdb`
    query with a retained receipt; a declared constant says `Declared`.
    Evidence: `tests/conformance.rs::matdb_receipts_travel_with_the_solve`,
-   `::declared_conductivity_never_claims_matdb_provenance`.
+   `::declared_conductivity_never_claims_matdb_provenance`, and
+   `tests/pcb_homogenization.rs`.
 7. **No implicit extrapolation.** Sampling outside a claim's validity refuses;
    evaluating outside the sampled grid refuses. Evidence:
    `tests/conformance.rs::material_queries_outside_validity_refuse`.
@@ -323,6 +325,13 @@ None. Everything here is `[S]` solid work on the default path.
 - `tests/adjoint.rs` — the linear IFT gradient against central differences
   through `fs_adjoint::verify_gradient`, plus G1 manufactured P1 and P2 dual L2
   ladders with per-rung discrete primal/dual identity checks (4 tests).
+- `tests/pcb_homogenization.rs` — G3 model/QoI handoff: fs-matdb's
+  receipt-backed laminate tensor enters the production steady solve; the
+  bounded lower/nominal/upper in-plane conductivities bracket the heat-flux
+  QoI; the reference copper stack exhibits the intended order-of-magnitude
+  difference from an isotropic-FR4 placeholder; material receipts remain on
+  the nominal solve report. This is model integration evidence, not physical
+  validation.
 
 Stable evidence locator (historical wording): `Every test prints a JSON-lines verdict`.
 The precise current scope is narrower: every analytic comparison and MMS gate
@@ -401,6 +410,13 @@ not promote any row beyond its registry authority.
   contact area, imperfect geometric match tolerance, or automatic lowering
   from an `fs-scenario` interface object. Perfect contact is never inferred.
 - NO PHASE CHANGE, no latent heat, no moving boundaries.
+- PCB HOMOGENIZATION IS CONSUMED, NOT REINTERPRETED. This crate uses the
+  nominal tensor and retains its constituent property receipts. Coverage
+  provenance, Reuss/Voigt structural bounds, propagated principal bounds,
+  scale-separation evidence, and the explicit via-array no-claim remain on the
+  caller-owned `PcbHomogenizedConductivity`. The PDE comparison runs its
+  lower/nominal/upper tensors; it does not certify probability, physical board
+  accuracy, trace-scale temperatures, or a nonlinear QoI uncertainty band.
 
 **Numerical scope.**
 
