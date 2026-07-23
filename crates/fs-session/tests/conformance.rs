@@ -6,7 +6,7 @@
 //! fires in its declared order under synthetic memory pressure with
 //! pause-serialize-resume equality; errors surface as ranked guidance.
 
-use fs_exec::solver::{SolverState, codec};
+use fs_exec::solver::{LegacySnapshotV1Adapter, LegacySolverStateV1, codec};
 use fs_exec::{CancelGate, DrainTracker, RunId};
 use fs_plan::{CostModel, CostObservation, SealedCostModel};
 use fs_session::{
@@ -2303,18 +2303,18 @@ fn ss_005_degradation_ladder_declared_order_and_pause_resume() {
         step: u64,
         field: Vec<f64>,
     }
-    impl SolverState for ToySolver {
-        const TYPE_ID: u64 = 0x544f_5953_4f4c_0001;
-        const SCHEMA_VERSION: u32 = 1;
+    impl LegacySolverStateV1 for ToySolver {
+        const TYPE_ID_V1: u64 = 0x544f_5953_4f4c_0001;
+        const SCHEMA_VERSION_V1: u32 = 1;
 
-        fn encode(&self, enc: &mut codec::Enc) {
+        fn encode_v1(&self, enc: &mut codec::Enc) {
             enc.put_u64(self.step);
             enc.put_u64(self.field.len() as u64);
             for v in &self.field {
                 enc.put_f64(*v);
             }
         }
-        fn decode(dec: &mut codec::Dec<'_>) -> Result<Self, codec::CodecError> {
+        fn decode_v1(dec: &mut codec::Dec<'_>) -> Result<Self, codec::CodecError> {
             let step = dec.get_u64()?;
             let n = usize::try_from(dec.get_u64()?).expect("fits");
             let mut field = Vec::with_capacity(n);
@@ -2353,8 +2353,8 @@ fn ss_005_degradation_ladder_declared_order_and_pause_resume() {
         step: 4242,
         field: (0..64).map(|i| f64::from(i) * 0.25 - 3.0).collect(),
     };
-    let bytes = solver.to_bytes();
-    let resumed = ToySolver::from_bytes(&bytes).expect("resume");
+    let bytes = LegacySnapshotV1Adapter::<ToySolver>::to_bytes(&solver);
+    let resumed = LegacySnapshotV1Adapter::<ToySolver>::from_bytes(&bytes).expect("resume");
     assert_eq!(resumed, solver, "pause-serialize-resume must be lossless");
     // Events are attributed and ordinal-ordered.
     let events = gov

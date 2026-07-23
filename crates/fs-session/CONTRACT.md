@@ -10,7 +10,7 @@ label; shipped surface tested to [S] discipline].
 ## Purpose and layer
 
 Layer **L6** (HELM). Runtime deps: `std`, fs-ir (admission bridge +
-study parsing), fs-exec (CancelGate/SolverState/TilePool), fs-govern
+study parsing), fs-exec (CancelGate/legacy-v1 snapshot adapter/TilePool), fs-govern
 (PR-001–PR-012 program-risk data/evaluation), fs-la (production GEMM),
 fs-ledger (persistence/content hash), fs-blake3 (domain-separated receipt
 identity), fs-evidence (typed requirements, compliance, uncertainty, and V&V
@@ -580,8 +580,9 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
    including after the next pause requests that gate. Completion additionally
    requires a ledger-verified solver-state artifact whose run matches a
    nonempty executor report minted only after all registered old-worker guards
-   drained. `SolverState` snapshots round-trip losslessly across repeated
-   pause-resume cycles.
+   drained. The ss-005 compatibility witness names
+   `LegacySnapshotV1Adapter` and round-trips its toy v1 state losslessly; it
+   makes no v2 resume or migration-authority claim.
 4. **Estimates state their coverage**: unmodeled ops are listed, their
    wall is excluded, nothing is silently assumed.
 5. **Meters are exact and replay-safe under storm**: concurrent distinct
@@ -729,8 +730,9 @@ independent keys); ss-004 estimate p10/p50/p90 + energy + declared mem +
 honest coverage, calibration ratio quantiles, ledgered artifact
 round-trip; ss-004b invalid estimator/calibration numeric domains fail closed
 without poisoning JSON; ss-004c caller-key substitution of a foreign sealed
-operation scope refuses before pricing; ss-005 ladder order + gate request + toy-SolverState
-snapshot equality + attributed ordinal-ordered events; ss-006 the
+operation scope refuses before pricing; ss-005 ladder order + gate request +
+explicit legacy-v1 toy-state adapter snapshot equality + attributed
+ordinal-ordered events; ss-006 the
 canonical BudgetInfeasible finding surfacing as ranked `Guidance`;
 ss-007 32-way adversarial-grant storm with exact meters and structured
 outcomes only; ss-008 seeded caller panic with eight concurrent duplicates

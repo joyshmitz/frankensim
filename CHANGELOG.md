@@ -494,6 +494,52 @@ workstream.
   installation-effects model, CFD comparison, experimental validation, or
   capability-maturity registration is claimed by this slice.
 
+### Post-checkpoint strong-state solver API split
+
+- Split the solver snapshot surface into an explicitly historical
+  `LegacySolverStateV1`/`LegacySnapshotV1Adapter` path and an independent
+  `SolverStateV2` path. A v2-only state no longer needs a legacy codec, u64
+  type id, FNV content hash, legacy round trip, or legacy driver.
+- Added separately named `ResumableSolverV1::step_v1`/`drive_v1` and
+  `ResumableSolverV2::step_v2`/`drive_v2` APIs, so a type that deliberately
+  supports both eras cannot cross the boundary through method ambiguity.
+  The legacy adapter retains the exact checked source envelope, original
+  payload checksum, and historical u64 metadata as quarantine evidence.
+- Added a v2-only compile-pass/runtime fixture that seals, opens with typed
+  evidence, pauses, and resumes without implementing the legacy trait. A
+  compile-fail doctest proves the same state cannot enter the legacy adapter;
+  same-layout cross-type v2 fixtures likewise have no legacy implementation.
+- Migrated the existing conduction and session compatibility witnesses to the
+  visibly named v1 adapter. Their contracts and the README now state the real
+  boundary instead of presenting the old envelope as generic solver-snapshot
+  authority.
+- The proof loop exposed two downstream compatibility misses rather than
+  hiding them: RCH jobs `j-29943194691043523` and
+  `j-29943194691043530` found a stale `TYPE_ID` spelling and then the missing
+  trait import required for `TYPE_ID_V1`. Both were fixed before the final
+  exact rerun.
+- Remote proof passed with `RCH_REQUIRE_REMOTE=1 rch exec --no-self-healing --
+  env CARGO_TARGET_DIR="${RCH_TARGET_BASE:-${TMPDIR:-/tmp}}/rch_target_frankensim_test"
+  cargo test --locked -p fs-exec -p fs-conduction --all-targets` on worker
+  `ovh-a`, job `j-29943194691043532`: 235 tests passed across 15 test binaries
+  and two performance tests remained explicitly ignored. The separate
+  `cargo test --locked -p fs-exec --doc` lane passed 3/3 doctests, including
+  the negative legacy-capability boundary, on `ovh-a`, job
+  `j-29943194691043521`.
+- The attempted wider lane including `fs-session` did not produce a session
+  verdict: job `j-29943194691043527` failed first in the external
+  `fsqlite-vfs` dependency because its Linux `io_uring` module imported an
+  unavailable crate. That blocker is recorded rather than relabeled as a
+  passing session test. Locked metadata, rustfmt, and diff checks passed
+  locally. Shared `main` advanced from `95815773` to `65e45172` during the
+  final remote lane only through non-owned Beads, ledger, project, and report
+  paths, so the passing result is dirty-worktree evidence rather than a
+  same-commit certificate.
+- This split does not authenticate owner-declared v2 identities, authorize
+  legacy-to-v2 migration, validate `PreparedResume`, or establish semantic v2
+  fork lineage or final G4/G5 closure. Those remain explicitly owned by their
+  successor work.
+
 ## Version Timeline
 
 There are no git tags and no GitHub Releases as of

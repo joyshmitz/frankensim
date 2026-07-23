@@ -41,7 +41,7 @@
 //! number ([`LinearSolveEvidence::true_relative_residual`]).
 
 use fs_exec::Cx;
-use fs_exec::solver::{SnapshotError, SolverState, codec};
+use fs_exec::solver::{LegacySnapshotV1Adapter, LegacySolverStateV1, SnapshotError, codec};
 use fs_solver::krylov::{CgState, ResidualClaim, StallDiagnosis};
 use fs_solver::nonlinear::FgmresState;
 use fs_solver::{CsrOp, norm2};
@@ -377,8 +377,9 @@ pub struct ConductionSolution {
 /// The resumable nonlinear-iteration state.
 ///
 /// This is the whole thing: `clone()` is a checkpoint and
-/// [`SolverState::seal`] is a migratable snapshot inside `fs-exec`'s
-/// versioned envelope. A run resumed from a snapshot reproduces the
+/// [`LegacySnapshotV1Adapter::seal`] is an explicitly restorable legacy-v1
+/// snapshot inside `fs-exec`'s versioned envelope. It is not a v2 migration
+/// receipt. A run resumed from a snapshot reproduces the
 /// uninterrupted trajectory bitwise, because every linear solve starts
 /// from `x₀ = 0` and is a pure function of the assembled system, which
 /// is a pure function of this state.
@@ -395,18 +396,18 @@ pub struct ConductionState {
     pub last_step_norm: f64,
 }
 
-impl SolverState for ConductionState {
-    const TYPE_ID: u64 = 0xf5c0_4d75_c710_0001;
-    const SCHEMA_VERSION: u32 = 1;
+impl LegacySolverStateV1 for ConductionState {
+    const TYPE_ID_V1: u64 = 0xf5c0_4d75_c710_0001;
+    const SCHEMA_VERSION_V1: u32 = 1;
 
-    fn encode(&self, enc: &mut codec::Enc) {
+    fn encode_v1(&self, enc: &mut codec::Enc) {
         enc.put_u64(self.iteration as u64);
         enc.put_f64_slice(&self.free_temperature);
         enc.put_f64_slice(&self.residual_history);
         enc.put_f64(self.last_step_norm);
     }
 
-    fn decode(dec: &mut codec::Dec<'_>) -> Result<Self, codec::CodecError> {
+    fn decode_v1(dec: &mut codec::Dec<'_>) -> Result<Self, codec::CodecError> {
         let iteration = dec.get_u64()? as usize;
         let free_temperature = dec.get_f64_vec()?;
         let residual_history = dec.get_f64_vec()?;
@@ -614,7 +615,7 @@ impl<'m> ConductionSolver<'m> {
     /// Seal the current state into `fs-exec`'s versioned envelope.
     #[must_use]
     pub fn snapshot(&self, provenance: u64) -> Vec<u8> {
-        self.state.seal(provenance)
+        LegacySnapshotV1Adapter::<ConductionState>::seal(&self.state, provenance)
     }
 
     /// Restore a sealed state, replacing the current iterate.
@@ -624,11 +625,13 @@ impl<'m> ConductionSolver<'m> {
     /// refusal, and [`ConductionError::FieldLength`] when the restored
     /// state does not match this problem's free-dof count.
     pub fn restore(&mut self, bytes: &[u8]) -> Result<u64, ConductionError> {
-        let (state, provenance) = ConductionState::unseal(bytes).map_err(|e: SnapshotError| {
-            ConductionError::Snapshot {
+        let opened = LegacySnapshotV1Adapter::<ConductionState>::open(bytes).map_err(
+            |e: SnapshotError| ConductionError::Snapshot {
                 upstream: e.to_string(),
-            }
-        })?;
+            },
+        )?;
+        let (state, source) = opened.into_parts();
+        let provenance = source.info().provenance();
         if state.free_temperature.len() != self.dofs.n() {
             return Err(ConductionError::FieldLength {
                 field: "restored free temperature",

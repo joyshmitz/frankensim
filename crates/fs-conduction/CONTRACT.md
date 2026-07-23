@@ -282,11 +282,13 @@ survive. Evidence: `tests/conformance.rs::cancelled_assembly_is_a_structured_ref
 `::cancellation_mid_iteration_drains_with_a_structured_refusal` (which asserts
 the state is unchanged).
 
-Resumability: `ConductionState` implements `fs_exec::solver::SolverState`
-(`TYPE_ID = 0xf5c0_4d75_c710_0001`, `SCHEMA_VERSION = 1`), so `snapshot()` seals
-into the versioned envelope and `restore()` validates magic, type id, schema
-version, length, and checksum BEFORE the payload decoder runs. A flipped byte,
-a truncation, and an append are all refused. Evidence:
+Legacy-v1 resumability: `ConductionState` implements
+`fs_exec::solver::LegacySolverStateV1`
+(`TYPE_ID_V1 = 0xf5c0_4d75_c710_0001`, `SCHEMA_VERSION_V1 = 1`), and
+`snapshot()`/`restore()` name `LegacySnapshotV1Adapter` explicitly. Restore
+validates magic, type id, schema version, length, and checksum BEFORE the
+payload decoder runs. This does not claim v2 identity or migration authority.
+A flipped byte, a truncation, and an append are all refused. Evidence:
 `tests/conformance.rs::snapshot_envelope_refuses_tampered_bytes`.
 
 ## Unsafe boundary

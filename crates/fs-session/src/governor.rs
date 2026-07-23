@@ -2207,7 +2207,8 @@ pub enum DegradationStep {
     SpillColdArenas,
     /// Coarsen adaptive resolutions.
     CoarsenAdaptively,
-    /// Checkpoint (SolverState) and stop; resume when pressure clears.
+    /// Checkpoint through an explicitly selected snapshot era and stop; resume
+    /// when pressure clears.
     PauseSerializeResume,
 }
 

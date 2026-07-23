@@ -37,7 +37,7 @@ use fs_conduction::solve::{
 };
 use fs_conduction::{ConductionError, TEMPERATURE_DIMS};
 use fs_evidence::ValidityDomain;
-use fs_exec::solver::SolverState;
+use fs_exec::solver::{LegacySnapshotV1Adapter, LegacySolverStateV1};
 use fs_matdb::{
     ClaimSet, InterpolationPolicy, ObservationDataset, PropertyClaim, PropertyKey, PropertyValue,
     Provenance, SelectionPolicy, UncertaintyModel,
@@ -745,8 +745,10 @@ fn snapshot_envelope_refuses_tampered_bytes() {
         residual_history: vec![1.0e3, 4.0e1],
         last_step_norm: 0.5,
     };
-    let sealed = state.seal(0x1234);
-    let (round, provenance) = ConductionState::unseal(&sealed).expect("round trip");
+    let sealed = LegacySnapshotV1Adapter::<ConductionState>::seal(&state, 0x1234);
+    let opened = LegacySnapshotV1Adapter::<ConductionState>::open(&sealed).expect("round trip");
+    let (round, source) = opened.into_parts();
+    let provenance = source.info().provenance();
     assert_eq!(round, state);
     assert_eq!(provenance, 0x1234);
 
@@ -755,18 +757,18 @@ fn snapshot_envelope_refuses_tampered_bytes() {
     let mut tampered = sealed.clone();
     let last = tampered.len() - 1;
     tampered[last] ^= 0x01;
-    assert!(ConductionState::unseal(&tampered).is_err());
+    assert!(LegacySnapshotV1Adapter::<ConductionState>::open(&tampered).is_err());
 
     // Truncation and appended garbage are refused too.
-    assert!(ConductionState::unseal(&sealed[..sealed.len() - 4]).is_err());
+    assert!(LegacySnapshotV1Adapter::<ConductionState>::open(&sealed[..sealed.len() - 4]).is_err());
     let mut appended = sealed.clone();
     appended.push(0x00);
-    assert!(ConductionState::unseal(&appended).is_err());
+    assert!(LegacySnapshotV1Adapter::<ConductionState>::open(&appended).is_err());
     verdict(
         "snapshot-envelope",
         &format!(
             "type_id=0x{:016x} bytes={}",
-            ConductionState::TYPE_ID,
+            ConductionState::TYPE_ID_V1,
             sealed.len()
         ),
     );

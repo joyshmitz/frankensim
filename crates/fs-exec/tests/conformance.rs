@@ -599,7 +599,8 @@ fn exec_010_race_winner_is_deterministic_and_losers_fully_drain() {
 #[test]
 fn exec_011_solver_checkpoint_resume_fork_is_bit_exact() {
     use fs_exec::solver::{
-        ResumableSolver, SolverProgress, SolverState, StepVerdict, codec, drive, fork,
+        LegacySnapshotV1Adapter, LegacySolverStateV1, ResumableSolverV1, SolverProgress,
+        StepVerdict, codec, drive_v1, round_trip_legacy_v1,
     };
     const SEED: u64 = 0xE011;
     /// Logistic-map style iteration: chaotic enough that ANY perturbation
@@ -612,25 +613,25 @@ fn exec_011_solver_checkpoint_resume_fork_is_bit_exact() {
         x: f64,
         iter: u64,
     }
-    impl SolverState for ChaoticState {
-        const TYPE_ID: u64 = 0x4348_414f_5449_0001;
-        const SCHEMA_VERSION: u32 = 1;
+    impl LegacySolverStateV1 for ChaoticState {
+        const TYPE_ID_V1: u64 = 0x4348_414f_5449_0001;
+        const SCHEMA_VERSION_V1: u32 = 1;
 
-        fn encode(&self, enc: &mut codec::Enc) {
+        fn encode_v1(&self, enc: &mut codec::Enc) {
             enc.put_f64(self.x);
             enc.put_u64(self.iter);
         }
-        fn decode(dec: &mut codec::Dec<'_>) -> Result<Self, codec::CodecError> {
+        fn decode_v1(dec: &mut codec::Dec<'_>) -> Result<Self, codec::CodecError> {
             Ok(ChaoticState {
                 x: dec.get_f64()?,
                 iter: dec.get_u64()?,
             })
         }
     }
-    impl ResumableSolver for Chaotic {
+    impl ResumableSolverV1 for Chaotic {
         type State = ChaoticState;
         type Out = f64;
-        fn step(&self, s: &mut ChaoticState, _cx: &Cx<'_>) -> StepVerdict<f64> {
+        fn step_v1(&self, s: &mut ChaoticState, _cx: &Cx<'_>) -> StepVerdict<f64> {
             s.x = 3.9 * s.x * (1.0 - s.x);
             s.iter += 1;
             if s.iter >= self.steps {
@@ -663,14 +664,14 @@ fn exec_011_solver_checkpoint_resume_fork_is_bit_exact() {
                     // Drive manually until `at`, then request and let drive pause.
                     let mut st = state;
                     for _ in 0..at {
-                        let StepVerdict::Continue = solver.step(&mut st, &cx) else {
+                        let StepVerdict::Continue = solver.step_v1(&mut st, &cx) else {
                             panic!("cancel point must precede completion");
                         };
                     }
                     gate.request();
-                    drive(&solver, st, &cx)
+                    drive_v1(&solver, st, &cx)
                 } else {
-                    drive(&solver, state, &cx)
+                    drive_v1(&solver, state, &cx)
                 }
             })
         };
@@ -683,10 +684,14 @@ fn exec_011_solver_checkpoint_resume_fork_is_bit_exact() {
         let SolverProgress::Paused(paused) = run_under_cx(s0.clone(), Some(cancel_at)) else {
             panic!("requested gate must pause");
         };
-        let bytes = paused.to_bytes();
-        let restored = ChaoticState::from_bytes(&bytes).expect("round trip");
-        let forked = fork(&restored).expect("fork proves serializability");
-        assert_eq!(restored.content_hash(), forked.content_hash());
+        let bytes = LegacySnapshotV1Adapter::<ChaoticState>::to_bytes(&paused);
+        let restored = LegacySnapshotV1Adapter::<ChaoticState>::from_bytes(&bytes)
+            .expect("legacy v1 round trip");
+        let forked = round_trip_legacy_v1(&restored).expect("v1 codec proves serializability");
+        assert_eq!(
+            LegacySnapshotV1Adapter::<ChaoticState>::historical_content_hash(&restored),
+            LegacySnapshotV1Adapter::<ChaoticState>::historical_content_hash(&forked)
+        );
         let SolverProgress::Done(x_resumed) = run_under_cx(restored, None) else {
             panic!("resume finishes");
         };

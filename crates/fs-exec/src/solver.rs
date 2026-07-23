@@ -3914,91 +3914,153 @@ impl core::fmt::Display for SnapshotError {
 
 impl core::error::Error for SnapshotError {}
 
-/// A serializable solver snapshot. Implementations must be self-contained
-/// (no pointers; artifact references by content hash) — see module docs.
-/// Every state declares a STABLE type id and a schema version (bead
-/// wf9.8.2): snapshots travel inside the [`envelope`], which is validated
-/// before the payload decoder ever runs.
-pub trait SolverState: Sized {
-    /// Stable type identity. Never reuse across state types; never
-    /// change for a type (that is what [`Self::SCHEMA_VERSION`] is for).
-    const TYPE_ID: u64;
-    /// Payload schema version. Bump on ANY layout change; readers
-    /// refuse other versions structurally.
-    const SCHEMA_VERSION: u32;
+/// Legacy v1 solver-state codec declaration.
+///
+/// This compatibility trait deliberately exposes only the historical u64
+/// identities and infallible payload codec. All envelope operations live on
+/// [`LegacySnapshotV1Adapter`], so a call site must name the weak identity era
+/// explicitly. Implementing [`SolverStateV2`] neither requires nor implies
+/// this trait.
+pub trait LegacySolverStateV1: Sized {
+    /// Historical stable type identity. Never widen or reinterpret this u64 as
+    /// a v2 state identity.
+    const TYPE_ID_V1: u64;
+    /// Historical payload schema version.
+    const SCHEMA_VERSION_V1: u32;
 
-    /// Write the snapshot payload.
-    fn encode(&self, enc: &mut codec::Enc);
+    /// Write the legacy v1 snapshot payload.
+    fn encode_v1(&self, encoder: &mut codec::Enc);
 
-    /// Read a snapshot payload.
+    /// Read a legacy v1 snapshot payload.
     ///
     /// # Errors
-    /// [`codec::CodecError`] on truncated/incompatible bytes.
-    fn decode(dec: &mut codec::Dec<'_>) -> Result<Self, codec::CodecError>;
+    /// [`codec::CodecError`] on truncated or incompatible bytes.
+    fn decode_v1(decoder: &mut codec::Dec<'_>) -> Result<Self, codec::CodecError>;
+}
 
-    /// Seal the snapshot with an explicit caller-ledgered provenance
-    /// (run/ledger identity — e.g. a `RunId` value or ledger row id).
-    fn seal(&self, provenance: u64) -> Vec<u8> {
-        let mut enc = codec::Enc::new();
-        self.encode(&mut enc);
+/// A decoded legacy v1 state with the exact source envelope still attached.
+///
+/// This is quarantine evidence, not a migration receipt or producer
+/// authentication. Consuming it returns both the decoded state and the exact
+/// borrowed legacy source metadata.
+#[must_use = "legacy source bytes and u64 metadata must remain explicit"]
+pub struct OpenedLegacySnapshotV1<'a, S> {
+    state: S,
+    source: LegacySnapshotV1<'a>,
+}
+
+impl<S> core::fmt::Debug for OpenedLegacySnapshotV1<'_, S> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("OpenedLegacySnapshotV1")
+            .field("source", &self.source)
+            .field("state_type", &core::any::type_name::<S>())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a, S> OpenedLegacySnapshotV1<'a, S> {
+    /// Borrow the decoded legacy state.
+    #[must_use]
+    pub const fn state(&self) -> &S {
+        &self.state
+    }
+
+    /// Exact checked legacy source bytes and historical u64 metadata.
+    #[must_use]
+    pub const fn source(&self) -> LegacySnapshotV1<'a> {
+        self.source
+    }
+
+    /// Consume the attachment without silently discarding the legacy source.
+    #[must_use]
+    pub fn into_parts(self) -> (S, LegacySnapshotV1<'a>) {
+        (self.state, self.source)
+    }
+}
+
+/// Explicit compatibility namespace for the legacy v1 solver-state format.
+///
+/// The adapter preserves exact v1 bytes and u64 fields; it does not widen them
+/// into v2 identities, authenticate their producer, or mint migration/fork
+/// authority.
+pub struct LegacySnapshotV1Adapter<S>(core::marker::PhantomData<fn() -> S>);
+
+impl<S: LegacySolverStateV1> LegacySnapshotV1Adapter<S> {
+    /// Seal a legacy v1 envelope with historical u64 provenance.
+    #[must_use]
+    pub fn seal(state: &S, provenance: u64) -> Vec<u8> {
+        let mut encoder = codec::Enc::new();
+        state.encode_v1(&mut encoder);
         envelope::seal(
-            Self::TYPE_ID,
-            Self::SCHEMA_VERSION,
+            S::TYPE_ID_V1,
+            S::SCHEMA_VERSION_V1,
             provenance,
-            &enc.into_bytes(),
+            &encoder.into_bytes(),
         )
     }
 
-    /// Validate the envelope, decode the payload, and return the state
-    /// with its provenance. Rejects trailing payload garbage.
+    /// Validate and decode a legacy v1 envelope while retaining its exact
+    /// source bytes and original payload checksum.
     ///
     /// # Errors
     /// [`SnapshotError`] — envelope refusals never reach the decoder.
-    fn unseal(bytes: &[u8]) -> Result<(Self, u64), SnapshotError> {
-        let (payload, provenance) = envelope::open(bytes, Self::TYPE_ID, Self::SCHEMA_VERSION)
+    pub fn open(bytes: &[u8]) -> Result<OpenedLegacySnapshotV1<'_, S>, SnapshotError> {
+        let source = inspect_legacy_snapshot_v1(bytes).map_err(SnapshotError::Envelope)?;
+        let (payload, _) = envelope::open(bytes, S::TYPE_ID_V1, S::SCHEMA_VERSION_V1)
             .map_err(SnapshotError::Envelope)?;
-        let mut dec = codec::Dec::new(payload);
-        let state = Self::decode(&mut dec).map_err(SnapshotError::Payload)?;
-        if dec.is_empty() {
-            Ok((state, provenance))
-        } else {
-            Err(SnapshotError::Payload(codec::CodecError {
-                at: dec.position(),
-                what: "end of snapshot payload",
+        let mut decoder = codec::Dec::new(payload);
+        let state = S::decode_v1(&mut decoder).map_err(SnapshotError::Payload)?;
+        if !decoder.is_empty() {
+            return Err(SnapshotError::Payload(codec::CodecError {
+                at: decoder.position(),
+                what: "end of legacy v1 snapshot payload",
                 needed: 0,
-                remaining: dec.remaining(),
-            }))
+                remaining: decoder.remaining(),
+            }));
         }
+        Ok(OpenedLegacySnapshotV1 { state, source })
     }
 
-    /// The ENVELOPED snapshot bytes (ledger checkpoint payload) with
-    /// unattributed provenance; ledger paths should prefer
-    /// [`SolverState::seal`] with a real run identity.
-    fn to_bytes(&self) -> Vec<u8> {
-        self.seal(0)
+    /// Seal with unattributed historical provenance zero.
+    #[must_use]
+    pub fn to_bytes(state: &S) -> Vec<u8> {
+        Self::seal(state, 0)
     }
 
-    /// Rebuild from enveloped snapshot bytes.
+    /// Decode an unattributed or attributed legacy envelope, explicitly
+    /// discharging the attached source metadata.
     ///
     /// # Errors
-    /// [`SnapshotError`] on any envelope refusal or payload error.
-    fn from_bytes(bytes: &[u8]) -> Result<Self, SnapshotError> {
-        Self::unseal(bytes).map(|(state, _)| state)
+    /// [`SnapshotError`] on any v1 envelope or codec refusal.
+    pub fn from_bytes(bytes: &[u8]) -> Result<S, SnapshotError> {
+        Self::open(bytes).map(|opened| opened.into_parts().0)
     }
 
-    /// Deterministic content hash of the ENVELOPED snapshot (FNV-1a
-    /// until the BLAKE3-class ledger hash supersedes it — same upgrade
-    /// path as fs-obs).
-    fn content_hash(&self) -> u64 {
-        fs_obs::fnv1a64(&self.to_bytes())
+    /// Historical FNV-1a correlation hash of the complete unattributed v1
+    /// envelope. This u64 is not a v2 content or semantic identity.
+    #[must_use]
+    pub fn historical_content_hash(state: &S) -> u64 {
+        fs_obs::fnv1a64(&Self::to_bytes(state))
+    }
+
+    /// Legacy in-memory round trip through exact v1 envelope bytes.
+    ///
+    /// This proves only v1 codec self-consistency. It is deliberately not
+    /// called a semantic fork and carries no v2 lineage claim.
+    ///
+    /// # Errors
+    /// [`SnapshotError`] when the legacy encoder and decoder disagree.
+    pub fn round_trip(state: &S) -> Result<S, SnapshotError> {
+        Self::from_bytes(&Self::to_bytes(state))
     }
 }
 
 /// Opt-in strong-identity snapshot contract.
 ///
 /// V2 state owners must declare a full-width schema identity directly. The
-/// legacy [`SolverState::TYPE_ID`] is deliberately not re-hashed or widened
-/// into this value. Existing v1 implementations therefore remain compatible
+/// legacy [`LegacySolverStateV1::TYPE_ID_V1`] is deliberately not re-hashed or
+/// widened into this value. Existing v1 implementations therefore remain compatible
 /// but gain no v2 resume authority until they make this explicit declaration.
 /// These byte constants are nominal declarations, not owner authentication;
 /// uniqueness is the implementer's responsibility until the owner-charter
@@ -4006,7 +4068,33 @@ pub trait SolverState: Sized {
 /// type's values, allocate or perform side effects outside the codec helpers,
 /// or panic. This trait alone does not certify whole-implementation purity,
 /// memory bounds, cancellation latency, or nominal Rust-type ownership.
-pub trait SolverStateV2: SolverState {
+///
+/// A v2-only state cannot be routed into a legacy adapter accidentally:
+///
+/// ```compile_fail
+/// use fs_exec::solver::{LegacySnapshotV1Adapter, SolverStateV2, snapshot_v2};
+///
+/// struct StrongOnly;
+/// impl SolverStateV2 for StrongOnly {
+///     const STATE_TYPE_ID_V2: snapshot_v2::SnapshotStateTypeIdV2 =
+///         snapshot_v2::SnapshotStateTypeIdV2::from_bytes([1; 32]);
+///     const STATE_SCHEMA_ID_V2: snapshot_v2::SnapshotStateSchemaIdV2 =
+///         snapshot_v2::SnapshotStateSchemaIdV2::from_bytes([2; 32]);
+///     const STATE_CODEC_ID_V2: snapshot_v2::SnapshotStateCodecIdV2 =
+///         snapshot_v2::SnapshotStateCodecIdV2::from_bytes([3; 32]);
+///     const STATE_CODEC_VERSION_V2: u32 = 1;
+///     fn encode_v2(
+///         &self,
+///         _: &mut snapshot_v2::SnapshotEncoderV2<'_>,
+///     ) -> Result<(), snapshot_v2::SnapshotV2Error> { Ok(()) }
+///     fn decode_v2(
+///         _: &mut snapshot_v2::SnapshotDecoderV2<'_, '_>,
+///     ) -> Result<Self, snapshot_v2::SnapshotV2Error> { Ok(Self) }
+/// }
+///
+/// let _legacy = LegacySnapshotV1Adapter::<StrongOnly>::to_bytes(&StrongOnly);
+/// ```
+pub trait SolverStateV2: Sized {
     /// Full-width nominal identity of this exact Rust state type.
     const STATE_TYPE_ID_V2: snapshot_v2::SnapshotStateTypeIdV2;
     /// Full-width state schema identity owned by this exact Rust state type.
@@ -4017,7 +4105,8 @@ pub trait SolverStateV2: SolverState {
     const STATE_CODEC_VERSION_V2: u32;
 
     /// Encode through the fallible, capped, cancellation-aware v2 producer.
-    /// Implementations must not delegate to legacy [`SolverState::encode`].
+    /// Implementations must not delegate to
+    /// [`LegacySolverStateV1::encode_v1`].
     /// They must propagate every refusal, avoid side effects, use only
     /// budget-admitted storage, and treat the encoder as a transaction; helper
     /// poisoning prevents swallowed helper errors from publishing but cannot
@@ -4028,7 +4117,8 @@ pub trait SolverStateV2: SolverState {
     ) -> Result<(), snapshot_v2::SnapshotV2Error>;
 
     /// Decode through the capped, cancellation-aware v2 decoder.
-    /// Implementations must not delegate to legacy [`SolverState::decode`].
+    /// Implementations must not delegate to
+    /// [`LegacySolverStateV1::decode_v1`].
     /// They must propagate every refusal and construct state only through
     /// budget-admitted resources. Direct allocations or side effects are
     /// outside the current enforcement boundary.
@@ -4123,22 +4213,40 @@ pub enum StepVerdict<T> {
     Done(T),
 }
 
-/// An iterative solver as an explicit state machine: `step` advances one
-/// BOUNDED unit of work (an iteration, a sweep) — the pause granularity.
-pub trait ResumableSolver {
-    /// The serializable snapshot type.
-    type State: SolverState;
+/// A legacy v1 iterative solver state machine.
+///
+/// `step_v1` advances one bounded unit of work. The v1 name prevents method
+/// ambiguity for a solver that deliberately supports both identity eras.
+pub trait ResumableSolverV1 {
+    /// The explicitly legacy serializable snapshot type.
+    type State: LegacySolverStateV1;
     /// The final result type.
     type Out;
 
     /// Advance one bounded step. Implementations may poll `cx` internally
     /// for finer-grained cancellation inside expensive steps.
-    fn step(&self, state: &mut Self::State, cx: &Cx<'_>) -> StepVerdict<Self::Out>;
+    fn step_v1(&self, state: &mut Self::State, cx: &Cx<'_>) -> StepVerdict<Self::Out>;
 }
 
-/// The outcome of [`drive`]: finished, or paused holding the resumable
-/// snapshot (the caller serializes it to the ledger and later resumes or
-/// forks).
+/// A strong-identity v2 iterative solver state machine.
+///
+/// This trait has no legacy supertrait and no implicit v1/FNV path. A solver
+/// that deliberately supports both eras implements the separately named
+/// `step_v1` and `step_v2` methods, so method selection is never ambiguous.
+pub trait ResumableSolverV2 {
+    /// The independent strong-identity snapshot type.
+    type State: SolverStateV2;
+    /// The final result type.
+    type Out;
+
+    /// Advance one bounded v2 step. Implementations may poll `cx` internally
+    /// for finer-grained cancellation inside expensive steps.
+    fn step_v2(&self, state: &mut Self::State, cx: &Cx<'_>) -> StepVerdict<Self::Out>;
+}
+
+/// The outcome of [`drive_v1`] or [`drive_v2`]: finished, or paused holding the
+/// resumable state. The caller may serialize it for a later resume. Establishing
+/// semantic fork lineage is deliberately outside this driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SolverProgress<S, T> {
     /// Ran to completion.
@@ -4147,11 +4255,8 @@ pub enum SolverProgress<S, T> {
     Paused(S),
 }
 
-/// Drive a solver until completion or until the context's cancel gate is
-/// requested — pause IS the cancellation path, which is what makes
-/// "pause, run something urgent, resume" routine (graceful-degradation
-/// hook for the session governor).
-pub fn drive<R: ResumableSolver>(
+/// Drive a legacy v1 solver until completion or pause.
+pub fn drive_v1<R: ResumableSolverV1>(
     solver: &R,
     mut state: R::State,
     cx: &Cx<'_>,
@@ -4160,22 +4265,43 @@ pub fn drive<R: ResumableSolver>(
         if cx.is_cancel_requested() {
             return SolverProgress::Paused(state);
         }
-        match solver.step(&mut state, cx) {
+        match solver.step_v1(&mut state, cx) {
             StepVerdict::Continue => {}
             StepVerdict::Done(out) => return SolverProgress::Done(out),
         }
     }
 }
 
-/// Fork a solver state by round-tripping it through its serialized form —
-/// proving at fork time that the snapshot really is self-contained (a fork
-/// that only works in-memory is a distribution bug waiting to happen).
+/// Drive a strong-identity v2 solver until completion or pause.
+///
+/// A paused value remains statically bound by [`SolverStateV2`]. Sealing,
+/// admitted opening, and evidence discharge remain explicit operations; this
+/// driver does not manufacture snapshot evidence for an in-memory value.
+pub fn drive_v2<R: ResumableSolverV2>(
+    solver: &R,
+    mut state: R::State,
+    cx: &Cx<'_>,
+) -> SolverProgress<R::State, R::Out> {
+    loop {
+        if cx.is_cancel_requested() {
+            return SolverProgress::Paused(state);
+        }
+        match solver.step_v2(&mut state, cx) {
+            StepVerdict::Continue => {}
+            StepVerdict::Done(out) => return SolverProgress::Done(out),
+        }
+    }
+}
+
+/// Explicit legacy v1 round trip retained for compatibility callers.
+///
+/// This proves only historical codec self-consistency. It does not preserve or
+/// mint v2 identity, budget, RNG, authority, or semantic fork lineage.
 ///
 /// # Errors
-/// [`SnapshotError`] when the state's encode/decode disagree — a
-/// serialization bug surfaced early.
-pub fn fork<S: SolverState>(state: &S) -> Result<S, SnapshotError> {
-    S::from_bytes(&state.to_bytes())
+/// [`SnapshotError`] when the legacy encoder and decoder disagree.
+pub fn round_trip_legacy_v1<S: LegacySolverStateV1>(state: &S) -> Result<S, SnapshotError> {
+    LegacySnapshotV1Adapter::<S>::round_trip(state)
 }
 
 #[cfg(test)]
@@ -4195,14 +4321,14 @@ mod tests {
             x: Vec<f64>,
             iter: u64,
         }
-        impl SolverState for TwinState {
-            const TYPE_ID: u64 = 0x5457_494e_0000_0001;
-            const SCHEMA_VERSION: u32 = 1;
-            fn encode(&self, enc: &mut codec::Enc) {
+        impl LegacySolverStateV1 for TwinState {
+            const TYPE_ID_V1: u64 = 0x5457_494e_0000_0001;
+            const SCHEMA_VERSION_V1: u32 = 1;
+            fn encode_v1(&self, enc: &mut codec::Enc) {
                 enc.put_u64(self.iter);
                 enc.put_f64_slice(&self.x);
             }
-            fn decode(dec: &mut codec::Dec<'_>) -> Result<Self, codec::CodecError> {
+            fn decode_v1(dec: &mut codec::Dec<'_>) -> Result<Self, codec::CodecError> {
                 Ok(TwinState {
                     iter: dec.get_u64()?,
                     x: dec.get_f64_vec()?,
@@ -4213,22 +4339,30 @@ mod tests {
             x: vec![1.5, -2.25, 0.0],
             iter: 42,
         };
-        let sealed = state.seal(0xABCD);
+        let sealed = LegacySnapshotV1Adapter::<JacobiState>::seal(&state, 0xABCD);
         let inspected = envelope::inspect(&sealed).expect("generic envelope inspection");
-        assert_eq!(inspected.type_id(), JacobiState::TYPE_ID);
-        assert_eq!(inspected.schema_version(), JacobiState::SCHEMA_VERSION);
+        assert_eq!(inspected.type_id(), JacobiState::TYPE_ID_V1);
+        assert_eq!(inspected.schema_version(), JacobiState::SCHEMA_VERSION_V1);
         assert_eq!(inspected.provenance(), 0xABCD);
         assert_eq!(
             inspected.payload_len(),
             u64::try_from(sealed.len() - envelope::HEADER_LEN).expect("bounded fixture")
         );
         // The happy path round-trips bit-exactly WITH provenance.
-        let (back, prov) = JacobiState::unseal(&sealed).expect("valid seal");
+        let opened = LegacySnapshotV1Adapter::<JacobiState>::open(&sealed).expect("valid seal");
+        let (back, source) = opened.into_parts();
+        let prov = source.info().provenance();
         assert_eq!(back, state);
         assert_eq!(prov, 0xABCD);
+        assert_eq!(source.bytes(), sealed);
+        assert_eq!(source.info(), inspected);
+        assert_eq!(
+            source.payload_checksum(),
+            u64::from_le_bytes(sealed[40..48].try_into().unwrap())
+        );
         // Cross-type: identical payload layout, refused by TYPE ID.
         assert!(matches!(
-            TwinState::unseal(&sealed),
+            LegacySnapshotV1Adapter::<TwinState>::open(&sealed),
             Err(SnapshotError::Envelope(
                 envelope::EnvelopeError::WrongTypeId { .. }
             ))
@@ -4238,7 +4372,7 @@ mod tests {
         let last = flipped.len() - 1;
         flipped[last] ^= 0x40;
         assert!(matches!(
-            JacobiState::unseal(&flipped),
+            LegacySnapshotV1Adapter::<JacobiState>::open(&flipped),
             Err(SnapshotError::Envelope(
                 envelope::EnvelopeError::ChecksumMismatch { .. }
             ))
@@ -4247,18 +4381,18 @@ mod tests {
         let mut bad_magic = sealed.clone();
         bad_magic[0] ^= 0x01;
         assert!(matches!(
-            JacobiState::unseal(&bad_magic),
+            LegacySnapshotV1Adapter::<JacobiState>::open(&bad_magic),
             Err(SnapshotError::Envelope(envelope::EnvelopeError::BadMagic))
         ));
         // Truncation: header-level and payload-level both refuse.
         assert!(matches!(
-            JacobiState::unseal(&sealed[..10]),
+            LegacySnapshotV1Adapter::<JacobiState>::open(&sealed[..10]),
             Err(SnapshotError::Envelope(
                 envelope::EnvelopeError::Truncated { .. }
             ))
         ));
         assert!(matches!(
-            JacobiState::unseal(&sealed[..sealed.len() - 3]),
+            LegacySnapshotV1Adapter::<JacobiState>::open(&sealed[..sealed.len() - 3]),
             Err(SnapshotError::Envelope(
                 envelope::EnvelopeError::LengthMismatch { .. }
             ))
@@ -4267,7 +4401,7 @@ mod tests {
         let mut appended = sealed.clone();
         appended.extend_from_slice(&[0u8; 5]);
         assert!(matches!(
-            JacobiState::unseal(&appended),
+            LegacySnapshotV1Adapter::<JacobiState>::open(&appended),
             Err(SnapshotError::Envelope(
                 envelope::EnvelopeError::LengthMismatch { .. }
             ))
@@ -4276,7 +4410,7 @@ mod tests {
         let mut future = sealed.clone();
         future[8..12].copy_from_slice(&9u32.to_le_bytes());
         assert!(matches!(
-            JacobiState::unseal(&future),
+            LegacySnapshotV1Adapter::<JacobiState>::open(&future),
             Err(SnapshotError::Envelope(
                 envelope::EnvelopeError::UnknownEnvelopeVersion { found: 9 }
             ))
@@ -4285,7 +4419,7 @@ mod tests {
         let mut stale = sealed;
         stale[20..24].copy_from_slice(&7u32.to_le_bytes());
         assert!(matches!(
-            JacobiState::unseal(&stale),
+            LegacySnapshotV1Adapter::<JacobiState>::open(&stale),
             Err(SnapshotError::Envelope(
                 envelope::EnvelopeError::IncompatibleSchema {
                     expected: 1,
@@ -4308,16 +4442,16 @@ mod tests {
         iter: u64,
     }
 
-    impl SolverState for JacobiState {
-        const TYPE_ID: u64 = 0x4a41_434f_4249_0001;
-        const SCHEMA_VERSION: u32 = 1;
+    impl LegacySolverStateV1 for JacobiState {
+        const TYPE_ID_V1: u64 = 0x4a41_434f_4249_0001;
+        const SCHEMA_VERSION_V1: u32 = 1;
 
-        fn encode(&self, enc: &mut codec::Enc) {
+        fn encode_v1(&self, enc: &mut codec::Enc) {
             enc.put_u64(self.iter);
             enc.put_f64_slice(&self.x);
         }
 
-        fn decode(dec: &mut codec::Dec<'_>) -> Result<Self, codec::CodecError> {
+        fn decode_v1(dec: &mut codec::Dec<'_>) -> Result<Self, codec::CodecError> {
             Ok(JacobiState {
                 iter: dec.get_u64()?,
                 x: dec.get_f64_vec()?,
@@ -4357,19 +4491,6 @@ mod tests {
     #[derive(Debug, Clone, PartialEq)]
     struct TwinV2State(JacobiState);
 
-    impl SolverState for TwinV2State {
-        const TYPE_ID: u64 = 0x5457_494e_0000_0002;
-        const SCHEMA_VERSION: u32 = 1;
-
-        fn encode(&self, encoder: &mut codec::Enc) {
-            self.0.encode(encoder);
-        }
-
-        fn decode(decoder: &mut codec::Dec<'_>) -> Result<Self, codec::CodecError> {
-            JacobiState::decode(decoder).map(Self)
-        }
-    }
-
     impl SolverStateV2 for TwinV2State {
         const STATE_TYPE_ID_V2: snapshot_v2::SnapshotStateTypeIdV2 =
             snapshot_v2::SnapshotStateTypeIdV2::from_bytes([0x54; 32]);
@@ -4398,19 +4519,6 @@ mod tests {
     #[derive(Debug, Clone, PartialEq)]
     struct CodecBumpV2State(JacobiState);
 
-    impl SolverState for CodecBumpV2State {
-        const TYPE_ID: u64 = 0x434f_4445_4300_0002;
-        const SCHEMA_VERSION: u32 = 2;
-
-        fn encode(&self, encoder: &mut codec::Enc) {
-            self.0.encode(encoder);
-        }
-
-        fn decode(decoder: &mut codec::Dec<'_>) -> Result<Self, codec::CodecError> {
-            JacobiState::decode(decoder).map(Self)
-        }
-    }
-
     impl SolverStateV2 for CodecBumpV2State {
         const STATE_TYPE_ID_V2: snapshot_v2::SnapshotStateTypeIdV2 = JacobiState::STATE_TYPE_ID_V2;
         const STATE_SCHEMA_ID_V2: snapshot_v2::SnapshotStateSchemaIdV2 =
@@ -4437,19 +4545,6 @@ mod tests {
     /// different only in its state-schema identity.
     #[derive(Debug, Clone, PartialEq)]
     struct SchemaOnlyV2State(JacobiState);
-
-    impl SolverState for SchemaOnlyV2State {
-        const TYPE_ID: u64 = 0x5343_4845_4d41_0002;
-        const SCHEMA_VERSION: u32 = 2;
-
-        fn encode(&self, encoder: &mut codec::Enc) {
-            self.0.encode(encoder);
-        }
-
-        fn decode(decoder: &mut codec::Dec<'_>) -> Result<Self, codec::CodecError> {
-            JacobiState::decode(decoder).map(Self)
-        }
-    }
 
     impl SolverStateV2 for SchemaOnlyV2State {
         const STATE_TYPE_ID_V2: snapshot_v2::SnapshotStateTypeIdV2 = JacobiState::STATE_TYPE_ID_V2;
@@ -4478,19 +4573,6 @@ mod tests {
     #[derive(Debug, Clone, PartialEq)]
     struct CodecOnlyV2State(JacobiState);
 
-    impl SolverState for CodecOnlyV2State {
-        const TYPE_ID: u64 = 0x434f_4445_4300_0003;
-        const SCHEMA_VERSION: u32 = 1;
-
-        fn encode(&self, encoder: &mut codec::Enc) {
-            self.0.encode(encoder);
-        }
-
-        fn decode(decoder: &mut codec::Dec<'_>) -> Result<Self, codec::CodecError> {
-            JacobiState::decode(decoder).map(Self)
-        }
-    }
-
     impl SolverStateV2 for CodecOnlyV2State {
         const STATE_TYPE_ID_V2: snapshot_v2::SnapshotStateTypeIdV2 = JacobiState::STATE_TYPE_ID_V2;
         const STATE_SCHEMA_ID_V2: snapshot_v2::SnapshotStateSchemaIdV2 =
@@ -4518,17 +4600,6 @@ mod tests {
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct SwallowingCodecV2State;
 
-    impl SolverState for SwallowingCodecV2State {
-        const TYPE_ID: u64 = 0x5357_414c_4c4f_5702;
-        const SCHEMA_VERSION: u32 = 1;
-
-        fn encode(&self, _encoder: &mut codec::Enc) {}
-
-        fn decode(_decoder: &mut codec::Dec<'_>) -> Result<Self, codec::CodecError> {
-            Ok(Self)
-        }
-    }
-
     impl SolverStateV2 for SwallowingCodecV2State {
         const STATE_TYPE_ID_V2: snapshot_v2::SnapshotStateTypeIdV2 =
             snapshot_v2::SnapshotStateTypeIdV2::from_bytes([0x71; 32]);
@@ -4552,6 +4623,56 @@ mod tests {
         ) -> Result<Self, snapshot_v2::SnapshotV2Error> {
             let _ignored = decoder.get_f64_vec();
             Ok(Self)
+        }
+    }
+
+    /// A v2-only compile-pass fixture: there is intentionally no
+    /// `LegacySolverStateV1` implementation for this state.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct StrongOnlyCounterState {
+        step: u64,
+    }
+
+    impl SolverStateV2 for StrongOnlyCounterState {
+        const STATE_TYPE_ID_V2: snapshot_v2::SnapshotStateTypeIdV2 =
+            snapshot_v2::SnapshotStateTypeIdV2::from_bytes([0x81; 32]);
+        const STATE_SCHEMA_ID_V2: snapshot_v2::SnapshotStateSchemaIdV2 =
+            snapshot_v2::SnapshotStateSchemaIdV2::from_bytes([0x82; 32]);
+        const STATE_CODEC_ID_V2: snapshot_v2::SnapshotStateCodecIdV2 =
+            snapshot_v2::SnapshotStateCodecIdV2::from_bytes([0x83; 32]);
+        const STATE_CODEC_VERSION_V2: u32 = 1;
+
+        fn encode_v2(
+            &self,
+            encoder: &mut snapshot_v2::SnapshotEncoderV2<'_>,
+        ) -> Result<(), snapshot_v2::SnapshotV2Error> {
+            encoder.put_u64(self.step)
+        }
+
+        fn decode_v2(
+            decoder: &mut snapshot_v2::SnapshotDecoderV2<'_, '_>,
+        ) -> Result<Self, snapshot_v2::SnapshotV2Error> {
+            Ok(Self {
+                step: decoder.get_u64()?,
+            })
+        }
+    }
+
+    struct StrongOnlyCounter {
+        target: u64,
+    }
+
+    impl ResumableSolverV2 for StrongOnlyCounter {
+        type State = StrongOnlyCounterState;
+        type Out = u64;
+
+        fn step_v2(&self, state: &mut Self::State, _cx: &Cx<'_>) -> StepVerdict<Self::Out> {
+            state.step += 1;
+            if state.step == self.target {
+                StepVerdict::Done(state.step)
+            } else {
+                StepVerdict::Continue
+            }
         }
     }
 
@@ -4778,11 +4899,11 @@ mod tests {
         )
     }
 
-    impl ResumableSolver for Jacobi {
+    impl ResumableSolverV1 for Jacobi {
         type State = JacobiState;
         type Out = (Vec<f64>, u64);
 
-        fn step(&self, state: &mut JacobiState, _cx: &Cx<'_>) -> StepVerdict<(Vec<f64>, u64)> {
+        fn step_v1(&self, state: &mut JacobiState, _cx: &Cx<'_>) -> StepVerdict<(Vec<f64>, u64)> {
             let n = state.x.len();
             let mut next = vec![0.0f64; n];
             let mut residual = 0.0f64;
@@ -4871,22 +4992,23 @@ mod tests {
         );
         // Trailing garbage is rejected by from_bytes.
         let (_, s0) = jacobi();
-        let mut noisy = s0.to_bytes();
+        let mut noisy = LegacySnapshotV1Adapter::<JacobiState>::to_bytes(&s0);
         noisy.push(0xFF);
-        assert!(JacobiState::from_bytes(&noisy).is_err());
+        assert!(LegacySnapshotV1Adapter::<JacobiState>::from_bytes(&noisy).is_err());
 
         let mut encoder = codec::Enc::new();
-        s0.encode(&mut encoder);
+        s0.encode_v1(&mut encoder);
         let mut payload = encoder.into_bytes();
         let decoded_len = payload.len();
         payload.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
         let sealed_with_schema_tail = envelope::seal(
-            JacobiState::TYPE_ID,
-            JacobiState::SCHEMA_VERSION,
+            JacobiState::TYPE_ID_V1,
+            JacobiState::SCHEMA_VERSION_V1,
             0,
             &payload,
         );
-        let Err(SnapshotError::Payload(tail)) = JacobiState::from_bytes(&sealed_with_schema_tail)
+        let Err(SnapshotError::Payload(tail)) =
+            LegacySnapshotV1Adapter::<JacobiState>::from_bytes(&sealed_with_schema_tail)
         else {
             panic!("checksummed trailing schema bytes must reach the payload refusal");
         };
@@ -4897,8 +5019,11 @@ mod tests {
     #[test]
     fn legacy_v1_receipt_quarantines_exact_bytes_without_u64_widening() {
         let (_, state) = jacobi();
-        let bytes = state.seal(0xCAFE);
-        let legacy = inspect_legacy_snapshot_v1(&bytes).expect("valid legacy receipt");
+        let bytes = LegacySnapshotV1Adapter::<JacobiState>::seal(&state, 0xCAFE);
+        let opened =
+            LegacySnapshotV1Adapter::<JacobiState>::open(&bytes).expect("valid legacy adapter");
+        let (decoded, legacy) = opened.into_parts();
+        assert_eq!(decoded, state);
         assert_eq!(legacy.bytes(), bytes);
         assert_eq!(legacy.info().provenance(), 0xCAFE);
         assert_eq!(
@@ -5783,7 +5908,7 @@ mod tests {
             Err(snapshot_v2::SnapshotV2Error::LengthMismatch { .. })
         ));
 
-        let legacy = state.seal(7);
+        let legacy = LegacySnapshotV1Adapter::<JacobiState>::seal(&state, 7);
         assert!(matches!(
             snapshot_v2::inspect(&legacy, limits, || false),
             Err(snapshot_v2::SnapshotV2Error::BadMagic)
@@ -5982,12 +6107,52 @@ mod tests {
     }
 
     #[test]
+    fn v2_only_state_seals_opens_pauses_and_resumes_without_legacy_capability() {
+        let state = StrongOnlyCounterState { step: 2 };
+        let context = base_v2_context::<StrongOnlyCounterState>();
+        let limits = v2_limits(64, 64);
+        let sealed = state
+            .seal_v2(&context, limits, || false)
+            .expect("v2-only state seals");
+        let expectation = sealed.expectation();
+        let opened = StrongOnlyCounterState::unseal_v2_expected(
+            sealed.bytes(),
+            &expectation,
+            limits,
+            || false,
+        )
+        .expect("v2-only state opens with typed evidence");
+        assert_eq!(opened.state(), &state);
+        assert_eq!(opened.content_id(), sealed.content_id());
+        assert_eq!(opened.resume_id(), sealed.resume_id());
+        let (resumed_state, open_evidence) = opened.into_parts();
+        assert_eq!(open_evidence.content_id(), sealed.content_id());
+
+        let solver = StrongOnlyCounter { target: 4 };
+        let cancelled_gate = CancelGate::new();
+        cancelled_gate.request();
+        let paused = with_cx(&cancelled_gate, |cx| drive_v2(&solver, resumed_state, cx));
+        let SolverProgress::Paused(paused_state) = paused else {
+            panic!("pre-requested v2 drive must pause");
+        };
+        assert_eq!(paused_state, state);
+
+        let live_gate = CancelGate::new();
+        let SolverProgress::Done(done) =
+            with_cx(&live_gate, |cx| drive_v2(&solver, paused_state, cx))
+        else {
+            panic!("fresh v2 drive must resume to completion");
+        };
+        assert_eq!(done, 4);
+    }
+
+    #[test]
     fn pause_serialize_resume_is_bit_exact_versus_uninterrupted() {
         let (solver, s0) = jacobi();
         // Uninterrupted reference.
         let gate = CancelGate::new();
         let SolverProgress::Done((x_ref, iters_ref)) =
-            with_cx(&gate, |cx| drive(&solver, s0.clone(), cx))
+            with_cx(&gate, |cx| drive_v1(&solver, s0.clone(), cx))
         else {
             panic!("uninterrupted run must finish");
         };
@@ -5999,14 +6164,15 @@ mod tests {
             let g2 = CancelGate::new();
             let (st, verdict) = with_cx(&g2, |cx| {
                 let mut st = state.clone();
-                let verdict = solver.step(&mut st, cx);
+                let verdict = solver.step_v1(&mut st, cx);
                 (st, verdict)
             });
             match verdict {
                 StepVerdict::Done(out) => break out,
                 StepVerdict::Continue => {
-                    let bytes = st.to_bytes();
-                    state = JacobiState::from_bytes(&bytes).expect("round trip");
+                    let bytes = LegacySnapshotV1Adapter::<JacobiState>::to_bytes(&st);
+                    state = LegacySnapshotV1Adapter::<JacobiState>::from_bytes(&bytes)
+                        .expect("round trip");
                     resumes += 1;
                 }
             }
@@ -6022,7 +6188,8 @@ mod tests {
     fn drive_pauses_on_cancel_and_resumes_to_the_same_answer() {
         let (solver, s0) = jacobi();
         let gate = CancelGate::new();
-        let SolverProgress::Done((x_ref, _)) = with_cx(&gate, |cx| drive(&solver, s0.clone(), cx))
+        let SolverProgress::Done((x_ref, _)) =
+            with_cx(&gate, |cx| drive_v1(&solver, s0.clone(), cx))
         else {
             panic!("reference finishes");
         };
@@ -6030,14 +6197,14 @@ mod tests {
         let paused_state = {
             let gate = CancelGate::new();
             gate.request();
-            match with_cx(&gate, |cx| drive(&solver, s0, cx)) {
+            match with_cx(&gate, |cx| drive_v1(&solver, s0, cx)) {
                 SolverProgress::Paused(s) => s,
                 SolverProgress::Done(_) => panic!("pre-requested gate must pause"),
             }
         };
         let gate = CancelGate::new();
         let SolverProgress::Done((x_resumed, _)) =
-            with_cx(&gate, |cx| drive(&solver, paused_state, cx))
+            with_cx(&gate, |cx| drive_v1(&solver, paused_state, cx))
         else {
             panic!("resume finishes");
         };
@@ -6055,22 +6222,26 @@ mod tests {
         let mut warm = s0;
         with_cx(&gate, |cx| {
             for _ in 0..10 {
-                let _ = solver.step(&mut warm, cx);
+                let _ = solver.step_v1(&mut warm, cx);
             }
         });
-        let fork_a = fork(&warm).expect("fork proves serializability");
-        let fork_b = fork(&warm).expect("second fork");
-        assert_eq!(fork_a.content_hash(), fork_b.content_hash());
+        let fork_a = round_trip_legacy_v1(&warm).expect("v1 round trip proves serializability");
+        let fork_b = round_trip_legacy_v1(&warm).expect("second v1 round trip");
+        assert_eq!(
+            LegacySnapshotV1Adapter::<JacobiState>::historical_content_hash(&fork_a),
+            LegacySnapshotV1Adapter::<JacobiState>::historical_content_hash(&fork_b)
+        );
         // Diverge: different subsequent inputs (different rhs) per fork.
         let solver_b = {
             let mut j = jacobi().0;
             j.rhs.iter_mut().for_each(|r| *r += 0.5);
             j
         };
-        let SolverProgress::Done((xa, _)) = with_cx(&gate, |cx| drive(&solver, fork_a, cx)) else {
+        let SolverProgress::Done((xa, _)) = with_cx(&gate, |cx| drive_v1(&solver, fork_a, cx))
+        else {
             panic!("fork A finishes");
         };
-        let SolverProgress::Done((xb, _)) = with_cx(&gate, |cx| drive(&solver_b, fork_b, cx))
+        let SolverProgress::Done((xb, _)) = with_cx(&gate, |cx| drive_v1(&solver_b, fork_b, cx))
         else {
             panic!("fork B finishes");
         };

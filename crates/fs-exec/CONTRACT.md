@@ -129,12 +129,15 @@ fs-blake3, fs-substrate, fs-obs.
   a parent gate (kill-handle) cancels the whole tree via a bounded-stride
   watcher. Liveness caveat documented: below-leader branches must
   terminate on their own budgets before the decision seals.
-- `solver` module (behavior 2): `SolverState` (in-house little-endian
-  codec, floats as raw bits, self-contained bytes — no pointers, content-
-  hash references — so "migrate" can someday mean another machine),
-  `ResumableSolver::step` (bounded pause granularity), `drive` (pause IS
-  the cancellation path), `fork` (round-trips through bytes, proving
-  serializability at fork time), `StepVerdict`, `SolverProgress`.
+- `solver` module (behavior 2): `LegacySolverStateV1` plus the visibly named
+  `LegacySnapshotV1Adapter` quarantine the historical u64/FNV envelope and
+  retain exact source bytes and metadata; `SolverStateV2` is independent and
+  uses only full-width state/schema/codec identities plus the fallible v2
+  codec. `ResumableSolverV1::step_v1` / `drive_v1` and
+  `ResumableSolverV2::step_v2` / `drive_v2` make the execution era explicit
+  and non-ambiguous. `round_trip_legacy_v1` proves only historical codec
+  self-consistency; there is intentionally no v2 semantic-fork helper in this
+  tranche. `StepVerdict` and `SolverProgress` are era-neutral control values.
 - `Tuner` / `TuneRow` / `TuningDecision` / `TuneSource` / `ScheduleKind` /
   `TuneEvidence` / `TuneObservation` / `WallTimeSummary` / `WorkUnit` /
   `ThroughputUnit` / `TuneError` — the autotuner (plan §5.5).
@@ -296,10 +299,10 @@ fs-blake3, fs-substrate, fs-obs.
 9. Race losers are FULLY drained before `race` returns (scope join), their
    arenas reclaimed (quiescence oracle); the winner (index and bits) is
    identical across timing jitter in Deterministic mode (exec-010).
-10. Pause -> serialize -> deserialize -> resume reproduces the
-   uninterrupted solver trajectory bit-exactly at any pause depth
-   (exec-011, chaotic-map witness); forks are independent and
-   serialization-proven at fork time.
+10. The explicit legacy-v1 pause -> serialize -> deserialize -> resume witness
+   reproduces the uninterrupted solver trajectory bit-exactly at any pause
+   depth (exec-011, chaotic map). The independent v2 driver compiles and runs
+   with a v2-only state, but semantic v2 fork lineage remains unclaimed.
 11. A registry kill drains the candidate's whole tree at its next poll
     points with arenas quiescent (exec-012, latency ledgered).
 12. Tune rows always carry the machine fingerprint; loads drop foreign
@@ -389,8 +392,8 @@ Solver snapshots travel inside a canonical envelope — magic
 `FSEXSNAP`, envelope version, stable state TYPE id, payload SCHEMA
 version, caller-ledgered provenance, payload length, and payload
 checksum — validated in full BEFORE the payload decoder runs. Every
-`SolverState` declares `TYPE_ID` (never reused, never changed) and
-`SCHEMA_VERSION` (bumped on any layout change); cross-type bytes,
+`LegacySolverStateV1` declares `TYPE_ID_V1` (never reused, never changed) and
+`SCHEMA_VERSION_V1` (bumped on any layout change); cross-type bytes,
 unknown envelope versions, stale schemas, bit flips, truncations, and
 appended bytes are each a distinct structured `EnvelopeError`, never a
 plausible-but-wrong decode. Schema incompatibility is an explicit
@@ -400,10 +403,11 @@ reader's `usize` or whose byte extent overflows, before allocation; a 64-bit
 length can never truncate into a plausible 32-bit element count. If a valid
 envelope carries unconsumed schema bytes, the payload refusal reports the
 decoder's exact cursor and remaining-byte count.
-`seal(provenance)`/`unseal` carry the run/ledger identity;
-`to_bytes`/`from_bytes` are the unattributed convenience over the same
-envelope, and `fork` round-trips enveloped bytes. Pause → seal →
-unseal → resume remains bit-exact (conformance-tested).
+`LegacySnapshotV1Adapter::seal`/`open` carry the run/ledger identity while
+keeping the exact checked source attached to the decoded state;
+`to_bytes`/`from_bytes` and `round_trip_legacy_v1` are explicitly named
+historical conveniences over the same envelope. Pause → seal → open → resume
+remains bit-exact in the legacy conformance witness.
 `envelope::inspect` independently validates magic, envelope version, exact
 payload extent, and checksum before exposing private-field type/schema/run
 metadata; ledger consumers use it without interpreting solver-specific bytes.
@@ -486,17 +490,19 @@ post-process-restart authorized resume cannot yet be completed solely from the
 envelope plus authority receipt; that end-to-end path belongs to the ledger,
 PreparedResume, atomic-freeze, and session-activation successors.
 
-`SolverStateV2` is opt-in and requires independent full-width state type, schema,
-and codec identities; the v1 `TYPE_ID` is never promoted. It must implement a
-new fallible v2 codec and may not blanket-delegate to legacy `Enc`/`Dec`. Its
+`SolverStateV2` is independent and requires full-width state type, schema, and
+codec identities; `TYPE_ID_V1` is never promoted. A v2-only state need not
+implement `LegacySolverStateV1`, and the compile-fail contract proves it cannot
+enter `LegacySnapshotV1Adapter` or `round_trip_legacy_v1`. It must implement a
+fallible v2 codec and may not blanket-delegate to legacy `Enc`/`Dec`. Its
 three `[u8; 32]` declarations are nevertheless nominal and caller-authored: this
 tranche cannot prevent two implementations from copying/colliding IDs or prove
 Rust-type ownership. The state-owner/schema/codec charter registry is required
-before those constants become globally authoritative. Moreover,
-`SolverStateV2: SolverState` and legacy generic `ResumableSolver`, `content_hash`,
-and `fork` APIs still permit an explicit or accidental downgrade to v1/FNV
-semantics. The independent strong-state trait/legacy-adapter split is successor
-work; this tranche makes no API-level downgrade-resistance claim.
+before those constants become globally authoritative. `ResumableSolverV2` is
+bounded only by `SolverStateV2`, and its distinct `step_v2`/`drive_v2` names
+cannot select the legacy driver by method ambiguity. A type may deliberately
+implement both era traits, but crossing the boundary then requires the caller
+to name the legacy adapter or v1 driver explicitly.
 
 `SnapshotEncoderV2` caps helper-produced output before fallible reservation,
 polls before and after allocation, and polls at an interval no smaller than its
@@ -573,7 +579,7 @@ have not yet run, so no Gauntlet tier is reported green.
 
 Still open and explicitly unclaimed are identity registry/golden-coupling
 registration, collision-proof state-owner charters, bounded legacy admission
-and migration receipts, the strong-state API split, atomic freeze permits,
+and migration receipts, atomic freeze permits,
 PreparedResume validation against an actual solver configuration, immutable
 ledger schema/GC roots, session prepare-then-activate recovery, semantic fork
 lineage, finalized-solver artifacts, no-mock cancellation/panic/replay storms,
@@ -702,6 +708,15 @@ shrink-armed lengths in `0..=4096`, biased around powers of two, compare the
 complete `pairwise_fold` syntax tree against an independently stated
 `next_power_of_two(n) / 2` recursion (seed `0xE008_0001`). Existing fixed and
 G5 reduction pins remain unchanged.
+The solver in-module suite additionally compiles and executes a v2-only state
+with no legacy codec, carries typed seal/open evidence through exact-root
+admission, pauses and resumes through `drive_v2`, and retains sticky
+codec/cancellation/resource refusals. A `compile_fail` doctest locks the
+negative boundary: that v2-only shape cannot call the legacy adapter. The
+same-layout cross-type v2 fixtures are themselves v2-only. The exec-011
+conformance witness remains deliberately legacy v1 and names its adapter and
+driver explicitly; it is not relabeled as v2 or semantic fork evidence.
+
 The invocation in-module suite covers G0 dimensional conservation and nested
 topology, exact admission and deadline edges, ambient-memory non-reissuance,
 runtime overrun refusal in all six dimensions, RAII release and concurrent
@@ -862,6 +877,11 @@ confidence claim.
   bit-exact state codecs, and proof that all workers registered with one
   `DrainTracker` released their guards. It does not discover unregistered OS
   threads or prove that an orchestrator enrolled every participant in a run.
+- `drive_v2` proves a strong state bound and bounded pause selection, not that a
+  mutated in-memory state still matches previously opened snapshot evidence.
+  PreparedResume activation and semantic v2 fork lineage remain their owning
+  successor tasks. No v2 `fork` convenience is exposed here because a codec
+  round trip alone cannot mint that lineage.
 - NO "calibrated is faster" assertion in CI: debug-profile timing is
   noise; the improvement is DOCUMENTED via the ledgered calibration
   report, and the perf harness owns throughput verdicts (same doctrine as
