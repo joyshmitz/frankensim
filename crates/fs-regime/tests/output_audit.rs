@@ -142,7 +142,7 @@ fn fully_in_domain_output_preserves_color_and_emits_no_no_claim_entry() {
     let audit = audit_product_output(
         &[card("closure", 10.0, 100.0)],
         &[point("inside", &[("Re", 50.0)])],
-        &[original.clone()],
+        std::slice::from_ref(&original),
     )
     .expect("in-domain audit");
     let receipt = &audit.receipts[0];
@@ -278,5 +278,5 @@ fn missing_axis_is_a_named_unit_distance_violation() {
 
     assert_eq!(violation.kind, AxisViolationKind::Missing);
     assert_eq!(violation.observed, None);
-    assert_eq!(violation.distance, 1.0);
+    assert!((violation.distance - 1.0).abs() <= f64::EPSILON);
 }
