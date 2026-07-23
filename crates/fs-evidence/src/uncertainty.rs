@@ -33,6 +33,8 @@ const BLOCK_IDENTITY_DOMAIN: &str =
     "org.frankensim.fs-evidence.engineering-uncertainty.covariance-block.v1";
 const COMPOSITION_DOMAIN: &str =
     "org.frankensim.fs-evidence.engineering-uncertainty.composition.v1";
+const ATTRIBUTION_FREEZE_DOMAIN: &str =
+    "org.frankensim.fs-evidence.engineering-uncertainty.term-freeze.v1";
 const DOMINANCE_ORDER: [EngineeringUncertaintyKind; ENGINEERING_UNCERTAINTY_TERM_COUNT] = [
     EngineeringUncertaintyKind::ModelForm,
     EngineeringUncertaintyKind::Measurement,
@@ -1024,6 +1026,226 @@ impl ComplianceVerdict {
     }
 }
 
+/// One independently attributable source or one explicit covariance block.
+///
+/// Correlated members are deliberately represented as one group so reports
+/// cannot count their joint half-width once per member.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttributionGroup {
+    label: String,
+    members: Vec<EngineeringUncertaintyKind>,
+    covariance_block: Option<ContentHash>,
+}
+
+impl AttributionGroup {
+    /// Stable human-readable group label.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// Canonically ordered engineering sources collapsed together.
+    #[must_use]
+    pub fn members(&self) -> &[EngineeringUncertaintyKind] {
+        &self.members
+    }
+
+    /// Exact covariance-block identity when the members are jointly counted.
+    #[must_use]
+    pub const fn covariance_block(&self) -> Option<ContentHash> {
+        self.covariance_block
+    }
+}
+
+/// Budget-view magnitude for one attribution group.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BudgetContribution {
+    /// A finite conservative group half-width is available.
+    Known {
+        /// Conservative absolute half-width in the budget unit.
+        conservative_half_width: f64,
+        /// Share of the finite known total. `None` means the known total was
+        /// zero or overflowed, so no finite fraction is claimed.
+        share_of_known: Option<f64>,
+    },
+    /// The source has no justified finite budget magnitude.
+    Unknown {
+        /// Original named evidence gap; never converted to a zero share.
+        reason: String,
+    },
+}
+
+/// Budget-magnitude attribution with concrete evidence-action classes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BudgetAttribution {
+    group: AttributionGroup,
+    contribution: BudgetContribution,
+    recommended_actions: Vec<crate::action::ActionKind>,
+}
+
+impl BudgetAttribution {
+    /// Source or jointly counted covariance group.
+    #[must_use]
+    pub const fn group(&self) -> &AttributionGroup {
+        &self.group
+    }
+
+    /// Known magnitude/share or explicit unknown state.
+    #[must_use]
+    pub const fn contribution(&self) -> &BudgetContribution {
+        &self.contribution
+    }
+
+    /// Evidence-action classes implied by the group's members.
+    #[must_use]
+    pub fn recommended_actions(&self) -> &[crate::action::ActionKind] {
+        &self.recommended_actions
+    }
+}
+
+/// Coarse state used by the term-freezing comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttributionVerdictState {
+    /// Complete admitted envelope is inside the requirement.
+    Compliant,
+    /// Complete admitted envelope is outside the requirement.
+    NonCompliant,
+    /// No binary verdict is justified.
+    Indeterminate,
+}
+
+/// Decision-view influence measured by replaying the requirement after one
+/// whole attribution group is collapsed to its nominal value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecisionAttribution {
+    group: AttributionGroup,
+    baseline_state: AttributionVerdictState,
+    frozen_state: AttributionVerdictState,
+    baseline_signed_separation: f64,
+    frozen_signed_separation: f64,
+    influence: f64,
+    frozen_budget: ContentHash,
+    recommended_actions: Vec<crate::action::ActionKind>,
+}
+
+impl DecisionAttribution {
+    /// Source or jointly frozen covariance group.
+    #[must_use]
+    pub const fn group(&self) -> &AttributionGroup {
+        &self.group
+    }
+
+    /// Requirement state before the freeze probe.
+    #[must_use]
+    pub const fn baseline_state(&self) -> AttributionVerdictState {
+        self.baseline_state
+    }
+
+    /// Requirement state after collapsing the group to its nominal value.
+    #[must_use]
+    pub const fn frozen_state(&self) -> AttributionVerdictState {
+        self.frozen_state
+    }
+
+    /// Signed baseline separation: positive compliance margin, negative
+    /// non-compliance shortfall, and zero for an indeterminate result.
+    #[must_use]
+    pub const fn baseline_signed_separation(&self) -> f64 {
+        self.baseline_signed_separation
+    }
+
+    /// Signed separation after the term-freezing replay.
+    #[must_use]
+    pub const fn frozen_signed_separation(&self) -> f64 {
+        self.frozen_signed_separation
+    }
+
+    /// Absolute change in signed separation. This is a conservative decision
+    /// influence score, not a probability or a Sobol index.
+    #[must_use]
+    pub const fn influence(&self) -> f64 {
+        self.influence
+    }
+
+    /// Identity of the exact frozen budget consumed by the replay.
+    #[must_use]
+    pub const fn frozen_budget(&self) -> ContentHash {
+        self.frozen_budget
+    }
+
+    /// Evidence-action classes implied by the group's members.
+    #[must_use]
+    pub fn recommended_actions(&self) -> &[crate::action::ActionKind] {
+        &self.recommended_actions
+    }
+}
+
+/// Paired budget and decision attribution views over one exact requirement
+/// replay.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UncertaintyAttribution {
+    baseline: ComplianceVerdict,
+    known_budget_ranked: Vec<BudgetAttribution>,
+    unknown_budget: Vec<BudgetAttribution>,
+    decision_ranked: Vec<DecisionAttribution>,
+}
+
+impl UncertaintyAttribution {
+    /// Baseline verdict from the exact budget, requirement, and plausibility
+    /// declarations supplied to attribution.
+    #[must_use]
+    pub const fn baseline(&self) -> &ComplianceVerdict {
+        &self.baseline
+    }
+
+    /// Finite budget contributions, largest half-width first with stable
+    /// label tie-breaking.
+    #[must_use]
+    pub fn known_budget_ranked(&self) -> &[BudgetAttribution] {
+        &self.known_budget_ranked
+    }
+
+    /// Sources that cannot honestly receive a finite budget share.
+    #[must_use]
+    pub fn unknown_budget(&self) -> &[BudgetAttribution] {
+        &self.unknown_budget
+    }
+
+    /// Term-freezing decision influences, largest shift first with stable
+    /// label tie-breaking.
+    #[must_use]
+    pub fn decision_ranked(&self) -> &[DecisionAttribution] {
+        &self.decision_ranked
+    }
+
+    /// Whether the strongest nonzero decision influence differs from the
+    /// largest finite known budget contribution.
+    #[must_use]
+    pub fn headline_disagrees(&self) -> bool {
+        self.known_budget_ranked
+            .first()
+            .zip(
+                self.decision_ranked
+                    .first()
+                    .filter(|entry| entry.influence > 0.0),
+            )
+            .is_some_and(|(budget, decision)| budget.group != decision.group)
+    }
+
+    /// Deterministic reviewer-facing paired-view report.
+    #[must_use]
+    pub fn render_report(&self) -> String {
+        let mut output = String::new();
+        render_attribution_header(self, &mut output);
+        render_budget_attribution(self, &mut output);
+        render_decision_attribution(self, &mut output);
+        output.push_str(
+            "method=group-term-freezing signed-separation; probability-claim=false; interactions=one-group-at-a-time\n",
+        );
+        output
+    }
+}
+
 /// Audit-preserving projection into the legacy three-slice API.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LegacyUncertaintyProjection {
@@ -1273,6 +1495,93 @@ impl EngineeringUncertaintyBudget {
             ),
             budget: self.content_id(),
             requirement: requirement.clone(),
+        })
+    }
+
+    /// Attribute uncertainty both by conservative budget magnitude and by
+    /// requirement influence under one-group-at-a-time term freezing.
+    ///
+    /// The decision view reuses [`Self::assess_requirement`] on exact derived
+    /// budgets; it does not run a separate probability model. Every explicit
+    /// covariance block is frozen and counted as one group. Unknown terms stay
+    /// visibly unranked in the finite budget view, while their decision impact
+    /// can still be exposed when freezing one changes the typed verdict.
+    pub fn attribute_requirement(
+        &self,
+        nominal: f64,
+        requirement: &ScalarRequirement,
+        plausibility_bounds: &[UnknownPlausibilityBound],
+    ) -> Result<UncertaintyAttribution, UncertaintyError> {
+        let baseline = self.assess_requirement(nominal, requirement, plausibility_bounds)?;
+        let seeds = attribution_seeds(self);
+        let known_total = seeds
+            .iter()
+            .filter_map(|seed| seed.known_half_width)
+            .fold(0.0, add_up);
+        let mut known_budget_ranked = Vec::new();
+        let mut unknown_budget = Vec::new();
+        let mut decision_ranked = Vec::with_capacity(seeds.len());
+
+        for seed in seeds {
+            let recommended_actions = attribution_actions(&seed.group);
+            let contribution = if let Some(conservative_half_width) = seed.known_half_width {
+                BudgetContribution::Known {
+                    conservative_half_width,
+                    share_of_known: (known_total.is_finite() && known_total > 0.0)
+                        .then_some(conservative_half_width / known_total),
+                }
+            } else if let Some(reason) = seed.unknown_reason.clone() {
+                BudgetContribution::Unknown { reason }
+            } else {
+                return refuse(
+                    UncertaintyRule::RequirementAssessment,
+                    format!(
+                        "attribution group {} has no admitted magnitude state",
+                        seed.group.label
+                    ),
+                );
+            };
+            let budget_entry = BudgetAttribution {
+                group: seed.group.clone(),
+                contribution,
+                recommended_actions: recommended_actions.clone(),
+            };
+            if seed.known_half_width.is_some() {
+                known_budget_ranked.push(budget_entry);
+            } else {
+                unknown_budget.push(budget_entry);
+            }
+
+            let frozen = freeze_attribution_group(self, &seed.group)?;
+            let retained_bounds = plausibility_bounds
+                .iter()
+                .filter(|bound| !seed.group.members.contains(&bound.kind()))
+                .cloned()
+                .collect::<Vec<_>>();
+            let frozen_verdict =
+                frozen.assess_requirement(nominal, requirement, &retained_bounds)?;
+            let (baseline_state, baseline_signed_separation) = verdict_separation(&baseline);
+            let (frozen_state, frozen_signed_separation) = verdict_separation(&frozen_verdict);
+            decision_ranked.push(DecisionAttribution {
+                group: seed.group,
+                baseline_state,
+                frozen_state,
+                baseline_signed_separation,
+                frozen_signed_separation,
+                influence: separation_shift(baseline_signed_separation, frozen_signed_separation),
+                frozen_budget: frozen.content_id(),
+                recommended_actions,
+            });
+        }
+
+        known_budget_ranked.sort_by(compare_budget_attribution);
+        unknown_budget.sort_by(|left, right| left.group.label.cmp(&right.group.label));
+        decision_ranked.sort_by(compare_decision_attribution);
+        Ok(UncertaintyAttribution {
+            baseline,
+            known_budget_ranked,
+            unknown_budget,
+            decision_ranked,
         })
     }
 
@@ -1899,6 +2208,264 @@ fn requirement_flipping_unknowns(
                 })
         })
         .collect()
+}
+
+#[derive(Debug, Clone)]
+struct AttributionSeed {
+    group: AttributionGroup,
+    known_half_width: Option<f64>,
+    unknown_reason: Option<String>,
+}
+
+fn attribution_seeds(budget: &EngineeringUncertaintyBudget) -> Vec<AttributionSeed> {
+    let mut seeds = Vec::new();
+    let mut counted_blocks = BTreeSet::new();
+    for term in budget.terms() {
+        match term.value() {
+            TermValue::CorrelatedBlock(block) => {
+                let identity = block.content_id();
+                if counted_blocks.insert(identity) {
+                    seeds.push(AttributionSeed {
+                        group: AttributionGroup {
+                            label: format!("covariance:{}", block.id()),
+                            members: block.members().to_vec(),
+                            covariance_block: Some(identity),
+                        },
+                        known_half_width: Some(block.combined_half_width()),
+                        unknown_reason: None,
+                    });
+                }
+            }
+            TermValue::Unknown { reason } => seeds.push(AttributionSeed {
+                group: source_attribution_group(term.kind()),
+                known_half_width: None,
+                unknown_reason: Some(reason.clone()),
+            }),
+            value => seeds.push(AttributionSeed {
+                group: source_attribution_group(term.kind()),
+                known_half_width: value.marginal_half_width(term.kind()),
+                unknown_reason: None,
+            }),
+        }
+    }
+    seeds
+}
+
+fn source_attribution_group(kind: EngineeringUncertaintyKind) -> AttributionGroup {
+    AttributionGroup {
+        label: format!("source:{}", kind.name()),
+        members: vec![kind],
+        covariance_block: None,
+    }
+}
+
+fn attribution_actions(group: &AttributionGroup) -> Vec<crate::action::ActionKind> {
+    group
+        .members
+        .iter()
+        .map(|kind| suggested_resolution_action(*kind))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn freeze_attribution_group(
+    budget: &EngineeringUncertaintyBudget,
+    group: &AttributionGroup,
+) -> Result<EngineeringUncertaintyBudget, UncertaintyError> {
+    let budget_identity = budget.content_id();
+    let mut terms = Vec::with_capacity(ENGINEERING_UNCERTAINTY_TERM_COUNT);
+    for term in budget.terms() {
+        if !group.members.contains(&term.kind()) {
+            terms.push(term.clone());
+            continue;
+        }
+        let mut provenance_bytes = Vec::with_capacity(74);
+        provenance_bytes.extend_from_slice(budget_identity.as_bytes());
+        provenance_bytes.push(term.kind().code());
+        if let Some(block) = group.covariance_block {
+            provenance_bytes.push(1);
+            provenance_bytes.extend_from_slice(block.as_bytes());
+        } else {
+            provenance_bytes.push(0);
+        }
+        let provenance = UncertaintyArtifactRef::new(
+            "uncertainty:term-freeze",
+            hash_domain(ATTRIBUTION_FREEZE_DOMAIN, &provenance_bytes),
+        )?;
+        terms.push(EngineeringUncertaintyTerm::try_new(
+            term.kind(),
+            TermValue::negligible(format!(
+                "term-freezing attribution probe for {}",
+                group.label
+            ))?,
+            provenance,
+        )?);
+    }
+    EngineeringUncertaintyBudget::try_new(budget.qoi(), budget.unit(), terms)
+}
+
+fn verdict_separation(verdict: &ComplianceVerdict) -> (AttributionVerdictState, f64) {
+    match verdict {
+        ComplianceVerdict::Compliant { margin, .. } => {
+            (AttributionVerdictState::Compliant, *margin)
+        }
+        ComplianceVerdict::NonCompliant { shortfall, .. } => {
+            (AttributionVerdictState::NonCompliant, -*shortfall)
+        }
+        ComplianceVerdict::Indeterminate { .. } => (AttributionVerdictState::Indeterminate, 0.0),
+    }
+}
+
+fn separation_shift(before: f64, after: f64) -> f64 {
+    if before.total_cmp(&after).is_eq() {
+        0.0
+    } else if before.is_finite() && after.is_finite() {
+        (after - before).abs()
+    } else {
+        f64::INFINITY
+    }
+}
+
+fn compare_budget_attribution(
+    left: &BudgetAttribution,
+    right: &BudgetAttribution,
+) -> std::cmp::Ordering {
+    let width = |entry: &BudgetAttribution| match entry.contribution {
+        BudgetContribution::Known {
+            conservative_half_width,
+            ..
+        } => conservative_half_width,
+        BudgetContribution::Unknown { .. } => f64::NEG_INFINITY,
+    };
+    width(right)
+        .total_cmp(&width(left))
+        .then_with(|| left.group.label.cmp(&right.group.label))
+}
+
+fn compare_decision_attribution(
+    left: &DecisionAttribution,
+    right: &DecisionAttribution,
+) -> std::cmp::Ordering {
+    right
+        .influence
+        .total_cmp(&left.influence)
+        .then_with(|| left.group.label.cmp(&right.group.label))
+}
+
+fn render_attribution_header(attribution: &UncertaintyAttribution, output: &mut String) {
+    let baseline_state = verdict_separation(&attribution.baseline).0;
+    let budget_headline = attribution
+        .known_budget_ranked
+        .first()
+        .map_or("none", |entry| entry.group.label());
+    let decision_headline = attribution
+        .decision_ranked
+        .first()
+        .filter(|entry| entry.influence > 0.0)
+        .map_or("none", |entry| entry.group.label());
+    let _ = writeln!(
+        output,
+        "uncertainty-attribution budget={} requirement={} baseline={} known-budget-headline={} decision-headline={} disagreement={}",
+        attribution.baseline.budget(),
+        attribution.baseline.requirement().id(),
+        attribution_verdict_state_name(baseline_state),
+        budget_headline,
+        decision_headline,
+        attribution.headline_disagrees()
+    );
+}
+
+fn render_budget_attribution(attribution: &UncertaintyAttribution, output: &mut String) {
+    let _ = writeln!(
+        output,
+        "budget-view ranked-known={} unranked-unknown={}",
+        attribution.known_budget_ranked.len(),
+        attribution.unknown_budget.len()
+    );
+    for (index, entry) in attribution.known_budget_ranked.iter().enumerate() {
+        let BudgetContribution::Known {
+            conservative_half_width,
+            share_of_known,
+        } = entry.contribution()
+        else {
+            continue;
+        };
+        let share =
+            share_of_known.map_or_else(|| "unavailable".to_owned(), |value| value.to_string());
+        let _ = writeln!(
+            output,
+            "- rank={} group={} members={} half-width={} share-of-known={} actions={}",
+            index + 1,
+            entry.group.label(),
+            attribution_member_names(entry.group()),
+            conservative_half_width,
+            share,
+            attribution_action_names(entry.recommended_actions())
+        );
+    }
+    for entry in &attribution.unknown_budget {
+        let BudgetContribution::Unknown { reason } = entry.contribution() else {
+            continue;
+        };
+        let _ = writeln!(
+            output,
+            "- unranked group={} members={} magnitude=unknown reason={} actions={}",
+            entry.group.label(),
+            attribution_member_names(entry.group()),
+            reason,
+            attribution_action_names(entry.recommended_actions())
+        );
+    }
+}
+
+fn render_decision_attribution(attribution: &UncertaintyAttribution, output: &mut String) {
+    let _ = writeln!(
+        output,
+        "decision-view ranked={}",
+        attribution.decision_ranked.len()
+    );
+    for (index, entry) in attribution.decision_ranked.iter().enumerate() {
+        let _ = writeln!(
+            output,
+            "- rank={} group={} members={} baseline={}:{} frozen={}:{} influence={} frozen-budget={} actions={}",
+            index + 1,
+            entry.group.label(),
+            attribution_member_names(entry.group()),
+            attribution_verdict_state_name(entry.baseline_state),
+            entry.baseline_signed_separation,
+            attribution_verdict_state_name(entry.frozen_state),
+            entry.frozen_signed_separation,
+            entry.influence,
+            entry.frozen_budget,
+            attribution_action_names(entry.recommended_actions())
+        );
+    }
+}
+
+fn attribution_member_names(group: &AttributionGroup) -> String {
+    group
+        .members
+        .iter()
+        .map(|kind| kind.name())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn attribution_action_names(actions: &[crate::action::ActionKind]) -> String {
+    actions
+        .iter()
+        .map(|action| action_kind_name(*action))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+const fn attribution_verdict_state_name(state: AttributionVerdictState) -> &'static str {
+    match state {
+        AttributionVerdictState::Compliant => "compliant",
+        AttributionVerdictState::NonCompliant => "non-compliant",
+        AttributionVerdictState::Indeterminate => "indeterminate",
+    }
 }
 
 const fn suggested_resolution_action(

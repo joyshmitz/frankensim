@@ -89,6 +89,19 @@ telemetry/legacy correlation.
   effect it must contribute when the other bounded unknowns move
   adversarially, its finite/unbounded state, and an evidence-action class;
   `render_report` emits the complete deterministic reviewer trail.
+- `EngineeringUncertaintyBudget::attribute_requirement` — paired views over
+  that same requirement audit. The budget view ranks finite conservative
+  half-widths and reports each share of the finite known total, while retaining
+  every `Unknown` term in a separate unranked list. An explicit covariance
+  block is one jointly counted and jointly frozen attribution group, never one
+  entry per member. The decision view freezes one whole group to nominal,
+  derives an exact content-addressed budget, and re-enters
+  `assess_requirement`; its influence is the absolute change in signed
+  separation, where positive is compliance margin, negative is non-compliance
+  shortfall, and zero is indeterminate. Both rankings use stable group-label
+  tie-breaking and attach existing `ActionKind` evidence-work classes. The
+  deterministic report places the budget and decision headlines side by side
+  and marks their disagreement explicitly.
 - `ModelCard` (name, version, ambition tag, assumptions, validity, known
   failures, calibration provenance, discrepancy band) and `ModelRegistry`
   — `register_solver` REFUSES without a registered card (the lint).
@@ -698,6 +711,12 @@ orders, overlapping and disjoint validated regimes, and structural validation
 of every input and output. It locks the no-laundering rank law while preserving
 the fixed cases above as regression pins.
 
+`tests/uncertainty.rs` covers the eight-source budget and requirement audit,
+including joint covariance attribution without double counting, an unknown
+tail source that dominates the decision view without receiving a fabricated
+budget share, recovery of the largest synthetic contributor under exact
+replay, and stable group-label ordering for equal attribution scores.
+
 - Falsifier registration is total: malformed, duplicate, and empty declaration
   sets refuse; the catalog lint names each distinct undeclared class once in
   canonical sorted order without making a release claim.
@@ -1052,6 +1071,15 @@ physical validation, process-standard conformance, or decision fitness.
   must preserve an unpriced recommendation when no comparable cost model
   exists. The tri-state result itself remains valid without that optional L4
   ranking.
+- Attribution is a deterministic sensitivity diagnostic, not a probability,
+  variance decomposition, Sobol index, or causal claim. A budget share is only
+  the fraction of the finite known conservative total; it is unavailable when
+  that total is zero or unbounded, and unknown magnitudes remain unranked.
+- Term freezing is a one-group-at-a-time counterfactual probe. It does not
+  allocate interactions, turn a frozen budget into new physical evidence, or
+  prove that the suggested action is feasible, cheapest, sufficient, or worth
+  its cost. `ActionKind` values are evidence-work classes for downstream
+  `fs-voi`/HELM evaluation, not spending authority.
 - Statistical composition is CONSERVATIVE-WEAKEST v1 (half-widths add,
   confidences min, mixed kinds keep the width-bearing certificate);
   proper e-value arithmetic (products under independence, e-BH) is

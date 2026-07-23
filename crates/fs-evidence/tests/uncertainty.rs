@@ -2,10 +2,11 @@
 
 use fs_blake3::{ContentHash, hash_domain};
 use fs_evidence::uncertainty::{
-    BudgetTotal, ComplianceVerdict, CovarianceBlock, DistributionTerm, DominantEngineeringTerm,
-    EngineeringUncertaintyBudget, EngineeringUncertaintyKind, EngineeringUncertaintyTerm,
-    EnsembleTerm, FlipBound, NumericalUncertaintyUpdate, RequirementRelation, ScalarRequirement,
-    TermValue, UncertaintyArtifactRef, UncertaintyRule, UnknownPlausibilityBound,
+    AttributionVerdictState, BudgetContribution, BudgetTotal, ComplianceVerdict, CovarianceBlock,
+    DistributionTerm, DominantEngineeringTerm, EngineeringUncertaintyBudget,
+    EngineeringUncertaintyKind, EngineeringUncertaintyTerm, EnsembleTerm, FlipBound,
+    NumericalUncertaintyUpdate, RequirementRelation, ScalarRequirement, TermValue,
+    UncertaintyArtifactRef, UncertaintyRule, UnknownPlausibilityBound,
 };
 
 fn digest(label: &str) -> ContentHash {
@@ -698,6 +699,232 @@ fn plausibility_authority_cannot_be_attached_to_the_wrong_term() {
         .assess_requirement(90.0, &mismatched, &[])
         .expect_err("qoi and unit mismatches refuse");
     assert_eq!(error.rule(), UncertaintyRule::RequirementAssessment);
+}
+
+#[test]
+fn covariance_attribution_is_joint_and_never_double_counted() {
+    let block = CovarianceBlock::try_new(
+        "solver-mesh-joint-attribution",
+        artifact("covariance:joint-attribution"),
+        vec![
+            EngineeringUncertaintyKind::SolverAlgebraic,
+            EngineeringUncertaintyKind::Discretization,
+        ],
+        vec![4.0, 1.0, 1.0, 9.0],
+    )
+    .expect("positive-definite attribution block");
+    let block_identity = block.content_id();
+    let mut terms = negligible_terms();
+    replace_term(
+        &mut terms,
+        EngineeringUncertaintyKind::Roundoff,
+        TermValue::interval(0.0, 1.0).expect("roundoff interval"),
+    );
+    replace_term(
+        &mut terms,
+        EngineeringUncertaintyKind::SolverAlgebraic,
+        TermValue::CorrelatedBlock(block.clone()),
+    );
+    replace_term(
+        &mut terms,
+        EngineeringUncertaintyKind::Discretization,
+        TermValue::CorrelatedBlock(block),
+    );
+
+    let attribution = budget(terms)
+        .attribute_requirement(80.0, &maximum_temperature_requirement(), &[])
+        .expect("joint attribution replays");
+    assert_eq!(attribution.known_budget_ranked().len(), 7);
+    let joint = attribution
+        .known_budget_ranked()
+        .iter()
+        .find(|entry| entry.group().covariance_block() == Some(block_identity))
+        .expect("one joint covariance group");
+    assert_eq!(
+        joint.group().members(),
+        &[
+            EngineeringUncertaintyKind::SolverAlgebraic,
+            EngineeringUncertaintyKind::Discretization,
+        ]
+    );
+    let (conservative_half_width, share_of_known) = match joint.contribution() {
+        BudgetContribution::Known {
+            conservative_half_width,
+            share_of_known,
+        } => (*conservative_half_width, *share_of_known),
+        BudgetContribution::Unknown { .. } => (f64::NAN, None),
+    };
+    assert!(conservative_half_width >= 15.0_f64.sqrt());
+    assert!(share_of_known.is_some_and(|share| share > 0.79 && share < 0.80));
+    let known_share_sum = attribution
+        .known_budget_ranked()
+        .iter()
+        .filter_map(|entry| match entry.contribution() {
+            BudgetContribution::Known { share_of_known, .. } => *share_of_known,
+            BudgetContribution::Unknown { .. } => None,
+        })
+        .sum::<f64>();
+    assert!((known_share_sum - 1.0).abs() < 1.0e-12);
+    assert_eq!(
+        joint.recommended_actions(),
+        &[
+            fs_evidence::action::ActionKind::SolverTolerance,
+            fs_evidence::action::ActionKind::MeshRefinement,
+        ]
+    );
+    assert_eq!(
+        attribution
+            .decision_ranked()
+            .iter()
+            .filter(|entry| entry.group().covariance_block() == Some(block_identity))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn tail_unknown_wins_the_decision_headline_without_receiving_a_fake_budget_share() {
+    let mut terms = negligible_terms();
+    replace_term(
+        &mut terms,
+        EngineeringUncertaintyKind::Discretization,
+        TermValue::interval(0.0, 8.0).expect("large mesh band"),
+    );
+    replace_term(
+        &mut terms,
+        EngineeringUncertaintyKind::BoundaryConditions,
+        TermValue::unknown("interface=tim-tail contact resistance is unmeasured")
+            .expect("named contact gap"),
+    );
+    let attribution = budget(terms)
+        .attribute_requirement(90.0, &maximum_temperature_requirement(), &[])
+        .expect("term-freezing uses the requirement evaluator");
+
+    assert_eq!(
+        attribution.known_budget_ranked()[0].group().members(),
+        &[EngineeringUncertaintyKind::Discretization]
+    );
+    assert!(matches!(
+        attribution.unknown_budget(),
+        [entry]
+            if entry.group().members()
+                == [EngineeringUncertaintyKind::BoundaryConditions]
+                && matches!(entry.contribution(), BudgetContribution::Unknown { reason }
+                    if reason.contains("interface=tim-tail"))
+    ));
+    let decision = &attribution.decision_ranked()[0];
+    assert_eq!(
+        decision.group().members(),
+        &[EngineeringUncertaintyKind::BoundaryConditions]
+    );
+    assert_eq!(
+        decision.baseline_state(),
+        AttributionVerdictState::Indeterminate
+    );
+    assert_eq!(decision.frozen_state(), AttributionVerdictState::Compliant);
+    assert!(decision.influence() > 1.0);
+    assert_eq!(
+        decision.recommended_actions(),
+        &[fs_evidence::action::ActionKind::SensorCampaign]
+    );
+    assert!(attribution.headline_disagrees());
+
+    let report = attribution.render_report();
+    assert!(report.contains("known-budget-headline=source:discretization"));
+    assert!(report.contains("decision-headline=source:boundary-conditions"));
+    assert!(report.contains("disagreement=true"));
+    assert!(report.contains("magnitude=unknown"));
+    assert!(report.contains("probability-claim=false"));
+    assert_eq!(report, attribution.render_report());
+}
+
+#[test]
+fn replayed_decision_ranking_recovers_the_largest_synthetic_contributor() {
+    let mut terms = negligible_terms();
+    replace_term(
+        &mut terms,
+        EngineeringUncertaintyKind::Geometry,
+        TermValue::Distribution(DistributionTerm {
+            mean: 0.0,
+            standard_deviation: 1.0,
+            conservative_half_width: 4.0,
+            level: 0.99,
+            replay: artifact("distribution:attribution-geometry"),
+        }),
+    );
+    replace_term(
+        &mut terms,
+        EngineeringUncertaintyKind::Parameters,
+        TermValue::Ensemble(EnsembleTerm {
+            member_count: 16,
+            conservative_half_width: 2.0,
+            replay: artifact("ensemble:attribution-parameters"),
+        }),
+    );
+    replace_term(
+        &mut terms,
+        EngineeringUncertaintyKind::Measurement,
+        TermValue::interval(0.0, 1.0).expect("measurement interval"),
+    );
+    let budget = budget(terms);
+    let requirement = maximum_temperature_requirement();
+    let first = budget
+        .attribute_requirement(80.0, &requirement, &[])
+        .expect("synthetic contributor attribution");
+    let second = budget
+        .attribute_requirement(80.0, &requirement, &[])
+        .expect("deterministic replay");
+
+    assert_eq!(first, second);
+    assert_eq!(
+        first.known_budget_ranked()[0].group().members(),
+        &[EngineeringUncertaintyKind::Geometry]
+    );
+    assert_eq!(
+        first.decision_ranked()[0].group().members(),
+        &[EngineeringUncertaintyKind::Geometry]
+    );
+    assert!(first.decision_ranked()[0].influence() > first.decision_ranked()[1].influence());
+    assert!(!first.headline_disagrees());
+    assert_ne!(
+        first.decision_ranked()[0].frozen_budget(),
+        first.baseline().budget()
+    );
+}
+
+#[test]
+fn equal_attribution_scores_use_stable_group_labels() {
+    let mut terms = negligible_terms();
+    replace_term(
+        &mut terms,
+        EngineeringUncertaintyKind::Geometry,
+        TermValue::interval(0.0, 2.0).expect("geometry interval"),
+    );
+    replace_term(
+        &mut terms,
+        EngineeringUncertaintyKind::Parameters,
+        TermValue::interval(0.0, 2.0).expect("parameter interval"),
+    );
+    let attribution = budget(terms)
+        .attribute_requirement(80.0, &maximum_temperature_requirement(), &[])
+        .expect("equal-score attribution");
+
+    assert_eq!(
+        attribution.known_budget_ranked()[0].group().label(),
+        "source:geometry"
+    );
+    assert_eq!(
+        attribution.known_budget_ranked()[1].group().label(),
+        "source:parameters"
+    );
+    assert_eq!(
+        attribution.decision_ranked()[0].group().label(),
+        "source:geometry"
+    );
+    assert_eq!(
+        attribution.decision_ranked()[1].group().label(),
+        "source:parameters"
+    );
 }
 
 #[test]
