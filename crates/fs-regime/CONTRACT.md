@@ -50,8 +50,16 @@ lattice-scaling assistant, FLUX conformance, conformal hardening buckets.
   One or more violations force the effective color to
   `Estimated { dispersion: infinity }`; an acknowledgement permits downstream
   policy to proceed but never restores color. Canonical JSON and deterministic
-  no-claim Markdown are report/ledger handoff projections, not authority by
-  themselves.
+  no-claim Markdown are report/ledger handoff projections. Each exact canonical
+  receipt also has a domain-separated content identity.
+  `apply_output_audit_to_budget` leaves a matching fully in-domain eight-term
+  budget byte-for-byte unchanged. A demoted receipt replaces its `ModelForm`
+  term with explicit `Unknown` evidence naming every point/card/axis violation
+  and its `fs-regime` distance, while retaining the prior model-form state and
+  authority in the diagnosis. The replacement provenance is the exact receipt
+  identity. If model form belonged to a covariance block, every member is made
+  unknown because the finite joint representation cannot survive removal of
+  one member.
 - `report`: `assess(&[RoleInput]) -> Evidence<RegimeReport>` — groups,
   Pi rank/count, dominant balance, valid/invalid models, recommended
   scaling, conditioning risk (decade spread of input scale factors), and
@@ -83,6 +91,9 @@ lattice-scaling assistant, FLUX conformance, conformal hardening buckets.
    never averaged into a single coverage fraction.
 8. **Overrides cannot launder color**: override acknowledgements are retained
    in the receipt but do not participate in effective-color computation.
+9. **Out-of-domain model uncertainty is absorbing**: applying a demoted receipt
+   cannot produce a finite `ModelForm` term. A QoI mismatch refuses, and prior
+   model-form evidence is named rather than silently discarded.
 
 ## Error model
 
@@ -142,7 +153,8 @@ condition probe against known diagonals.
 
 `tests/output_audit.rs` covers per-card checking, named distance-scored
 violations, partial sweep partitioning, monotone domain shrinkage,
-deterministic receipts, and the non-restoring override law.
+deterministic receipts, the non-restoring override law, and conservative
+eight-term `ModelForm` propagation.
 
 ## No-claim boundaries
 

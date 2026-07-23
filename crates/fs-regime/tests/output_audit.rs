@@ -1,9 +1,14 @@
 //! Product-boundary regime-demotion conformance for `f85xj.8.3`.
 
+use fs_blake3::hash_domain;
+use fs_evidence::uncertainty::{
+    BudgetTotal, CovarianceBlock, EngineeringUncertaintyBudget, EngineeringUncertaintyKind,
+    EngineeringUncertaintyTerm, TermValue, UncertaintyArtifactRef,
+};
 use fs_evidence::{Ambition, Color, ModelCard, ValidityDomain};
 use fs_regime::{
-    AxisViolationKind, EnvelopeCoverage, OperatingPoint, OverrideAcknowledgement, QoiClaim,
-    audit_product_output,
+    AxisViolationKind, EnvelopeCoverage, OperatingPoint, OutputAuditBudgetError,
+    OverrideAcknowledgement, QoiClaim, apply_output_audit_to_budget, audit_product_output,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -39,6 +44,75 @@ fn claim(cards: &[&str], acknowledgement: Option<OverrideAcknowledgement>) -> Qo
         model_cards: cards.iter().map(|name| (*name).to_string()).collect(),
         override_acknowledgement: acknowledgement,
     }
+}
+
+fn budget(qoi: &str, model_form: TermValue) -> EngineeringUncertaintyBudget {
+    let terms = EngineeringUncertaintyKind::ALL
+        .into_iter()
+        .map(|kind| {
+            let value = if kind == EngineeringUncertaintyKind::ModelForm {
+                model_form.clone()
+            } else {
+                TermValue::interval(0.0, 0.01).expect("valid fixture interval")
+            };
+            let provenance = UncertaintyArtifactRef::new(
+                "output-audit-fixture",
+                hash_domain(
+                    "org.frankensim.test.output-audit-budget.v1",
+                    kind.name().as_bytes(),
+                ),
+            )
+            .expect("valid fixture provenance");
+            EngineeringUncertaintyTerm::try_new(kind, value, provenance)
+                .expect("valid fixture term")
+        })
+        .collect();
+    EngineeringUncertaintyBudget::try_new(qoi, "dimensionless", terms)
+        .expect("complete fixture budget")
+}
+
+fn budget_with_model_measurement_covariance() -> EngineeringUncertaintyBudget {
+    let covariance_artifact = UncertaintyArtifactRef::new(
+        "output-audit-covariance-fixture",
+        hash_domain(
+            "org.frankensim.test.output-audit-covariance.v1",
+            b"model-measurement",
+        ),
+    )
+    .expect("valid covariance provenance");
+    let members = vec![
+        EngineeringUncertaintyKind::ModelForm,
+        EngineeringUncertaintyKind::Measurement,
+    ];
+    let block = CovarianceBlock::try_new(
+        "model-measurement",
+        covariance_artifact,
+        members.clone(),
+        vec![0.04, 0.0, 0.0, 0.09],
+    )
+    .expect("valid covariance block");
+    let terms = EngineeringUncertaintyKind::ALL
+        .into_iter()
+        .map(|kind| {
+            let value = if members.contains(&kind) {
+                TermValue::CorrelatedBlock(block.clone())
+            } else {
+                TermValue::interval(0.0, 0.01).expect("valid fixture interval")
+            };
+            let provenance = UncertaintyArtifactRef::new(
+                "output-audit-fixture",
+                hash_domain(
+                    "org.frankensim.test.output-audit-budget.v1",
+                    kind.name().as_bytes(),
+                ),
+            )
+            .expect("valid fixture provenance");
+            EngineeringUncertaintyTerm::try_new(kind, value, provenance)
+                .expect("valid fixture term")
+        })
+        .collect();
+    EngineeringUncertaintyBudget::try_new("drag-coefficient", "dimensionless", terms)
+        .expect("complete covariance fixture budget")
 }
 
 #[test]
@@ -279,4 +353,175 @@ fn missing_axis_is_a_named_unit_distance_violation() {
     assert_eq!(violation.kind, AxisViolationKind::Missing);
     assert_eq!(violation.observed, None);
     assert!((violation.distance - 1.0).abs() <= f64::EPSILON);
+}
+
+#[test]
+fn fully_in_domain_receipt_leaves_the_budget_bit_identical() {
+    let original = budget(
+        "drag-coefficient",
+        TermValue::interval(0.0, 0.05).expect("valid model interval"),
+    );
+    let audit = audit_product_output(
+        &[card("closure", 10.0, 100.0)],
+        &[point("inside", &[("Re", 50.0)])],
+        &[claim(&["closure"], None)],
+    )
+    .expect("in-domain audit");
+    let updated = apply_output_audit_to_budget(&audit.receipts[0], &original)
+        .expect("matching budget accepts receipt");
+
+    assert_eq!(updated, original);
+    assert_eq!(updated.canonical_bytes(), original.canonical_bytes());
+    assert_eq!(updated.content_id(), original.content_id());
+}
+
+#[test]
+fn demotion_enters_every_named_violation_and_distance_in_model_form() {
+    let original = budget(
+        "drag-coefficient",
+        TermValue::interval(0.01, 0.05).expect("valid model interval"),
+    );
+    let audit = audit_product_output(
+        &[card("closure", 10.0, 100.0)],
+        &[point("outside", &[("Re", 1_000.0)])],
+        &[claim(&["closure"], None)],
+    )
+    .expect("out-of-domain audit");
+    let receipt = &audit.receipts[0];
+    let updated = apply_output_audit_to_budget(receipt, &original).expect("demotion is admissible");
+    let model_form = updated.term(EngineeringUncertaintyKind::ModelForm);
+
+    let reason = if let TermValue::Unknown { reason } = model_form.value() {
+        reason
+    } else {
+        assert!(
+            matches!(model_form.value(), TermValue::Unknown { .. }),
+            "out-of-domain model form must be unknown"
+        );
+        return;
+    };
+    assert!(reason.contains("point=\"outside\""));
+    assert!(reason.contains("card=\"closure\"@\"1.2.3\""));
+    assert!(reason.contains("axis=\"Re\""));
+    assert!(reason.contains("kind=above"));
+    assert!(reason.contains("distance=1.00000000000000000e0"));
+    assert!(reason.contains("prior-model-form=interval"));
+    assert_eq!(model_form.provenance().role(), "regime-output-audit");
+    assert_eq!(model_form.provenance().digest(), receipt.content_id());
+    assert!(matches!(
+        updated.total(),
+        BudgetTotal::Unknown { unknown_terms, .. }
+            if unknown_terms == vec![EngineeringUncertaintyKind::ModelForm]
+    ));
+}
+
+#[test]
+fn prior_unknown_model_reason_is_retained_through_regime_demotion() {
+    let original = budget(
+        "drag-coefficient",
+        TermValue::unknown("reference discrepancy campaign remains pending")
+            .expect("valid prior unknown"),
+    );
+    let audit = audit_product_output(
+        &[card("closure", 10.0, 100.0)],
+        &[point("outside", &[("Re", 1_000.0)])],
+        &[claim(&["closure"], None)],
+    )
+    .expect("out-of-domain audit");
+    let updated = apply_output_audit_to_budget(&audit.receipts[0], &original)
+        .expect("demotion is admissible");
+
+    assert!(matches!(
+        updated
+            .term(EngineeringUncertaintyKind::ModelForm)
+            .value(),
+        TermValue::Unknown { reason }
+            if reason.contains("reference discrepancy campaign remains pending")
+    ));
+}
+
+#[test]
+fn receipt_refuses_a_budget_for_a_different_qoi() {
+    let mismatched = budget(
+        "lift-coefficient",
+        TermValue::negligible("fixture model-form evidence").expect("valid negligible model form"),
+    );
+    let audit = audit_product_output(
+        &[card("closure", 10.0, 100.0)],
+        &[point("outside", &[("Re", 1_000.0)])],
+        &[claim(&["closure"], None)],
+    )
+    .expect("out-of-domain audit");
+
+    assert!(matches!(
+        apply_output_audit_to_budget(&audit.receipts[0], &mismatched),
+        Err(OutputAuditBudgetError::QoiMismatch {
+            receipt_qoi,
+            budget_qoi,
+        }) if receipt_qoi == "drag-coefficient" && budget_qoi == "lift-coefficient"
+    ));
+}
+
+#[test]
+fn override_acknowledgement_cannot_make_model_form_finite() {
+    let original = budget(
+        "drag-coefficient",
+        TermValue::negligible("reference envelope was previously accepted")
+            .expect("valid negligible model form"),
+    );
+    let acknowledgement = OverrideAcknowledgement {
+        actor: "reviewer-7".to_string(),
+        reason: "exploratory-only".to_string(),
+    };
+    let audit = audit_product_output(
+        &[card("closure", 10.0, 100.0)],
+        &[point("outside", &[("Re", 1_000.0)])],
+        &[claim(&["closure"], Some(acknowledgement))],
+    )
+    .expect("out-of-domain audit");
+    let updated = apply_output_audit_to_budget(&audit.receipts[0], &original)
+        .expect("acknowledged demotion remains admissible");
+
+    assert!(matches!(
+        updated
+            .term(EngineeringUncertaintyKind::ModelForm)
+            .value(),
+        TermValue::Unknown { reason }
+            if reason.contains("override-acknowledged-without-color-restoration")
+    ));
+}
+
+#[test]
+fn model_form_covariance_members_are_conservatively_invalidated_together() {
+    let original = budget_with_model_measurement_covariance();
+    let audit = audit_product_output(
+        &[card("closure", 10.0, 100.0)],
+        &[point("outside", &[("Re", 1_000.0)])],
+        &[claim(&["closure"], None)],
+    )
+    .expect("out-of-domain audit");
+    let updated = apply_output_audit_to_budget(&audit.receipts[0], &original)
+        .expect("covariance demotion remains structurally valid");
+
+    assert!(matches!(
+        updated
+            .term(EngineeringUncertaintyKind::ModelForm)
+            .value(),
+        TermValue::Unknown { reason } if reason.contains("covariance-block")
+    ));
+    assert!(matches!(
+        updated
+            .term(EngineeringUncertaintyKind::Measurement)
+            .value(),
+        TermValue::Unknown { reason }
+            if reason.contains("invalidated covariance block \"model-measurement\"")
+    ));
+    assert!(matches!(
+        updated.total(),
+        BudgetTotal::Unknown { unknown_terms, .. }
+            if unknown_terms == vec![
+                EngineeringUncertaintyKind::ModelForm,
+                EngineeringUncertaintyKind::Measurement,
+            ]
+    ));
 }

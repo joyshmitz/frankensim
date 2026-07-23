@@ -7,9 +7,17 @@
 //! an acknowledgement and can never restore claim strength.
 
 use crate::cards::axis_distance_to_validity;
+use fs_blake3::{ContentHash, hash_domain};
+use fs_evidence::uncertainty::{
+    EngineeringUncertaintyBudget, EngineeringUncertaintyKind, EngineeringUncertaintyTerm,
+    TermValue, UncertaintyArtifactRef, UncertaintyError,
+};
 use fs_evidence::{Color, ModelCard, ProvenanceHash, validate_color_payload};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
+
+const OUTPUT_CLAIM_RECEIPT_IDENTITY_DOMAIN: &str =
+    "org.frankensim.fs-regime.output-claim-receipt.v1";
 
 /// One named operating point in dimensionless-group space.
 #[derive(Debug, Clone, PartialEq)]
@@ -154,6 +162,15 @@ impl OutputClaimReceipt {
     #[must_use]
     pub fn demoted(&self) -> bool {
         !self.out_of_domain_points.is_empty()
+    }
+
+    /// Domain-separated identity of the exact canonical receipt.
+    #[must_use]
+    pub fn content_id(&self) -> ContentHash {
+        hash_domain(
+            OUTPUT_CLAIM_RECEIPT_IDENTITY_DOMAIN,
+            self.to_canonical_json().as_bytes(),
+        )
     }
 
     /// Canonical JSON projection for ledger/report handoff.
@@ -336,6 +353,166 @@ impl core::fmt::Display for OutputAuditError {
 }
 
 impl std::error::Error for OutputAuditError {}
+
+/// Refusal to apply a final-envelope receipt to an engineering budget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputAuditBudgetError {
+    /// The receipt and budget describe different quantities.
+    QoiMismatch {
+        /// Quantity named by the receipt.
+        receipt_qoi: String,
+        /// Quantity named by the budget.
+        budget_qoi: String,
+    },
+    /// The derived eight-term budget failed its normal admission rules.
+    Uncertainty(UncertaintyError),
+}
+
+impl core::fmt::Display for OutputAuditBudgetError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::QoiMismatch {
+                receipt_qoi,
+                budget_qoi,
+            } => write!(
+                f,
+                "cannot apply regime receipt for {receipt_qoi:?} to budget for {budget_qoi:?}"
+            ),
+            Self::Uncertainty(error) => write!(f, "regime-derived budget refused: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for OutputAuditBudgetError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::QoiMismatch { .. } => None,
+            Self::Uncertainty(error) => Some(error),
+        }
+    }
+}
+
+impl From<UncertaintyError> for OutputAuditBudgetError {
+    fn from(error: UncertaintyError) -> Self {
+        Self::Uncertainty(error)
+    }
+}
+
+/// Apply one final-envelope receipt to the matching eight-term budget.
+///
+/// A fully in-domain receipt returns an exact clone. A demoted receipt makes
+/// the model-form term explicitly unknown and provenance-links that declaration
+/// to the exact receipt. If model form participated in a covariance block, all
+/// members of that block become unknown because retaining their joint finite
+/// representation after removing one member would be unsound.
+///
+/// # Errors
+/// Refuses a receipt/budget QoI mismatch or a derived term that exceeds the
+/// engineering-budget admission bounds.
+pub fn apply_output_audit_to_budget(
+    receipt: &OutputClaimReceipt,
+    budget: &EngineeringUncertaintyBudget,
+) -> Result<EngineeringUncertaintyBudget, OutputAuditBudgetError> {
+    if receipt.qoi != budget.qoi() {
+        return Err(OutputAuditBudgetError::QoiMismatch {
+            receipt_qoi: receipt.qoi.clone(),
+            budget_qoi: budget.qoi().to_string(),
+        });
+    }
+    if !receipt.demoted() {
+        return Ok(budget.clone());
+    }
+
+    let audit_id = receipt.content_id();
+    let audit_provenance = UncertaintyArtifactRef::new("regime-output-audit", audit_id)?;
+    let model_term = budget.term(EngineeringUncertaintyKind::ModelForm);
+    let coupled_kinds = match model_term.value() {
+        TermValue::CorrelatedBlock(block) => Some((block.id(), block.members())),
+        _ => None,
+    };
+    let model_reason = model_form_reason(receipt, model_term);
+    let mut terms = Vec::with_capacity(EngineeringUncertaintyKind::ALL.len());
+    for term in budget.terms() {
+        let value = if term.kind() == EngineeringUncertaintyKind::ModelForm {
+            TermValue::unknown(&model_reason)?
+        } else if let Some((block_id, members)) = coupled_kinds
+            && members.contains(&term.kind())
+        {
+            TermValue::unknown(format!(
+                "fs-regime audit {audit_id} invalidated covariance block {block_id:?}: its model-form member exited the validated domain"
+            ))?
+        } else {
+            terms.push(term.clone());
+            continue;
+        };
+        terms.push(EngineeringUncertaintyTerm::try_new(
+            term.kind(),
+            value,
+            audit_provenance.clone(),
+        )?);
+    }
+    EngineeringUncertaintyBudget::try_new(budget.qoi(), budget.unit(), terms).map_err(Into::into)
+}
+
+fn model_form_reason(receipt: &OutputClaimReceipt, prior: &EngineeringUncertaintyTerm) -> String {
+    let audit_id = receipt.content_id();
+    let mut reason = format!(
+        "fs-regime audit {audit_id}: qoi={:?}, coverage={}, violations=[",
+        receipt.qoi,
+        receipt.coverage.name(),
+    );
+    for (index, violation) in receipt.violations.iter().enumerate() {
+        if index > 0 {
+            reason.push_str(", ");
+        }
+        let observed = violation
+            .observed
+            .map_or_else(|| "missing".to_string(), |value| format!("{value:.17e}"));
+        let _ = write!(
+            reason,
+            "point={:?}/card={:?}@{:?}/axis={:?}/kind={}/observed={}/bounds=[{:.17e},{:.17e}]/distance={:.17e}",
+            violation.point,
+            violation.card,
+            violation.card_version,
+            violation.axis,
+            violation.kind.name(),
+            observed,
+            violation.lo,
+            violation.hi,
+            violation.distance,
+        );
+    }
+    reason.push_str("]; prior-model-form=");
+    match prior.value() {
+        TermValue::IntervalBound { lower, upper } => {
+            let _ = write!(reason, "interval[{lower:.17e},{upper:.17e}]");
+        }
+        TermValue::Distribution(_) => reason.push_str("distribution"),
+        TermValue::Ensemble(_) => reason.push_str("ensemble"),
+        TermValue::CorrelatedBlock(block) => {
+            let _ = write!(reason, "covariance-block({:?})", block.id());
+        }
+        TermValue::Unknown {
+            reason: prior_reason,
+        } => {
+            let _ = write!(reason, "unknown({prior_reason:?})");
+        }
+        TermValue::Negligible { justification } => {
+            let _ = write!(reason, "negligible({justification:?})");
+        }
+        _ => reason.push_str("future-representation"),
+    }
+    let _ = write!(
+        reason,
+        "; prior-authority={:?}@{}",
+        prior.provenance().role(),
+        prior.provenance().digest(),
+    );
+    if receipt.override_acknowledgement.is_some() {
+        reason.push_str("; override-acknowledged-without-color-restoration");
+    }
+    reason
+}
 
 /// Audit every QoI/card/operating-point combination at the product boundary.
 ///
