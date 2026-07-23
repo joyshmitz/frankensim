@@ -1,3 +1,5 @@
+//! Product-boundary regime-demotion conformance for `f85xj.8.3`.
+
 use fs_evidence::{Ambition, Color, ModelCard, ValidityDomain};
 use fs_regime::{
     AxisViolationKind, EnvelopeCoverage, OperatingPoint, OverrideAcknowledgement, QoiClaim,
