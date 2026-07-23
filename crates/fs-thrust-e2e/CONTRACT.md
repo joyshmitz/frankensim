@@ -13,8 +13,9 @@ not a certificate (bead `frankensim-extreal-program-f85xj.2.30`).
 
 Layer L6 (HELM orchestration). Depends downward only: `fs-vpm` (L3 physics),
 `fs-archive` (L4 QD), `fs-surrogate` (L4 certify-or-escalate), `fs-evidence`
-(L1 colors), `fs-report` (L6 notebook). Ambition tag `[F]` (frontier synthesis;
-the physics is a 2-D inviscid smoke tier).
+(L1 colors), plus same-layer `fs-govern` (E09 claim routing) and `fs-report`
+(notebook). Ambition tag `[F]` (frontier synthesis; the physics is a 2-D
+inviscid smoke tier).
 
 ## Public types and semantics
 
@@ -26,6 +27,10 @@ the physics is a 2-D inviscid smoke tier).
   linear-impulse-conservation error.
 - `CampaignBudget` — full/short horizons, `dt`, core, bins, conformal `alpha`,
   `decision_tol`, `conserve_tol`, seed (the Five Explicits).
+- `route_campaign_drift_claim(&CampaignBudget) -> Result<ClaimRouteDecision,
+  ClaimRouterError>` — constructs and routes the named long-horizon mean-drift
+  claim through E09. The route is provenance and a required-machinery plan, not
+  evidence that the campaign ran that machinery.
 - `design_grid()` — the deterministic design sweep.
 - `calibration_designs()` — the 8 designs whose short-vs-full residuals fit the
   conformal band; `calibration_support() -> CalibrationSupport` — their PER-AXIS
@@ -39,8 +44,9 @@ the physics is a 2-D inviscid smoke tier).
   `CampaignReport` carries coverage, QD-score, best design + drift, screened vs
   unscreened elite tallies, full/short sim counts, steps spent vs all-full, the
   conformal band, the conservation-screened drift hull, the campaign color rank,
-  and the content-addressed lab-notebook Markdown. `AtlasEntry` carries the
-  elite's `conservation_screened` flag and its `rank` (always `Estimated`).
+  typed claim route (or malformed-request error), and the content-addressed
+  lab-notebook Markdown. `AtlasEntry` carries the elite's
+  `conservation_screened` flag and its `rank` (always `Estimated`).
 
 ## Invariants
 
@@ -92,6 +98,14 @@ the physics is a 2-D inviscid smoke tier).
   elites' `drift ± impulse_error` bands — it is NOT an `IntervalOp::Hull`
   `compose` of certified intervals, because there are no certified intervals
   here, and it is not an error bound on any drift.
+- CLAIM ROUTING: the public long-horizon mean-drift claim routes
+  deterministically to E09 row `CR-05`,
+  `StatisticalObservableWithModelEvidence`. The request retains its full
+  horizon, decision tolerance, conservative-system declaration, and three
+  explicit no-overclaim assumptions. This names evidence the claim would need;
+  it does not upgrade the campaign's unchecked-RK4 `Estimated` values. A
+  malformed duration or decision tolerance is retained as a typed
+  `ClaimRouterError` in `CampaignReport` rather than silently skipped.
 - DETERMINISM: no RNG; a fixed design grid + fixed physics ⇒ the notebook content
   hash and all metrics are bit-stable across runs.
 
@@ -99,6 +113,8 @@ the physics is a 2-D inviscid smoke tier).
 
 Total functions; `run_campaign` never panics on the default/grid inputs
 (`conformal_band` is fed a non-empty calibration residual set by construction).
+Malformed public claim-routing inputs are reported in `claim_route` and do not
+abort the numerical campaign.
 
 ## Determinism class
 
@@ -124,7 +140,8 @@ None.
 impulse; the campaign illuminates a screened diverse family (coverage/QD-score,
 best drift > 0, both fidelities used, the calibration-repayment identity behind
 the step saving, screened+unscreened tally, screened drift hull, no-laundering
-rank, content-addressed notebook); no elite claims an interval certificate from
+rank, exact E09 `CR-05` route with retained assumptions, content-addressed
+notebook); no elite claims an interval certificate from
 the impulse screen (regression, bead `.2.30`); every surrogate-served design is
 inside the calibration support (regression, bead `.2.29`); the campaign is
 deterministic (identical content hash + metrics across runs); and a public `+∞`
@@ -171,3 +188,7 @@ ones, so the surrogate's honest domain contains no niche winner.
   the archive is the fuller illumination.
 - The lab notebook is `fs-report`'s v0 (deterministic Markdown + reproducing IR);
   ledger persistence and semantic design diffs are downstream integrations.
+- E09 routing records machinery selection, assumptions, and refusal/error state
+  only. They do not prove that `fs-eproc`, `fs-uq`, or any capability ran, and
+  they do not create evidence, scientific authority, artifact authenticity, or
+  runtime admission.

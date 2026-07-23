@@ -2,8 +2,9 @@
 //!
 //! This module fixes a closed, machine-readable claim-to-evidence table. It is
 //! descriptive governance data: selecting a row does not mint evidence,
-//! authenticate an artifact, or admit a runtime claim. The downstream router
-//! is tracked separately by `frankensim-extreal-program-f85xj.9.3`.
+//! authenticate an artifact, or admit a runtime claim. The executable
+//! no-authority router lives in [`crate::claim_router`] and is owned by
+//! `frankensim-extreal-program-f85xj.9.3`.
 
 use core::fmt;
 
@@ -12,7 +13,7 @@ pub use fs_evidence::{ClaimClass, EvidenceRegime};
 /// Schema version for the closed certificate-regime table.
 pub const CERTIFICATE_REGIME_SCHEMA_VERSION: u16 = 1;
 
-/// Bead that owns the future executable claim router.
+/// Bead that owns the executable claim router.
 pub const CERTIFICATE_REGIME_ROUTER_BEAD: &str = "frankensim-extreal-program-f85xj.9.3";
 
 /// Stable no-authority boundary carried by every rendered doctrine artifact.

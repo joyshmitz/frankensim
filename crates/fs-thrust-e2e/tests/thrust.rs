@@ -4,6 +4,7 @@
 //! `Estimated`, and the whole run is deterministic.
 
 use fs_evidence::ColorRank;
+use fs_govern::{ClaimClass, ClaimRouterError, EvidenceRegime};
 use fs_thrust_e2e::{
     CampaignBudget, Design, calibration_designs, calibration_support, design_grid, run_campaign,
     simulate_thrust,
@@ -120,9 +121,31 @@ fn the_campaign_illuminates_a_screened_diverse_family() {
     // NO LAUNDERING: the campaign claim is Estimated — the impulse screen is a
     // diagnostic on a different functional, so it cannot certify a drift.
     assert_eq!(report.campaign_rank, ColorRank::Estimated);
+    // CLAIM-MAKING ROUTE: the public report retains the exact E09 machinery
+    // selection and assumptions without pretending the machinery ran.
+    let route = report
+        .claim_route
+        .as_ref()
+        .expect("default budget forms a valid claim request");
+    let routed = route.routed().expect("long-horizon observable routes");
+    assert_eq!(routed.request().claim(), ClaimClass::LongHorizonMeanLoad);
+    assert_eq!(
+        routed.evidence(),
+        EvidenceRegime::StatisticalObservableWithModelEvidence
+    );
+    assert_eq!(routed.row_id(), "CR-05");
+    assert!(
+        routed
+            .request()
+            .assumptions()
+            .iter()
+            .any(|assumption| assumption.contains("Estimated only"))
+    );
     // the reproducible notebook carries the story and is content-addressed.
     assert!(report.notebook_markdown.contains("CertQD-Thrust"));
     assert!(report.notebook_markdown.contains("best_drift"));
+    assert!(report.notebook_markdown.contains("claim-router-schema=1"));
+    assert!(report.notebook_markdown.contains("router-no-claim="));
     assert_ne!(report.content_hash, 0);
 }
 
@@ -191,6 +214,7 @@ fn the_campaign_is_deterministic() {
     assert_eq!(a.num_elites, b.num_elites);
     assert!((a.qd_score - b.qd_score).abs() < 1e-12);
     assert_eq!(a.best.gamma.to_bits(), b.best.gamma.to_bits());
+    assert_eq!(a.claim_route, b.claim_route);
 }
 
 #[test]
@@ -213,4 +237,11 @@ fn malformed_conservation_tolerance_cannot_mint_screened_elites() {
     assert_eq!(report.unscreened_elites, report.num_elites);
     assert_eq!(report.conservation_screened_drift_hull, None);
     assert_eq!(report.campaign_rank, ColorRank::Estimated);
+    assert!(matches!(
+        report.claim_route,
+        Err(ClaimRouterError::InvalidPositiveFinite {
+            field: "decision.tolerance",
+            ..
+        })
+    ));
 }

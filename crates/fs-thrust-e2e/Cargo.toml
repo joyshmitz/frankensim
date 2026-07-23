@@ -15,6 +15,7 @@ fs-vpm = { path = "../fs-vpm" }
 fs-archive = { path = "../fs-archive" }
 fs-surrogate = { path = "../fs-surrogate" }
 fs-evidence = { path = "../fs-evidence" }
+fs-govern = { path = "../fs-govern" }
 fs-report = { path = "../fs-report" }
 
 [dev-dependencies]

@@ -39,6 +39,10 @@
 //! - **Illumination** ([`fs_archive`]): a MAP-Elites archive over (circulation
 //!   budget × device length) keeps the best-translating configuration in every
 //!   behavioral niche — the diverse Pareto atlas, not a single optimum.
+//! - **Claim governance** ([`fs_govern`]): the public long-horizon drift claim
+//!   routes through E09 to the statistical-observable/model-evidence machinery
+//!   it would need. The retained route is provenance, not evidence that those
+//!   capabilities ran, so every current RK4 drift remains `Estimated`.
 //! - **Provenance** ([`fs_report`]): the campaign emits a deterministic,
 //!   content-addressed lab notebook carrying the reproducing IR.
 //!
@@ -50,6 +54,10 @@ use std::collections::BTreeMap;
 
 use fs_archive::MapElites;
 use fs_evidence::{Color, ColorRank};
+use fs_govern::{
+    CLAIM_ROUTER_NO_CLAIM, ChaosBasis, ClaimClass, ClaimExtent, ClaimRequest, ClaimRouteDecision,
+    ClaimRouterError, DecisionNeed, DynamicsProfile, route_claim,
+};
 use fs_report::LabNotebook;
 use fs_surrogate::{Decision, certify_or_escalate, conformal_band};
 use fs_vpm::{VortexParticle, simulate};
@@ -261,6 +269,35 @@ impl Default for CampaignBudget {
     }
 }
 
+/// Route the campaign's long-horizon drift claim through the E09 doctrine.
+///
+/// The returned decision is provenance and a machinery requirement, not
+/// evidence that the campaign has run the statistical/model-validation route.
+/// In particular, this campaign's current RK4 drifts remain `Estimated`.
+pub fn route_campaign_drift_claim(
+    budget: &CampaignBudget,
+) -> Result<ClaimRouteDecision, ClaimRouterError> {
+    let duration = budget.full_steps as f64 * budget.dt;
+    let request = ClaimRequest::try_new(
+        "certqd-thrust/long-horizon-drift",
+        ClaimClass::LongHorizonMeanLoad,
+        "mean-x displacement over the declared full-horizon vortex sweep",
+        ClaimExtent::try_long_horizon(duration, "simulation-time")?,
+        DecisionNeed::try_new(
+            "rank illuminated thruster designs by decision-relevant drift",
+            "length",
+            budget.decision_tol,
+        )?,
+        DynamicsProfile::new(true, false, false, ChaosBasis::not_indicated()),
+        vec![
+            "2-D desingularized point-vortex model".to_string(),
+            "fixed-step RK4 drift is Estimated only".to_string(),
+            "linear-impulse residual is diagnostic, not a drift enclosure".to_string(),
+        ],
+    )?;
+    Ok(route_claim(request))
+}
+
 /// The deterministic design sweep (a regular grid — space-filling, replayable).
 #[must_use]
 pub fn design_grid() -> Vec<Design> {
@@ -436,6 +473,11 @@ pub struct CampaignReport {
     pub conservation_screened_drift_hull: Option<(f64, f64)>,
     /// The campaign-level claim rank (weakest elite color — no laundering).
     pub campaign_rank: ColorRank,
+    /// E09 machinery route for the campaign's long-horizon drift claim.
+    ///
+    /// A malformed public budget retains its typed request-construction error;
+    /// a successful route still mints no evidence or scientific authority.
+    pub claim_route: Result<ClaimRouteDecision, ClaimRouterError>,
     /// The reproducible lab notebook (Markdown).
     pub notebook_markdown: String,
     /// Content hash of the notebook (provenance).
@@ -549,6 +591,7 @@ pub fn run_campaign(budget: &CampaignBudget) -> CampaignReport {
     let best_drift = best.fitness;
     // The naive baseline: run a full-fidelity sim on every design, no surrogate.
     let steps_all_full = designs.len() * budget.full_steps;
+    let claim_route = route_campaign_drift_claim(budget);
 
     // --- 4. The reproducible lab notebook (fs-report). ---
     let mut nb = LabNotebook::new(
@@ -564,6 +607,15 @@ pub fn run_campaign(budget: &CampaignBudget) -> CampaignReport {
          a MAP-Elites archive (fs-archive). The impulse screen is a diagnostic, not a drift \
          bound: no elite claims an interval certificate.",
     )
+    .prose(match &claim_route {
+        Ok(decision) => format!(
+            "E09 claim-routing provenance (machinery selection, not evidence):\n{}",
+            decision.render_record()
+        ),
+        Err(error) => format!(
+            "E09 claim-routing input refused before claim-making: {error}\nrouter-no-claim={CLAIM_ROUTER_NO_CLAIM}"
+        ),
+    })
     .metric("designs_swept", designs.len() as f64, "designs")
     .metric("coverage", archive.coverage(), "fraction")
     .metric("qd_score", archive.qd_score(), "drift")
@@ -631,6 +683,7 @@ pub fn run_campaign(budget: &CampaignBudget) -> CampaignReport {
         band_half_width: band.half_width,
         conservation_screened_drift_hull,
         campaign_rank,
+        claim_route,
         notebook_markdown: nb.render_markdown(),
         content_hash: nb.content_hash(),
     }

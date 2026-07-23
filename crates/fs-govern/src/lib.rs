@@ -23,7 +23,9 @@
 //! proposals with their kill metrics + owning beads + a completeness audit
 //! ([`proposals`]). The closed claim-to-evidence routing doctrine, including
 //! honest `NoUsefulBound` routing for exact long chaotic trajectories, lives
-//! in [`certificate_regimes`]. The distinct expansion-program namespace
+//! in [`certificate_regimes`]; [`claim_router`] turns that table into typed
+//! machinery selection and pre-compute refusal without minting authority. The
+//! distinct expansion-program namespace
 //! PR-001--PR-012, with quantitative triggers and fail-closed session
 //! observations, lives in [`program_risks`]; it does not replace this crate
 //! root's R1--R10 register.
@@ -48,6 +50,7 @@
 //! graph binding remain the repository adapter's responsibility.
 
 pub mod certificate_regimes;
+pub mod claim_router;
 pub mod crates;
 pub mod doctrine;
 pub mod evidence_contract;
@@ -68,6 +71,12 @@ pub use certificate_regimes::{
     CertificateRegimeError, CertificateRegimeRow, ClaimClass, EvidenceRegime, INTERVAL_ROLES,
     IntervalRole, THERMAL_EXAMPLES, ThermalExample, certificate_regime, certificate_regime_json,
     certificate_regime_markdown_table, certificate_regimes, validate_certificate_regimes,
+};
+pub use claim_router::{
+    CLAIM_ROUTER_NO_CLAIM, CLAIM_ROUTER_SCHEMA_VERSION, ChaosBasis, ClaimExtent, ClaimRequest,
+    ClaimRouteDecision, ClaimRouteRefusal, ClaimRouteRefusalCause, ClaimRouterError, DecisionNeed,
+    DynamicsProfile, MAX_CLAIM_ROUTER_ASSUMPTIONS, MAX_CLAIM_ROUTER_FIELD_BYTES, RoutedClaim,
+    route_claim,
 };
 pub use crates::{AddendumCrate, CrateAudit, addendum_crates, crate_audit, crates_json};
 pub use doctrine::{GovernanceRule, PRINCIPLES, Principle, RULES, principles, rules};

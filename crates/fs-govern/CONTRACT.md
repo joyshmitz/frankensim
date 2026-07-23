@@ -582,8 +582,8 @@ they are not implied by this solid graph core.
   authority. `Available` means only that the narrow named source surface
   exists. `Thin` records an incomplete route. `Staged` has no source locator
   and may not be inferred from adjacent primitives.
-- `certificate_regime_json` is deterministic machine-readable data for the
-  future router. `certificate_regime_markdown_table` is checked byte-for-byte
+- `certificate_regime_json` is deterministic machine-readable data consumed by
+  the claim router. `certificate_regime_markdown_table` is checked byte-for-byte
   against the marked table in `docs/CERTIFICATE_REGIMES.md`. Every named live
   locator and workspace crate is checked by the G0 integration battery.
 - `INTERVAL_ROLES` preserves the positive bounded uses of interval/Taylor
@@ -594,13 +594,44 @@ they are not implied by this solid graph core.
   `ClaimClass` / `EvidenceRegime` definitions live in low-layer `fs-evidence`
   so its first-class `BoundOutcome::NoUsefulBound` can carry the exact E09
   reformulation without depending upward; this module re-exports those types
-  at its existing public paths. The executable mismatch-refusing router belongs
-  to `frankensim-extreal-program-f85xj.9.3`.
+  at its existing public paths.
 - No-claim boundary: table lookup does not create or authenticate evidence,
   prove a statement, validate a model, implement a staged reachability tube,
   or admit a runtime claim. A wide honest interval stays a valid result but
   must be reported as inconclusive or `NoUsefulBound` for a decision it cannot
   support.
+
+## Claim router (`claim_router` module)
+
+- `ClaimRequest` retains the named quantity, `ClaimExtent`, caller-declared
+  `DecisionNeed`, non-exclusive `DynamicsProfile`, chaos declaration/probe
+  basis, and a sorted/deduplicated bounded assumption set.
+- `route_claim` is total over the eight `ClaimClass` values and consults the
+  exact closed doctrine row. A successful `RoutedClaim` names the required
+  evidence regime and retains the request as provenance; it does not execute
+  any named capability.
+- Claim/extent mismatches refuse before compute. Temporal root/reachability
+  requests on a chaotic system refuse when they exceed the declared
+  predictability horizon; a finite parameter-domain root remains independent
+  of that time horizon. Exact long chaotic trajectories always refuse:
+  missing chaos classification, incompatible horizon units, still-inside-
+  horizon misclassification, and beyond-horizon `NoUsefulBound` routing are
+  distinct typed causes with doctrine-supported reformulations.
+- Decision tolerance is contextual and does not change claim/evidence
+  compatibility. Relaxing it cannot turn a route into a refusal.
+- `ClaimRouteDecision::render_record` is deterministic line-oriented
+  provenance containing the request, assumptions, doctrine row, capability
+  maturity, outcome/cause, reformulation, and all no-claim boundaries. Schema
+  v1 deliberately defines no durable identity or transport; any future
+  content-addressed encoding requires explicit registry governance. Nested
+  extents and chaos bases are revalidated by `ClaimRequest::try_new`, so direct
+  enum construction cannot bypass finite/positive/unit invariants.
+- `fs-thrust-e2e` is the first L6 adopter. Its long-horizon drift claim records
+  route `CR-05` and the required statistical/model evidence while its current
+  unchecked-RK4 outputs remain `Estimated`.
+- No-claim boundary: routing is a governance plan. It does not prove that a
+  capability ran, that a model or assumption is valid, that a required evidence
+  object exists, or that a claim is scientifically true or runtime-admitted.
 
 ## Doctrine and proposals (`doctrine`, `proposals` modules)
 
@@ -804,6 +835,11 @@ None. `#![deny(unsafe_code)]` via the workspace lint.
 None.
 
 ## Conformance tests
+
+`tests/claim_router.rs` (E09 G0/G3): every doctrine row, the claim-by-system
+request matrix, typed extent/horizon/chaos/unit refusals, canonical assumption
+ordering, tolerance monotonicity, malformed constructor refusal, deterministic
+provenance, and explicit no-authority boundaries.
 
 `tests/evidence_graph.rs` (Phase 0B-C G0/G2/G3/G4): canonical snapshot and
 decision permutation invariance; exact identity mutation; duplicate/unknown/

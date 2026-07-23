@@ -2130,6 +2130,7 @@ version = "0.0.1"
 dependencies = [
  "fs-archive",
  "fs-evidence",
+ "fs-govern",
  "fs-report",
  "fs-surrogate",
  "fs-vpm",
