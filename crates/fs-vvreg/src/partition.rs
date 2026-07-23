@@ -8,13 +8,15 @@
 //! [`DatasetPurpose::Validation`]. Blind rows additionally require a
 //! generation-bound release receipt.
 //!
-//! Repartition and blind-release receipts are canonical records intended for
-//! persistence by HELM/fs-ledger. This UTIL-layer module retains an ordered
-//! in-memory event log and exposes canonical receipt fields and identities, but
-//! does not claim that a receipt has been durably stored by fs-ledger.
+//! All five receipt families share a closed, self-verifying wire envelope for
+//! generic content-addressed persistence. This UTIL-layer module still retains
+//! only an ordered in-memory partition event log; the wire envelope does not
+//! claim dedicated ledger membership, audit-event atomicity, authorization, or
+//! partition-state restoration.
 
 use crate::corpus::{
     ContextValue, CorpusDataset, CorpusQueryRefusal, CorpusRegistry, DatasetPartition,
+    MAX_CORPUS_TEXT_BYTES,
 };
 use fs_blake3::{ContentHash, hash_domain};
 use fs_evidence::Evidence;
@@ -31,6 +33,13 @@ pub const MAX_PARTITION_ITEMS: usize = 4_096;
 pub const MAX_TAINT_DEPTH: usize = 256;
 /// Maximum UTF-8 bytes in a repartition/release justification.
 pub const MAX_PARTITION_JUSTIFICATION_BYTES: usize = 4_096;
+/// Maximum accepted bytes in one canonical partition receipt wire record.
+///
+/// The cap covers the worst currently admitted model-taint closure while
+/// keeping hostile length prefixes from driving unbounded allocation.
+pub const MAX_PARTITION_RECORD_BYTES: usize = 64 * 1024 * 1024;
+/// fs-ledger artifact kind for canonical partition receipt wire records.
+pub const PARTITION_RECEIPT_ARTIFACT_KIND: &str = "vv-partition-receipt-v1";
 
 const ACCESS_DOMAIN: &str = "org.frankensim.fs-vvreg.dataset-access.v1";
 const QUERY_CONTEXT_DOMAIN: &str = "org.frankensim.fs-vvreg.query-context.v1";
@@ -38,6 +47,8 @@ const REPARTITION_DOMAIN: &str = "org.frankensim.fs-vvreg.repartition.v1";
 const BLIND_RELEASE_DOMAIN: &str = "org.frankensim.fs-vvreg.blind-release.v1";
 const MODEL_TAINT_DOMAIN: &str = "org.frankensim.fs-vvreg.model-taint.v1";
 const VALIDATION_DOMAIN: &str = "org.frankensim.fs-vvreg.taint-validation.v1";
+const PARTITION_RECORD_MAGIC: &[u8; 8] = b"FSVVREC\0";
+const PARTITION_RECORD_WIRE_VERSION: u32 = 1;
 
 /// The semantic purpose for which a corpus row is requested.
 ///
@@ -335,6 +346,120 @@ impl From<CorpusQueryRefusal> for PartitionRefusal {
         Self::Corpus(error)
     }
 }
+
+/// Fail-closed decoding error for a canonical partition receipt wire record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PartitionRecordError {
+    /// The record does not begin with the exact fs-vvreg partition magic.
+    InvalidMagic,
+    /// The record ended before a declared fixed or bounded field completed.
+    Truncated {
+        /// Field being decoded.
+        field: &'static str,
+    },
+    /// The wire version is not implemented by this build.
+    UnsupportedVersion {
+        /// Observed future or historic version.
+        observed: u32,
+    },
+    /// The closed record variant tag is unknown.
+    UnknownVariant {
+        /// Observed variant tag.
+        observed: u8,
+    },
+    /// A closed enum or boolean field used an unknown tag.
+    UnknownTag {
+        /// Field being decoded.
+        field: &'static str,
+        /// Observed tag.
+        observed: u8,
+    },
+    /// A bounded byte or item count exceeded its explicit cap.
+    ResourceLimit {
+        /// Resource whose prefix exceeded the cap.
+        resource: &'static str,
+        /// Maximum accepted count or byte length.
+        limit: usize,
+        /// Count or byte length declared by the record.
+        observed: u64,
+    },
+    /// A length-framed text field was not valid UTF-8.
+    InvalidUtf8 {
+        /// Field being decoded.
+        field: &'static str,
+    },
+    /// A structurally impossible semantic field was encoded.
+    InvalidValue {
+        /// Field or invariant that failed.
+        field: &'static str,
+    },
+    /// The embedded semantic identity did not match the decoded fields.
+    IdentityMismatch {
+        /// Record variant whose identity failed.
+        record: &'static str,
+    },
+    /// Bytes followed the exact closed record.
+    TrailingBytes {
+        /// Number of unconsumed bytes.
+        observed: usize,
+    },
+    /// The parsed record did not reproduce the exact input bytes.
+    NonCanonical,
+}
+
+impl fmt::Display for PartitionRecordError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidMagic => formatter.write_str("partition receipt has invalid wire magic"),
+            Self::Truncated { field } => {
+                write!(formatter, "partition receipt is truncated in `{field}`")
+            }
+            Self::UnsupportedVersion { observed } => write!(
+                formatter,
+                "partition receipt wire version {observed} is unsupported"
+            ),
+            Self::UnknownVariant { observed } => {
+                write!(
+                    formatter,
+                    "partition receipt variant tag {observed} is unknown"
+                )
+            }
+            Self::UnknownTag { field, observed } => write!(
+                formatter,
+                "partition receipt field `{field}` has unknown tag {observed}"
+            ),
+            Self::ResourceLimit {
+                resource,
+                limit,
+                observed,
+            } => write!(
+                formatter,
+                "partition receipt resource `{resource}` exceeds limit {limit} (observed {observed})"
+            ),
+            Self::InvalidUtf8 { field } => {
+                write!(formatter, "partition receipt field `{field}` is not UTF-8")
+            }
+            Self::InvalidValue { field } => {
+                write!(formatter, "partition receipt field `{field}` is invalid")
+            }
+            Self::IdentityMismatch { record } => {
+                write!(
+                    formatter,
+                    "partition `{record}` receipt identity does not match its fields"
+                )
+            }
+            Self::TrailingBytes { observed } => write!(
+                formatter,
+                "partition receipt has {observed} trailing byte(s)"
+            ),
+            Self::NonCanonical => {
+                formatter.write_str("partition receipt wire bytes are not canonical")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PartitionRecordError {}
 
 /// Immutable receipt for one purpose-checked dataset access.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1087,6 +1212,584 @@ impl TaintValidationReceipt {
     pub const fn identity(&self) -> ContentHash {
         self.identity
     }
+}
+
+/// Closed wire envelope for one purpose, partition, taint, or validation
+/// receipt.
+///
+/// The embedded receipt identity is re-derived during decode. The envelope is
+/// suitable for content-addressed storage, but is not an authorization,
+/// ledger-membership, or audit-event receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PartitionReceiptRecord {
+    /// One purpose-checked dataset access.
+    DatasetAccess(DatasetAccessReceipt),
+    /// One governed partition transition.
+    Repartition(RepartitionReceipt),
+    /// One blind-holdout release.
+    BlindRelease(BlindReleaseReceipt),
+    /// One model's complete calibration-taint closure.
+    ModelTaint(ModelTaint),
+    /// One successful disjoint held-out validation check.
+    Validation(TaintValidationReceipt),
+}
+
+impl PartitionReceiptRecord {
+    /// Stable lowercase record variant name for diagnostics and metadata.
+    #[must_use]
+    pub const fn record_type(&self) -> &'static str {
+        match self {
+            Self::DatasetAccess(_) => "dataset-access",
+            Self::Repartition(_) => "repartition",
+            Self::BlindRelease(_) => "blind-release",
+            Self::ModelTaint(_) => "model-taint",
+            Self::Validation(_) => "validation",
+        }
+    }
+
+    /// Existing semantic identity embedded in this transport record.
+    #[must_use]
+    pub const fn semantic_identity(&self) -> ContentHash {
+        match self {
+            Self::DatasetAccess(receipt) => receipt.identity(),
+            Self::Repartition(receipt) => receipt.identity(),
+            Self::BlindRelease(receipt) => receipt.identity(),
+            Self::ModelTaint(receipt) => receipt.identity(),
+            Self::Validation(receipt) => receipt.identity(),
+        }
+    }
+
+    /// Encode this record in canonical partition receipt wire format v1.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(PARTITION_RECORD_MAGIC);
+        bytes.extend_from_slice(&PARTITION_RECORD_WIRE_VERSION.to_le_bytes());
+        match self {
+            Self::DatasetAccess(receipt) => {
+                bytes.push(1);
+                push_record_text(&mut bytes, &receipt.dataset_id);
+                push_hash(&mut bytes, receipt.dataset);
+                push_u64(&mut bytes, receipt.generation);
+                bytes.push(partition_tag(receipt.partition));
+                bytes.push(receipt.purpose.tag());
+                push_hash(&mut bytes, receipt.context);
+                push_optional_hash(&mut bytes, receipt.preceding_event);
+                push_optional_hash(&mut bytes, receipt.blind_release);
+                push_hash(&mut bytes, receipt.identity);
+            }
+            Self::Repartition(receipt) => {
+                bytes.push(2);
+                push_record_text(&mut bytes, &receipt.dataset_id);
+                push_hash(&mut bytes, receipt.dataset);
+                bytes.push(partition_tag(receipt.from));
+                bytes.push(partition_tag(receipt.to));
+                push_u64(&mut bytes, receipt.generation);
+                push_optional_hash(&mut bytes, receipt.preceding_event);
+                push_record_text(&mut bytes, &receipt.justification);
+                bytes.push(u8::from(receipt.stales_validation_claims));
+                push_hash(&mut bytes, receipt.identity);
+            }
+            Self::BlindRelease(receipt) => {
+                bytes.push(3);
+                push_record_text(&mut bytes, &receipt.dataset_id);
+                push_hash(&mut bytes, receipt.dataset);
+                push_u64(&mut bytes, receipt.generation);
+                push_hash(&mut bytes, receipt.preregistration);
+                push_hash(&mut bytes, receipt.blind_manifest);
+                push_record_text(&mut bytes, &receipt.justification);
+                push_hash(&mut bytes, receipt.identity);
+            }
+            Self::ModelTaint(receipt) => {
+                bytes.push(4);
+                push_hash(&mut bytes, receipt.artifact);
+                push_u64(&mut bytes, receipt.sources.len() as u64);
+                for source in receipt.sources.values() {
+                    push_record_text(&mut bytes, &source.dataset_id);
+                    push_hash(&mut bytes, source.dataset);
+                    push_u64(&mut bytes, source.access_generation);
+                    push_u64(&mut bytes, source.model_path.len() as u64);
+                    for artifact in &source.model_path {
+                        push_hash(&mut bytes, *artifact);
+                    }
+                }
+                push_hash(&mut bytes, receipt.identity);
+            }
+            Self::Validation(receipt) => {
+                bytes.push(5);
+                push_hash(&mut bytes, receipt.model_taint);
+                push_u64(&mut bytes, receipt.evaluation_accesses.len() as u64);
+                for access in &receipt.evaluation_accesses {
+                    push_hash(&mut bytes, *access);
+                }
+                push_hash(&mut bytes, receipt.identity);
+            }
+        }
+        bytes
+    }
+
+    /// Decode, structurally validate, and independently re-derive one
+    /// canonical partition receipt record.
+    pub fn decode(bytes: &[u8]) -> Result<Self, PartitionRecordError> {
+        let observed = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        if bytes.len() > MAX_PARTITION_RECORD_BYTES {
+            return Err(PartitionRecordError::ResourceLimit {
+                resource: "record bytes",
+                limit: MAX_PARTITION_RECORD_BYTES,
+                observed,
+            });
+        }
+        let mut reader = PartitionRecordReader::new(bytes);
+        if reader.take(PARTITION_RECORD_MAGIC.len(), "wire magic")? != PARTITION_RECORD_MAGIC {
+            return Err(PartitionRecordError::InvalidMagic);
+        }
+        let version = reader.u32("wire version")?;
+        if version != PARTITION_RECORD_WIRE_VERSION {
+            return Err(PartitionRecordError::UnsupportedVersion { observed: version });
+        }
+        let record = match reader.byte("record variant")? {
+            1 => Self::DatasetAccess(decode_access_receipt(&mut reader)?),
+            2 => Self::Repartition(decode_repartition_receipt(&mut reader)?),
+            3 => Self::BlindRelease(decode_blind_release_receipt(&mut reader)?),
+            4 => Self::ModelTaint(decode_model_taint(&mut reader)?),
+            5 => Self::Validation(decode_validation_receipt(&mut reader)?),
+            observed => return Err(PartitionRecordError::UnknownVariant { observed }),
+        };
+        let trailing = reader.remaining();
+        if trailing != 0 {
+            return Err(PartitionRecordError::TrailingBytes { observed: trailing });
+        }
+        if record.encode() != bytes {
+            return Err(PartitionRecordError::NonCanonical);
+        }
+        Ok(record)
+    }
+}
+
+impl From<DatasetAccessReceipt> for PartitionReceiptRecord {
+    fn from(receipt: DatasetAccessReceipt) -> Self {
+        Self::DatasetAccess(receipt)
+    }
+}
+
+impl From<RepartitionReceipt> for PartitionReceiptRecord {
+    fn from(receipt: RepartitionReceipt) -> Self {
+        Self::Repartition(receipt)
+    }
+}
+
+impl From<BlindReleaseReceipt> for PartitionReceiptRecord {
+    fn from(receipt: BlindReleaseReceipt) -> Self {
+        Self::BlindRelease(receipt)
+    }
+}
+
+impl From<ModelTaint> for PartitionReceiptRecord {
+    fn from(receipt: ModelTaint) -> Self {
+        Self::ModelTaint(receipt)
+    }
+}
+
+impl From<TaintValidationReceipt> for PartitionReceiptRecord {
+    fn from(receipt: TaintValidationReceipt) -> Self {
+        Self::Validation(receipt)
+    }
+}
+
+struct PartitionRecordReader<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> PartitionRecordReader<'a> {
+    const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.offset)
+    }
+
+    fn take(&mut self, len: usize, field: &'static str) -> Result<&'a [u8], PartitionRecordError> {
+        let end = self
+            .offset
+            .checked_add(len)
+            .ok_or(PartitionRecordError::Truncated { field })?;
+        let value = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(PartitionRecordError::Truncated { field })?;
+        self.offset = end;
+        Ok(value)
+    }
+
+    fn byte(&mut self, field: &'static str) -> Result<u8, PartitionRecordError> {
+        Ok(self.take(1, field)?[0])
+    }
+
+    fn u32(&mut self, field: &'static str) -> Result<u32, PartitionRecordError> {
+        let bytes: [u8; 4] = self
+            .take(4, field)?
+            .try_into()
+            .map_err(|_| PartitionRecordError::Truncated { field })?;
+        Ok(u32::from_le_bytes(bytes))
+    }
+
+    fn u64(&mut self, field: &'static str) -> Result<u64, PartitionRecordError> {
+        let bytes: [u8; 8] = self
+            .take(8, field)?
+            .try_into()
+            .map_err(|_| PartitionRecordError::Truncated { field })?;
+        Ok(u64::from_le_bytes(bytes))
+    }
+
+    fn count(
+        &mut self,
+        resource: &'static str,
+        limit: usize,
+    ) -> Result<usize, PartitionRecordError> {
+        let observed = self.u64(resource)?;
+        let limit_u64 = u64::try_from(limit).unwrap_or(u64::MAX);
+        if observed > limit_u64 {
+            return Err(PartitionRecordError::ResourceLimit {
+                resource,
+                limit,
+                observed,
+            });
+        }
+        usize::try_from(observed).map_err(|_| PartitionRecordError::ResourceLimit {
+            resource,
+            limit,
+            observed,
+        })
+    }
+
+    fn text(&mut self, field: &'static str, limit: usize) -> Result<String, PartitionRecordError> {
+        let len = self.count(field, limit)?;
+        let bytes = self.take(len, field)?;
+        let text =
+            std::str::from_utf8(bytes).map_err(|_| PartitionRecordError::InvalidUtf8 { field })?;
+        Ok(text.to_owned())
+    }
+
+    fn hash(&mut self, field: &'static str) -> Result<ContentHash, PartitionRecordError> {
+        let bytes: [u8; 32] = self
+            .take(32, field)?
+            .try_into()
+            .map_err(|_| PartitionRecordError::Truncated { field })?;
+        Ok(ContentHash(bytes))
+    }
+
+    fn optional_hash(
+        &mut self,
+        field: &'static str,
+    ) -> Result<Option<ContentHash>, PartitionRecordError> {
+        match self.byte(field)? {
+            0 => Ok(None),
+            1 => self.hash(field).map(Some),
+            observed => Err(PartitionRecordError::UnknownTag { field, observed }),
+        }
+    }
+
+    fn partition(&mut self, field: &'static str) -> Result<DatasetPartition, PartitionRecordError> {
+        match self.byte(field)? {
+            1 => Ok(DatasetPartition::Training),
+            2 => Ok(DatasetPartition::Calibration),
+            3 => Ok(DatasetPartition::Validation),
+            4 => Ok(DatasetPartition::BlindHoldout),
+            observed => Err(PartitionRecordError::UnknownTag { field, observed }),
+        }
+    }
+
+    fn purpose(&mut self, field: &'static str) -> Result<DatasetPurpose, PartitionRecordError> {
+        match self.byte(field)? {
+            1 => Ok(DatasetPurpose::Calibration),
+            2 => Ok(DatasetPurpose::Validation),
+            3 => Ok(DatasetPurpose::BlindEvaluation),
+            observed => Err(PartitionRecordError::UnknownTag { field, observed }),
+        }
+    }
+
+    fn boolean(&mut self, field: &'static str) -> Result<bool, PartitionRecordError> {
+        match self.byte(field)? {
+            0 => Ok(false),
+            1 => Ok(true),
+            observed => Err(PartitionRecordError::UnknownTag { field, observed }),
+        }
+    }
+}
+
+fn decode_access_receipt(
+    reader: &mut PartitionRecordReader<'_>,
+) -> Result<DatasetAccessReceipt, PartitionRecordError> {
+    let dataset_id = reader.text("dataset id", MAX_CORPUS_TEXT_BYTES)?;
+    validate_record_dataset_id(&dataset_id)?;
+    let dataset = reader.hash("dataset identity")?;
+    let generation = reader.u64("partition generation")?;
+    let partition = reader.partition("dataset partition")?;
+    let purpose = reader.purpose("dataset purpose")?;
+    let context = reader.hash("query context")?;
+    let preceding_event = reader.optional_hash("preceding repartition event")?;
+    let blind_release = reader.optional_hash("blind release")?;
+    let identity = reader.hash("access identity")?;
+    if !purpose.admits(partition)
+        || (purpose == DatasetPurpose::BlindEvaluation) != blind_release.is_some()
+    {
+        return Err(PartitionRecordError::InvalidValue {
+            field: "purpose/partition/blind-release relation",
+        });
+    }
+    let expected = access_identity(
+        &dataset_id,
+        dataset,
+        generation,
+        partition,
+        purpose,
+        context,
+        preceding_event,
+        blind_release,
+    );
+    require_record_identity("dataset-access", identity, expected)?;
+    Ok(DatasetAccessReceipt {
+        dataset_id,
+        dataset,
+        generation,
+        partition,
+        purpose,
+        context,
+        preceding_event,
+        blind_release,
+        identity,
+    })
+}
+
+fn decode_repartition_receipt(
+    reader: &mut PartitionRecordReader<'_>,
+) -> Result<RepartitionReceipt, PartitionRecordError> {
+    let dataset_id = reader.text("dataset id", MAX_CORPUS_TEXT_BYTES)?;
+    validate_record_dataset_id(&dataset_id)?;
+    let dataset = reader.hash("dataset identity")?;
+    let from = reader.partition("source partition")?;
+    let to = reader.partition("target partition")?;
+    let generation = reader.u64("partition generation")?;
+    let preceding_event = reader.optional_hash("preceding repartition event")?;
+    let justification = reader.text(
+        "repartition justification",
+        MAX_PARTITION_JUSTIFICATION_BYTES,
+    )?;
+    let stales_validation_claims = reader.boolean("stales validation claims")?;
+    let identity = reader.hash("repartition identity")?;
+    let expected_staleness = matches!(
+        (from, to),
+        (
+            DatasetPartition::Validation | DatasetPartition::BlindHoldout,
+            DatasetPartition::Training | DatasetPartition::Calibration
+        )
+    );
+    if from == to
+        || generation == 0
+        || (generation == 1) != preceding_event.is_none()
+        || stales_validation_claims != expected_staleness
+        || validate_justification(&justification).is_err()
+    {
+        return Err(PartitionRecordError::InvalidValue {
+            field: "repartition transition",
+        });
+    }
+    let expected = repartition_identity(
+        &dataset_id,
+        dataset,
+        from,
+        to,
+        generation,
+        preceding_event,
+        &justification,
+        stales_validation_claims,
+    );
+    require_record_identity("repartition", identity, expected)?;
+    Ok(RepartitionReceipt {
+        dataset_id,
+        dataset,
+        from,
+        to,
+        generation,
+        preceding_event,
+        justification,
+        stales_validation_claims,
+        identity,
+    })
+}
+
+fn decode_blind_release_receipt(
+    reader: &mut PartitionRecordReader<'_>,
+) -> Result<BlindReleaseReceipt, PartitionRecordError> {
+    let dataset_id = reader.text("dataset id", MAX_CORPUS_TEXT_BYTES)?;
+    validate_record_dataset_id(&dataset_id)?;
+    let dataset = reader.hash("dataset identity")?;
+    let generation = reader.u64("partition generation")?;
+    let preregistration = reader.hash("preregistration identity")?;
+    let blind_manifest = reader.hash("blind manifest identity")?;
+    let justification = reader.text(
+        "blind release justification",
+        MAX_PARTITION_JUSTIFICATION_BYTES,
+    )?;
+    let identity = reader.hash("blind release identity")?;
+    if require_nonzero(preregistration, "preregistration").is_err()
+        || require_nonzero(blind_manifest, "blind_manifest").is_err()
+        || validate_justification(&justification).is_err()
+    {
+        return Err(PartitionRecordError::InvalidValue {
+            field: "blind release",
+        });
+    }
+    let expected = blind_release_identity(
+        &dataset_id,
+        dataset,
+        generation,
+        preregistration,
+        blind_manifest,
+        &justification,
+    );
+    require_record_identity("blind-release", identity, expected)?;
+    Ok(BlindReleaseReceipt {
+        dataset_id,
+        dataset,
+        generation,
+        preregistration,
+        blind_manifest,
+        justification,
+        identity,
+    })
+}
+
+fn decode_model_taint(
+    reader: &mut PartitionRecordReader<'_>,
+) -> Result<ModelTaint, PartitionRecordError> {
+    let artifact = reader.hash("model artifact")?;
+    if require_nonzero_artifact(artifact).is_err() {
+        return Err(PartitionRecordError::InvalidValue {
+            field: "model artifact",
+        });
+    }
+    let source_count = reader.count("taint sources", MAX_PARTITION_ITEMS)?;
+    if source_count == 0 {
+        return Err(PartitionRecordError::InvalidValue {
+            field: "taint sources",
+        });
+    }
+    let mut sources = BTreeMap::new();
+    let mut preceding_dataset = None;
+    for _ in 0..source_count {
+        let dataset_id = reader.text("taint dataset id", MAX_CORPUS_TEXT_BYTES)?;
+        validate_record_dataset_id(&dataset_id)?;
+        let dataset = reader.hash("taint dataset identity")?;
+        if preceding_dataset.is_some_and(|preceding| preceding >= dataset) {
+            return Err(PartitionRecordError::InvalidValue {
+                field: "taint source ordering",
+            });
+        }
+        preceding_dataset = Some(dataset);
+        let access_generation = reader.u64("taint access generation")?;
+        let path_count = reader.count("taint model path", MAX_TAINT_DEPTH)?;
+        if path_count == 0 {
+            return Err(PartitionRecordError::InvalidValue {
+                field: "taint model path",
+            });
+        }
+        let mut model_path = Vec::with_capacity(path_count);
+        for _ in 0..path_count {
+            model_path.push(reader.hash("taint model path artifact")?);
+        }
+        if model_path.first() != Some(&artifact) {
+            return Err(PartitionRecordError::InvalidValue {
+                field: "taint model path root",
+            });
+        }
+        sources.insert(
+            dataset,
+            TaintSource {
+                dataset_id,
+                dataset,
+                access_generation,
+                model_path,
+            },
+        );
+    }
+    let identity = reader.hash("model taint identity")?;
+    let expected = model_taint_identity(artifact, &sources);
+    require_record_identity("model-taint", identity, expected)?;
+    Ok(ModelTaint {
+        artifact,
+        sources,
+        identity,
+    })
+}
+
+fn decode_validation_receipt(
+    reader: &mut PartitionRecordReader<'_>,
+) -> Result<TaintValidationReceipt, PartitionRecordError> {
+    let model_taint = reader.hash("model taint identity")?;
+    let access_count = reader.count("validation accesses", MAX_PARTITION_ITEMS)?;
+    if access_count == 0 {
+        return Err(PartitionRecordError::InvalidValue {
+            field: "validation accesses",
+        });
+    }
+    let mut accesses = BTreeSet::new();
+    let mut evaluation_accesses = Vec::with_capacity(access_count);
+    let mut preceding_access = None;
+    for _ in 0..access_count {
+        let access = reader.hash("validation access identity")?;
+        if preceding_access.is_some_and(|preceding| preceding >= access) {
+            return Err(PartitionRecordError::InvalidValue {
+                field: "validation access ordering",
+            });
+        }
+        preceding_access = Some(access);
+        accesses.insert(access);
+        evaluation_accesses.push(access);
+    }
+    let identity = reader.hash("validation identity")?;
+    let expected = validation_identity(model_taint, &accesses);
+    require_record_identity("validation", identity, expected)?;
+    Ok(TaintValidationReceipt {
+        model_taint,
+        evaluation_accesses,
+        identity,
+    })
+}
+
+fn validate_record_dataset_id(dataset_id: &str) -> Result<(), PartitionRecordError> {
+    let valid = !dataset_id.is_empty()
+        && dataset_id.len() <= MAX_CORPUS_TEXT_BYTES
+        && dataset_id.as_bytes()[0].is_ascii_lowercase()
+        && dataset_id.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(PartitionRecordError::InvalidValue {
+            field: "dataset id",
+        })
+    }
+}
+
+fn require_record_identity(
+    record: &'static str,
+    observed: ContentHash,
+    expected: ContentHash,
+) -> Result<(), PartitionRecordError> {
+    if observed == expected {
+        Ok(())
+    } else {
+        Err(PartitionRecordError::IdentityMismatch { record })
+    }
+}
+
+fn push_record_text(bytes: &mut Vec<u8>, value: &str) {
+    push_u64(bytes, value.len() as u64);
+    bytes.extend_from_slice(value.as_bytes());
 }
 
 fn insert_source(sources: &mut BTreeMap<ContentHash, TaintSource>, candidate: TaintSource) {

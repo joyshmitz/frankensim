@@ -154,6 +154,15 @@ body.
   dataset-content intersection with the model's full calibration closure. A
   success receipt binds the exact model-taint identity and every distinct
   access identity; it is a disjointness record, not scientific authority.
+- `partition::PartitionReceiptRecord::{encode,decode}` — one closed `FSVVREC`
+  version-1 wire envelope for dataset-access, repartition, blind-release,
+  model-taint, and validation receipts. Decode bounds every string, source
+  count, access count, model path, and total record; validates closed tags and
+  ordering; re-derives the existing semantic identity from exact fields; and
+  refuses future versions, truncation, extension, malformed UTF-8, semantic
+  inconsistency, identity substitution, and noncanonical bytes. The envelope
+  is stored under generic fs-ledger artifact kind
+  `vv-partition-receipt-v1`; wire transport does not mint ledger authority.
 - `corpus::CorpusDataset::{encode,decode,digest}` — bounded canonical `FSVVCRP`
   version-3 binary round trip and domain-separated content identity. Version 3
   keeps the v2 `BlindHoldout` partition tag but rotates dataset and registry
@@ -509,7 +518,9 @@ registration and validation, blind release gating, and wrong-purpose model
 input refusal; G3 order-independent repartition/taint identities, query-context
 identity sensitivity, retention of multiple held-out accesses from one dataset,
 and disjoint held-out success constrained to a non-certifying taint-check
-receipt.
+receipt; canonical round trips for all five receipt variants, future/truncated/
+extended/tampered wire refusal, and exact-byte fs-ledger persistence across
+reopen with dedupe plus corruption detection.
 
 `tests/thermal_level_a.rs`: G0 manifest/catalog identity and family coverage;
 independent recomputation of all 12 closed-form scalar values; exact retained-
@@ -598,9 +609,14 @@ and targets, not thermal-kernel convergence.
   dataset-level color is a maximum support cap, not a minted `Color` or a
   validated prediction.
 - Partition/repartition/blind-release/access/model-taint/validation receipts
-  are exact canonical records intended for HELM/fs-ledger persistence, but this
-  UTIL crate retains them only in memory and does not prove durable storage,
-  authentication, authorization, secrecy of blind bytes, or crash recovery.
+  are exact canonical records. Their v1 wire records are self-consistent, and
+  the integration battery proves that exact bytes survive fs-ledger's generic
+  content-addressed artifact write, reopen, dedupe, bounded read, and
+  corruption scan. The UTIL runtime still retains partition state and ordered
+  events only in memory. A generic artifact row is not dedicated receipt
+  membership, a query index, an atomically coupled audit event, a refusal log,
+  HELM orchestration, authorization, secrecy of blind bytes, crash-fault proof,
+  or partition-state restoration.
   The nonzero preregistration and manifest hashes are caller-supplied bindings,
   not proof that either artifact exists, predates model freeze, was independently
   witnessed, or was honestly concealed. Full blind-protocol orchestration and

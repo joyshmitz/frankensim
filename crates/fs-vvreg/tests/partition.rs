@@ -2,12 +2,20 @@
 //! transitive calibration-taint enforcement (EXTREAL f85xj.7.1).
 
 use fs_blake3::{ContentHash, hash_domain};
+use fs_ledger::{Ledger, LedgerError};
 use fs_qty::QtyAny;
 use fs_vvreg::corpus::{ContextValue, DatasetPartition, corpus};
-use fs_vvreg::partition::{DatasetPurpose, PartitionLedger, PartitionRefusal};
+use fs_vvreg::partition::{
+    DatasetPurpose, MAX_PARTITION_RECORD_BYTES, PARTITION_RECEIPT_ARTIFACT_KIND, PartitionLedger,
+    PartitionReceiptRecord, PartitionRecordError, PartitionRefusal,
+};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const CHT: &str = "fs-benchmark-cht-query-v1";
 const MARTIN_MOYCE: &str = "martin-moyce-1952-square-column";
+const PARTITION_RECORD_META: &str = r#"{"schema":"fs-vvreg-partition-receipt-wire-v1"}"#;
+
+static NEXT_LEDGER: AtomicU64 = AtomicU64::new(0);
 
 fn artifact(label: &str) -> ContentHash {
     hash_domain("org.frankensim.fs-vvreg.test-model.v1", label.as_bytes())
@@ -29,6 +37,73 @@ fn martin_moyce_context_at(t_star: f64) -> [ContextValue; 1] {
         name: "t_star".to_string(),
         value: QtyAny::dimensionless(t_star),
     }]
+}
+
+fn receipt_records() -> Vec<PartitionReceiptRecord> {
+    let mut partitions = PartitionLedger::capture(corpus());
+    let repartition = partitions
+        .repartition(
+            CHT,
+            DatasetPartition::Calibration,
+            "reserve the exact CHT row for model calibration",
+        )
+        .expect("repartition receipt");
+    let calibration = corpus()
+        .query(
+            &partitions,
+            CHT,
+            DatasetPurpose::Calibration,
+            &cht_context(),
+        )
+        .expect("calibration access receipt");
+    let model = partitions
+        .register_model(artifact("durable-model"), &[&calibration], &[])
+        .expect("model taint receipt");
+    let held_out = corpus()
+        .query(
+            &partitions,
+            MARTIN_MOYCE,
+            DatasetPurpose::Validation,
+            &martin_moyce_context(),
+        )
+        .expect("held-out access");
+    let validation = partitions
+        .validate_model(&model, &[&held_out])
+        .expect("disjoint validation receipt");
+    partitions
+        .repartition(
+            MARTIN_MOYCE,
+            DatasetPartition::BlindHoldout,
+            "seal the validation row for a later blind drill",
+        )
+        .expect("blind repartition");
+    let blind_release = partitions
+        .release_blind(
+            MARTIN_MOYCE,
+            artifact("durable-preregistration"),
+            artifact("durable-blind-manifest"),
+            "release after the frozen model and protocol were committed",
+        )
+        .expect("blind release receipt");
+
+    vec![
+        calibration.receipt().clone().into(),
+        repartition.into(),
+        blind_release.into(),
+        model.into(),
+        validation.into(),
+    ]
+}
+
+fn partition_ledger_path() -> String {
+    let sequence = NEXT_LEDGER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir()
+        .join(format!(
+            "fs-vvreg-partition-receipts-{}-{sequence}.db",
+            std::process::id()
+        ))
+        .display()
+        .to_string()
 }
 
 #[test]
@@ -383,4 +458,143 @@ fn validation_access_cannot_be_smuggled_into_model_training() {
             purpose: DatasetPurpose::Validation,
         }) if dataset_id == CHT
     ));
+}
+
+#[test]
+fn every_partition_receipt_record_round_trips_and_refuses_wire_tampering() {
+    let records = receipt_records();
+    assert_eq!(
+        records
+            .iter()
+            .map(PartitionReceiptRecord::record_type)
+            .collect::<Vec<_>>(),
+        [
+            "dataset-access",
+            "repartition",
+            "blind-release",
+            "model-taint",
+            "validation",
+        ]
+    );
+    for record in &records {
+        let encoded = record.encode();
+        assert!(encoded.len() <= MAX_PARTITION_RECORD_BYTES);
+        let decoded =
+            PartitionReceiptRecord::decode(&encoded).expect("canonical record round trip");
+        assert_eq!(decoded, *record);
+        assert_eq!(decoded.semantic_identity(), record.semantic_identity());
+    }
+
+    let mut future = records[0].encode();
+    future[8..12].copy_from_slice(&2_u32.to_le_bytes());
+    assert_eq!(
+        PartitionReceiptRecord::decode(&future),
+        Err(PartitionRecordError::UnsupportedVersion { observed: 2 })
+    );
+
+    let mut unknown = records[0].encode();
+    unknown[12] = 0xff;
+    assert_eq!(
+        PartitionReceiptRecord::decode(&unknown),
+        Err(PartitionRecordError::UnknownVariant { observed: 0xff })
+    );
+
+    let mut tampered = records[0].encode();
+    let last = tampered.len() - 1;
+    tampered[last] ^= 1;
+    assert!(matches!(
+        PartitionReceiptRecord::decode(&tampered),
+        Err(PartitionRecordError::IdentityMismatch {
+            record: "dataset-access"
+        })
+    ));
+
+    let mut truncated = records[4].encode();
+    truncated.pop();
+    assert!(matches!(
+        PartitionReceiptRecord::decode(&truncated),
+        Err(PartitionRecordError::Truncated {
+            field: "validation identity"
+        })
+    ));
+
+    let mut extended = records[2].encode();
+    extended.push(0);
+    assert_eq!(
+        PartitionReceiptRecord::decode(&extended),
+        Err(PartitionRecordError::TrailingBytes { observed: 1 })
+    );
+}
+
+#[test]
+fn partition_receipt_bytes_survive_ledger_reopen_dedupe_and_corruption_checks() {
+    let records = receipt_records();
+    let encoded = records
+        .iter()
+        .map(PartitionReceiptRecord::encode)
+        .collect::<Vec<_>>();
+    let path = partition_ledger_path();
+
+    let hashes = {
+        let ledger = Ledger::open(&path).expect("open durable partition ledger");
+        encoded
+            .iter()
+            .map(|bytes| {
+                let first = ledger
+                    .put_artifact(
+                        PARTITION_RECEIPT_ARTIFACT_KIND,
+                        bytes,
+                        Some(PARTITION_RECORD_META),
+                    )
+                    .expect("persist partition receipt bytes");
+                assert!(!first.deduped);
+                let duplicate = ledger
+                    .put_artifact(
+                        PARTITION_RECEIPT_ARTIFACT_KIND,
+                        bytes,
+                        Some(PARTITION_RECORD_META),
+                    )
+                    .expect("dedupe exact partition receipt bytes");
+                assert!(duplicate.deduped);
+                assert_eq!(duplicate.hash, first.hash);
+                assert_eq!(duplicate.len, first.len);
+                first.hash
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let ledger = Ledger::open(&path).expect("reopen durable partition ledger");
+    let read_limit =
+        u64::try_from(MAX_PARTITION_RECORD_BYTES).expect("record byte cap fits in u64");
+    for ((expected, bytes), hash) in records.iter().zip(&encoded).zip(&hashes) {
+        let persisted = ledger
+            .get_artifact_bounded(hash, read_limit)
+            .expect("bounded durable read")
+            .expect("persisted receipt is present");
+        assert_eq!(persisted, *bytes);
+        assert_eq!(
+            PartitionReceiptRecord::decode(&persisted).expect("reverify persisted record"),
+            *expected
+        );
+    }
+    let intact = ledger
+        .verify_artifact_integrity()
+        .expect("scan intact receipt artifacts");
+    assert_eq!(
+        intact.checked,
+        u64::try_from(records.len()).expect("record count fits in u64")
+    );
+    assert!(intact.corrupted.is_empty());
+
+    ledger
+        .corrupt_artifact_for_test(&hashes[0])
+        .expect("inject receipt corruption");
+    assert!(matches!(
+        ledger.get_artifact_bounded(&hashes[0], read_limit),
+        Err(LedgerError::Corrupt { .. })
+    ));
+    let corrupted = ledger
+        .verify_artifact_integrity()
+        .expect("scan corrupted receipt artifacts");
+    assert_eq!(corrupted.corrupted, vec![hashes[0].to_hex()]);
 }
