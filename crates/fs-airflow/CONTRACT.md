@@ -46,6 +46,16 @@ existing convection rung.
   solver/algebraic, discretization, geometry, parameters, boundary conditions,
   model form, and measurement. A missing propagation theorem/receipt is a
   named `Unknown`, never `Negligible` or zero.
+- `ThermalQoiSet::audit_operating_envelope` is the mandatory final E05.10
+  product gate. It requires exactly one consumed-card declaration for each of
+  the seven emitted records, derives each incoming color from the actual
+  `Evidence` receipt, runs one all-card/all-point `fs-regime` audit, applies
+  each exact receipt to the matching eight-term budget, and returns the audit
+  beside the updated values. Missing, duplicate, or foreign QoI declarations
+  refuse; callers cannot supply the pre-audit color. Fully in-domain admission
+  leaves the QoI set byte-for-byte unchanged, while any partial/out-of-domain
+  envelope makes the affected model-form term explicitly Unknown under the
+  exact receipt identity. Overrides remain acknowledgements only.
 - The operating-point pressure/flow envelope populates the conditional
   boundary-condition term for pressure and power. The cited total-efficiency
   interval populates the fan-power parameter term. Both remain accompanied by
@@ -149,10 +159,13 @@ None.
   startup remain outside this slice.
 - No retained manufacturer table, wind-tunnel corpus, CFD comparison, or
   experimental enclosure validation exists; there is no L4 or product claim.
-- The thermal QoI consumer does not close E05.10's external validation,
-  validity-intersection, DWR, mesh-refinement, sensor, or naked-scalar lint
-  obligations. It closes the E08.1 integration requirement that each QoI emit
-  the rich budget honestly; the broader E05.10 bead remains open.
+- The thermal QoI consumer does not close E05.10's external validation, DWR,
+  mesh-refinement, sensor, or naked-scalar lint obligations. It emits the rich
+  budget and now enforces final validity intersection when the orchestrator
+  supplies the complete consumed-card registry, card-use map, and operating
+  envelope. Completeness/authenticity of those supplied authorities remains an
+  orchestration and package/checker responsibility; the broader E05.10 bead
+  remains open.
 - The conditional pressure/flow and efficiency intervals are only as sound as
   their caller-declared source envelopes and the stated quadratic model. The
   always-explicit unknown model-form term prevents their interpretation as a

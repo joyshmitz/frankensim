@@ -8,7 +8,7 @@
 //! without a valid propagation path are explicit [`TermValue::Unknown`].
 
 use core::fmt;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fs_blake3::{ContentHash, hash_domain};
 use fs_conduction::{ConductionMesh, ConductionSolution};
@@ -17,10 +17,15 @@ use fs_evidence::uncertainty::{
     EngineeringUncertaintyTerm, TermValue, UncertaintyArtifactRef, UncertaintyError,
 };
 use fs_evidence::{
-    Evidence, ModelEvidence, NumericalCertificate, ProvenanceHash, SensitivitySummary,
-    StatisticalCertificate, ValidityDomain,
+    Evidence, ModelCard, ModelEvidence, NumericalCertificate, ProvenanceHash, SensitivitySummary,
+    StatisticalCertificate, ValidityDomain, color_of,
 };
 use fs_qty::{Power, Pressure, Temperature};
+use fs_regime::{
+    OperatingPoint as RegimeOperatingPoint, OutputAuditBudgetError, OutputAuditError,
+    OverrideAcknowledgement, ProductOutputAudit, QoiClaim, apply_output_audit_to_budget,
+    audit_product_output,
+};
 
 use crate::{OperatingPoint, SourceProvenance};
 
@@ -244,6 +249,111 @@ pub struct ThermalQoiSet {
     pub thermal_margin: ThermalQoi<Temperature>,
 }
 
+/// Explicit model-card use declaration for one thermal QoI.
+///
+/// The declaration supplies card identities and an optional non-restoring
+/// override acknowledgement. The QoI color is always derived from the actual
+/// [`Evidence`] receipt and cannot be supplied by the caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThermalQoiCardUse {
+    /// Exact QoI identity, matching its engineering uncertainty budget.
+    pub qoi: String,
+    /// Every model card consumed by this QoI.
+    pub model_cards: Vec<String>,
+    /// Explicit authorization to proceed despite demotion, if any.
+    pub override_acknowledgement: Option<OverrideAcknowledgement>,
+}
+
+/// The final E05.10 output: values/budgets plus the complete regime audit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuditedThermalQoiSet {
+    /// Original QoI values with every demotion applied to its rich budget.
+    pub qois: ThermalQoiSet,
+    /// One final-envelope receipt per QoI.
+    pub audit: ProductOutputAudit,
+}
+
+/// Refusal from final operating-envelope admission of the thermal QoI set.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ThermalOutputAuditError {
+    /// Two card-use declarations named the same QoI.
+    DuplicateCardUse {
+        /// Repeated QoI identity.
+        qoi: String,
+    },
+    /// One emitted QoI had no consumed-card declaration.
+    MissingCardUse {
+        /// Emitted QoI identity.
+        qoi: String,
+    },
+    /// A declaration named no emitted thermal QoI.
+    UnknownQoi {
+        /// Foreign QoI identity.
+        qoi: String,
+    },
+    /// The shared audit returned no receipt for an emitted QoI.
+    MissingReceipt {
+        /// Emitted QoI identity.
+        qoi: String,
+    },
+    /// The shared `fs-regime` product audit refused the envelope.
+    OutputAudit(OutputAuditError),
+    /// A receipt could not be applied to its matching rich budget.
+    Budget(OutputAuditBudgetError),
+}
+
+impl fmt::Display for ThermalOutputAuditError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateCardUse { qoi } => {
+                write!(f, "duplicate thermal QoI model-card declaration {qoi:?}")
+            }
+            Self::MissingCardUse { qoi } => {
+                write!(f, "thermal QoI {qoi:?} has no model-card declaration")
+            }
+            Self::UnknownQoi { qoi } => {
+                write!(
+                    f,
+                    "model-card declaration names unknown thermal QoI {qoi:?}"
+                )
+            }
+            Self::MissingReceipt { qoi } => {
+                write!(
+                    f,
+                    "thermal product audit returned no receipt for QoI {qoi:?}"
+                )
+            }
+            Self::OutputAudit(error) => write!(f, "thermal product audit refused: {error}"),
+            Self::Budget(error) => write!(f, "thermal budget demotion refused: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for ThermalOutputAuditError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::DuplicateCardUse { .. }
+            | Self::MissingCardUse { .. }
+            | Self::UnknownQoi { .. }
+            | Self::MissingReceipt { .. } => None,
+            Self::OutputAudit(error) => Some(error),
+            Self::Budget(error) => Some(error),
+        }
+    }
+}
+
+impl From<OutputAuditError> for ThermalOutputAuditError {
+    fn from(error: OutputAuditError) -> Self {
+        Self::OutputAudit(error)
+    }
+}
+
+impl From<OutputAuditBudgetError> for ThermalOutputAuditError {
+    fn from(error: OutputAuditBudgetError) -> Self {
+        Self::Budget(error)
+    }
+}
+
 impl ThermalQoiSet {
     /// Every emitted budget, including all three uniformity records.
     #[must_use]
@@ -268,6 +378,98 @@ impl ThermalQoiSet {
             .iter()
             .all(|budget| matches!(budget.total(), BudgetTotal::Unknown { .. }))
     }
+
+    /// Run the mandatory final operating-envelope audit for all seven records.
+    ///
+    /// Every emitted QoI must have exactly one [`ThermalQoiCardUse`]. The
+    /// incoming color is derived from the actual evidence receipt, all claims
+    /// are audited together against every supplied point/card, and each exact
+    /// receipt is applied to the matching eight-term budget before return.
+    ///
+    /// # Errors
+    ///
+    /// Refuses missing, duplicate, or foreign card-use declarations, any
+    /// shared `fs-regime` audit refusal, or a receipt/budget mismatch.
+    pub fn audit_operating_envelope(
+        mut self,
+        registry: &[ModelCard],
+        operating_points: &[RegimeOperatingPoint],
+        card_uses: &[ThermalQoiCardUse],
+    ) -> Result<AuditedThermalQoiSet, ThermalOutputAuditError> {
+        let mut uses = BTreeMap::new();
+        for declaration in card_uses {
+            if uses.insert(declaration.qoi.clone(), declaration).is_some() {
+                return Err(ThermalOutputAuditError::DuplicateCardUse {
+                    qoi: declaration.qoi.clone(),
+                });
+            }
+        }
+
+        let mut claims = Vec::with_capacity(7);
+        push_regime_claim(&mut claims, &mut uses, &self.junction_maximum.qoi)?;
+        push_regime_claim(&mut claims, &mut uses, &self.pressure_drop)?;
+        push_regime_claim(&mut claims, &mut uses, &self.fan_power)?;
+        push_regime_claim(&mut claims, &mut uses, &self.uniformity.mean_temperature)?;
+        push_regime_claim(&mut claims, &mut uses, &self.uniformity.spread)?;
+        push_regime_claim(
+            &mut claims,
+            &mut uses,
+            &self.uniformity.face_mean_standard_deviation,
+        )?;
+        push_regime_claim(&mut claims, &mut uses, &self.thermal_margin)?;
+        if let Some(qoi) = uses.keys().next() {
+            return Err(ThermalOutputAuditError::UnknownQoi { qoi: qoi.clone() });
+        }
+
+        let audit = audit_product_output(registry, operating_points, &claims)?;
+        apply_receipt_to_budget(&audit, &mut self.junction_maximum.qoi.uncertainty)?;
+        apply_receipt_to_budget(&audit, &mut self.pressure_drop.uncertainty)?;
+        apply_receipt_to_budget(&audit, &mut self.fan_power.uncertainty)?;
+        apply_receipt_to_budget(&audit, &mut self.uniformity.mean_temperature.uncertainty)?;
+        apply_receipt_to_budget(&audit, &mut self.uniformity.spread.uncertainty)?;
+        apply_receipt_to_budget(
+            &audit,
+            &mut self.uniformity.face_mean_standard_deviation.uncertainty,
+        )?;
+        apply_receipt_to_budget(&audit, &mut self.thermal_margin.uncertainty)?;
+
+        Ok(AuditedThermalQoiSet { qois: self, audit })
+    }
+}
+
+fn push_regime_claim<'a, T>(
+    claims: &mut Vec<QoiClaim>,
+    uses: &mut BTreeMap<String, &'a ThermalQoiCardUse>,
+    qoi: &ThermalQoi<T>,
+) -> Result<(), ThermalOutputAuditError> {
+    let qoi_id = qoi.uncertainty.qoi();
+    let declaration =
+        uses.remove(qoi_id)
+            .ok_or_else(|| ThermalOutputAuditError::MissingCardUse {
+                qoi: qoi_id.to_string(),
+            })?;
+    claims.push(QoiClaim {
+        qoi: qoi_id.to_string(),
+        color: color_of(&qoi.evidence.numerical, &qoi.evidence.model),
+        model_cards: declaration.model_cards.clone(),
+        override_acknowledgement: declaration.override_acknowledgement.clone(),
+    });
+    Ok(())
+}
+
+fn apply_receipt_to_budget(
+    audit: &ProductOutputAudit,
+    budget: &mut EngineeringUncertaintyBudget,
+) -> Result<(), ThermalOutputAuditError> {
+    let receipt = audit
+        .receipts
+        .iter()
+        .find(|receipt| receipt.qoi == budget.qoi())
+        .ok_or_else(|| ThermalOutputAuditError::MissingReceipt {
+            qoi: budget.qoi().to_string(),
+        })?;
+    *budget = apply_output_audit_to_budget(receipt, budget)?;
+    Ok(())
 }
 
 /// Deterministic refusal from thermal QoI extraction.

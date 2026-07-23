@@ -1,7 +1,10 @@
 //! G0/G3 thermal-QoI and eight-term-budget integration battery.
 
+use std::collections::BTreeMap;
+
 use fs_airflow::qoi::{
-    FanPowerSpec, JunctionRegion, QoiError, SurfaceRegion, ThermalRequirement, extract_thermal_qois,
+    FanPowerSpec, JunctionRegion, QoiError, SurfaceRegion, ThermalOutputAuditError,
+    ThermalQoiCardUse, ThermalRequirement, extract_thermal_qois,
 };
 use fs_airflow::{
     EnclosureNetwork, FanArrangement, FanBank, FanCurve, FanPoint, LeakageElement, LossElement,
@@ -12,11 +15,14 @@ use fs_conduction::{
     ConductionMesh, ConductionReport, ConductionSolution, EnergyBalance, ProvenanceClass,
     StopReason,
 };
-use fs_evidence::NumericalKind;
 use fs_evidence::uncertainty::{
     BudgetTotal, ENGINEERING_UNCERTAINTY_TERM_COUNT, EngineeringUncertaintyKind, TermValue,
 };
+use fs_evidence::{Ambition, ModelCard, NumericalKind, ValidityDomain};
 use fs_qty::{Pressure, Temperature, VolumetricFlowRate};
+use fs_regime::{
+    EnvelopeCoverage, OperatingPoint as RegimeOperatingPoint, OverrideAcknowledgement,
+};
 
 fn source(id: &str) -> SourceProvenance {
     SourceProvenance::new("retained synthetic G0 source", id)
@@ -89,6 +95,7 @@ fn mesh_and_solution() -> (ConductionMesh, ConductionSolution) {
             },
             material_provenance: ProvenanceClass::MatdbReceipts,
             material_receipts: 3,
+            interface_fluxes: Vec::new(),
             free_dofs: 8,
             elements: mesh.element_count(),
         },
@@ -103,6 +110,57 @@ fn declarations(mesh: &ConductionMesh) -> (JunctionRegion, SurfaceRegion, FanPow
             .expect("surface region");
     let power = FanPowerSpec::try_new(0.72, 0.04, source("efficiency-v1")).expect("fan efficiency");
     (junction, surface, power)
+}
+
+fn extract_fixture_qois() -> fs_airflow::qoi::ThermalQoiSet {
+    let (mesh, solution) = mesh_and_solution();
+    let operating = operating_point();
+    let (junction, surface, power) = declarations(&mesh);
+    let requirement = ThermalRequirement::try_new(
+        Temperature::new(380.0),
+        source("component-datasheet-limit-v1"),
+    )
+    .expect("requirement");
+    extract_thermal_qois(
+        &mesh,
+        &solution,
+        &operating,
+        &junction,
+        &surface,
+        &power,
+        Some(&requirement),
+    )
+    .expect("QoI extraction")
+}
+
+fn thermal_regime_card() -> ModelCard {
+    ModelCard::new(
+        "thermal-closure",
+        "1.0.0",
+        Ambition::Solid,
+        vec!["steady forced-convection closure".to_string()],
+        ValidityDomain::unconstrained().with("Re", 10.0, 100.0),
+        vec!["operation outside the retained Reynolds envelope".to_string()],
+        0.1,
+    )
+}
+
+fn regime_point(id: &str, reynolds: f64) -> RegimeOperatingPoint {
+    RegimeOperatingPoint {
+        id: id.to_string(),
+        groups: BTreeMap::from([("Re".to_string(), reynolds)]),
+    }
+}
+
+fn card_uses(qois: &fs_airflow::qoi::ThermalQoiSet) -> Vec<ThermalQoiCardUse> {
+    qois.budgets()
+        .into_iter()
+        .map(|budget| ThermalQoiCardUse {
+            qoi: budget.qoi().to_string(),
+            model_cards: vec!["thermal-closure".to_string()],
+            override_acknowledgement: None,
+        })
+        .collect()
 }
 
 #[test]
@@ -175,6 +233,122 @@ fn every_reference_qoi_emits_an_eight_term_budget_without_laundering_unknowns() 
             .term(EngineeringUncertaintyKind::Parameters)
             .value(),
         TermValue::IntervalBound { .. }
+    ));
+}
+
+#[test]
+fn final_audit_demotes_every_e05_10_qoi_and_rebinds_each_model_budget() {
+    let qois = extract_fixture_qois();
+    let mut uses = card_uses(&qois);
+    uses[0].override_acknowledgement = Some(OverrideAcknowledgement {
+        actor: "thermal-reviewer".to_string(),
+        reason: "retain estimate for redesign triage".to_string(),
+    });
+    let audited = qois
+        .audit_operating_envelope(
+            &[thermal_regime_card()],
+            &[regime_point("nominal", 50.0), regime_point("hot", 125.0)],
+            &uses,
+        )
+        .expect("complete card declarations admit the final audit");
+
+    assert_eq!(audited.audit.receipts.len(), 7);
+    assert!(audited.audit.receipts.iter().all(|receipt| {
+        receipt.coverage == EnvelopeCoverage::Partial
+            && receipt.in_domain_points == ["nominal"]
+            && receipt.out_of_domain_points == ["hot"]
+            && receipt.model_cards.len() == 1
+            && receipt.model_cards[0].name == "thermal-closure"
+            && receipt.model_cards[0].version == "1.0.0"
+            && matches!(
+                receipt.effective_color,
+                fs_evidence::Color::Estimated { dispersion, .. }
+                    if dispersion.is_infinite()
+            )
+    }));
+    assert!(audited.audit.receipts.iter().any(|receipt| {
+        receipt
+            .override_acknowledgement
+            .as_ref()
+            .is_some_and(|ack| {
+                ack.actor == "thermal-reviewer"
+                    && matches!(
+                        receipt.effective_color,
+                        fs_evidence::Color::Estimated { dispersion, .. }
+                            if dispersion.is_infinite()
+                    )
+            })
+    }));
+    for budget in audited.qois.budgets() {
+        let model = budget.term(EngineeringUncertaintyKind::ModelForm);
+        assert!(matches!(model.value(), TermValue::Unknown { .. }));
+        assert_eq!(model.provenance().role(), "regime-output-audit");
+        let receipt = audited
+            .audit
+            .receipts
+            .iter()
+            .find(|receipt| receipt.qoi == budget.qoi())
+            .expect("matching final receipt");
+        assert_eq!(model.provenance().digest(), receipt.content_id());
+    }
+}
+
+#[test]
+fn final_audit_is_exact_in_domain_and_refuses_incomplete_card_use_maps() {
+    let qois = extract_fixture_qois();
+    let uses = card_uses(&qois);
+    let baseline = qois.clone();
+    let admitted = qois
+        .audit_operating_envelope(
+            &[thermal_regime_card()],
+            &[regime_point("nominal", 50.0)],
+            &uses,
+        )
+        .expect("in-domain final audit");
+    assert_eq!(admitted.qois, baseline);
+    assert!(
+        admitted
+            .audit
+            .receipts
+            .iter()
+            .all(|receipt| !receipt.demoted())
+    );
+
+    let mut missing = uses.clone();
+    missing.pop();
+    assert!(matches!(
+        baseline.clone().audit_operating_envelope(
+            &[thermal_regime_card()],
+            &[regime_point("nominal", 50.0)],
+            &missing,
+        ),
+        Err(ThermalOutputAuditError::MissingCardUse { .. })
+    ));
+
+    let mut duplicate = uses.clone();
+    duplicate.push(uses[0].clone());
+    assert!(matches!(
+        baseline.clone().audit_operating_envelope(
+            &[thermal_regime_card()],
+            &[regime_point("nominal", 50.0)],
+            &duplicate,
+        ),
+        Err(ThermalOutputAuditError::DuplicateCardUse { .. })
+    ));
+
+    let mut foreign = uses;
+    foreign.push(ThermalQoiCardUse {
+        qoi: "foreign-qoi".to_string(),
+        model_cards: vec!["thermal-closure".to_string()],
+        override_acknowledgement: None,
+    });
+    assert!(matches!(
+        baseline.audit_operating_envelope(
+            &[thermal_regime_card()],
+            &[regime_point("nominal", 50.0)],
+            &foreign,
+        ),
+        Err(ThermalOutputAuditError::UnknownQoi { .. })
     ));
 }
 
