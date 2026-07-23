@@ -60,6 +60,12 @@ lattice-scaling assistant, FLUX conformance, conformal hardening buckets.
   identity. If model form belonged to a covariance block, every member is made
   unknown because the finite joint representation cannot survive removal of
   one member.
+  `audit_product_output_with_cards` accepts the narrower `RegimeAuditCard`
+  projection (owner-defined name, version, and exact shared validity box) for
+  matdb and other card classes whose authoritative schemas do not contain the
+  extra ambition, discrepancy, calibration, and failure fields required by
+  `fs_evidence::ModelCard`. The projection does not invent those fields;
+  `audit_product_output` remains the exact evidence-card wrapper.
 - `report`: `assess(&[RoleInput]) -> Evidence<RegimeReport>` — groups,
   Pi rank/count, dominant balance, valid/invalid models, recommended
   scaling, conditioning risk (decade spread of input scale factors), and

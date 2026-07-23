@@ -20,7 +20,8 @@ pub use groups::{NamedGroup, Role, RoleInput, standard_groups};
 pub use output_audit::{
     AxisViolationKind, ConsumedModelCard, EnvelopeCoverage, OperatingPoint, OutputAuditBudgetError,
     OutputAuditError, OutputClaimReceipt, OverrideAcknowledgement, ProductOutputAudit, QoiClaim,
-    RegimeViolation, apply_output_audit_to_budget, audit_product_output,
+    RegimeAuditCard, RegimeViolation, apply_output_audit_to_budget, audit_product_output,
+    audit_product_output_with_cards,
 };
 pub use pi::{Input, PiBasis, PiGroup, pi_groups};
 pub use report::{BenchmarkMatch, RegimeReport, assess};

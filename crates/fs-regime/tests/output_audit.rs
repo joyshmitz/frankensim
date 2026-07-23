@@ -8,7 +8,8 @@ use fs_evidence::uncertainty::{
 use fs_evidence::{Ambition, Color, ModelCard, ValidityDomain};
 use fs_regime::{
     AxisViolationKind, EnvelopeCoverage, OperatingPoint, OutputAuditBudgetError,
-    OverrideAcknowledgement, QoiClaim, apply_output_audit_to_budget, audit_product_output,
+    OverrideAcknowledgement, QoiClaim, RegimeAuditCard, apply_output_audit_to_budget,
+    audit_product_output, audit_product_output_with_cards,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -176,6 +177,96 @@ fn audits_every_card_and_partitions_partial_sweeps_without_averaging() {
     assert!(no_claim.contains("2 of 3 operating points"));
     assert!(no_claim.contains("`wall-law` / `Re`"));
     assert!(!no_claim.contains("coverage probability"));
+}
+
+#[test]
+fn owner_neutral_card_projection_matches_the_evidence_card_wrapper() {
+    let evidence_cards = vec![card("closure", 10.0, 100.0), card("wall-law", 20.0, 80.0)];
+    let audit_cards = evidence_cards
+        .iter()
+        .map(RegimeAuditCard::from)
+        .collect::<Vec<_>>();
+    let points = vec![
+        point("inside", &[("Re", 50.0)]),
+        point("outside", &[("Re", 90.0)]),
+    ];
+    let claims = [claim(&["closure", "wall-law"], None)];
+
+    let evidence_audit =
+        audit_product_output(&evidence_cards, &points, &claims).expect("evidence-card audit");
+    let projected_audit = audit_product_output_with_cards(&audit_cards, &points, &claims)
+        .expect("owner-neutral card audit");
+
+    assert_eq!(projected_audit, evidence_audit);
+}
+
+#[test]
+fn owner_neutral_card_preserves_external_identity_without_evidence_field_invention() {
+    let material_card = RegimeAuditCard::new(
+        "fs-matdb:j2-plasticity-voce:8a10d8",
+        "law-v1/state-v1",
+        ValidityDomain::unconstrained().with("T", 200.0, 400.0),
+    );
+    let material_claim = QoiClaim {
+        qoi: "peak-temperature".to_string(),
+        color: Color::Estimated {
+            estimator: "thermal-solve".to_string(),
+            dispersion: f64::INFINITY,
+        },
+        model_cards: vec![material_card.name.clone()],
+        override_acknowledgement: None,
+    };
+    let audit = audit_product_output_with_cards(
+        &[material_card],
+        &[
+            point("nominal", &[("T", 300.0)]),
+            point("hot", &[("T", 450.0)]),
+        ],
+        &[material_claim],
+    )
+    .expect("material-card projection audits");
+    let receipt = &audit.receipts[0];
+
+    assert_eq!(receipt.coverage, EnvelopeCoverage::Partial);
+    assert_eq!(
+        receipt.model_cards[0].name,
+        "fs-matdb:j2-plasticity-voce:8a10d8"
+    );
+    assert_eq!(receipt.model_cards[0].version, "law-v1/state-v1");
+    assert_eq!(receipt.violations.len(), 1);
+    assert_eq!(receipt.violations[0].axis, "T");
+    assert_eq!(receipt.violations[0].observed, Some(450.0));
+    assert_eq!(receipt.violations[0].hi, 400.0);
+}
+
+#[test]
+fn owner_neutral_card_uses_the_same_fail_closed_identity_gate() {
+    let malformed = RegimeAuditCard::new(
+        " material-card",
+        "law-v1",
+        ValidityDomain::unconstrained().with("T", 200.0, 400.0),
+    );
+    let material_claim = QoiClaim {
+        qoi: "peak-temperature".to_string(),
+        color: Color::Estimated {
+            estimator: "thermal-solve".to_string(),
+            dispersion: f64::INFINITY,
+        },
+        model_cards: vec![malformed.name.clone()],
+        override_acknowledgement: None,
+    };
+
+    assert!(matches!(
+        audit_product_output_with_cards(
+            &[malformed],
+            &[point("nominal", &[("T", 300.0)])],
+            &[material_claim],
+        ),
+        Err(fs_regime::OutputAuditError::InvalidIdentity {
+            field: "model-card",
+            ..
+        })
+    ));
 }
 
 #[test]

@@ -28,6 +28,48 @@ pub struct OperatingPoint {
     pub groups: BTreeMap<String, f64>,
 }
 
+/// Minimal card projection required by the product-boundary regime audit.
+///
+/// This snapshot deliberately carries only identity and validity. It lets a
+/// higher layer audit cards owned by other domains without inventing an
+/// [`fs_evidence::Ambition`], discrepancy band, calibration artifact, or
+/// failure catalog merely to satisfy the richer [`ModelCard`] schema.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegimeAuditCard {
+    /// Stable card identity referenced by [`QoiClaim::model_cards`].
+    pub name: String,
+    /// Semantic version or other owner-defined version identity.
+    pub version: String,
+    /// Exact validity box supplied by the owning card type.
+    pub validity: fs_evidence::ValidityDomain,
+}
+
+impl RegimeAuditCard {
+    /// Project one owner-defined card identity and validity box into the audit.
+    ///
+    /// Structural identity validation remains centralized in
+    /// [`audit_product_output_with_cards`], so malformed inputs return the
+    /// same typed errors as evidence-model cards.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        version: impl Into<String>,
+        validity: fs_evidence::ValidityDomain,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            version: version.into(),
+            validity,
+        }
+    }
+}
+
+impl From<&ModelCard> for RegimeAuditCard {
+    fn from(card: &ModelCard) -> Self {
+        Self::new(&card.name, &card.version, card.validity.clone())
+    }
+}
+
 /// One user-facing quantity and the model cards consumed to produce it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QoiClaim {
@@ -524,6 +566,28 @@ pub fn audit_product_output(
     operating_points: &[OperatingPoint],
     claims: &[QoiClaim],
 ) -> Result<ProductOutputAudit, OutputAuditError> {
+    let audit_cards = registry
+        .iter()
+        .map(RegimeAuditCard::from)
+        .collect::<Vec<_>>();
+    audit_product_output_with_cards(&audit_cards, operating_points, claims)
+}
+
+/// Audit every QoI against owner-neutral card identity/validity projections.
+///
+/// Use this entry point for card classes whose authoritative schema is not
+/// [`ModelCard`]. The projection must preserve the owning card's exact identity,
+/// version, and validity box; this API does not assert or synthesize any other
+/// evidence-card fields.
+///
+/// # Errors
+/// Refuses missing points, malformed or duplicate identities, cardless QoIs,
+/// duplicate registry names, and references to absent model cards.
+pub fn audit_product_output_with_cards(
+    registry: &[RegimeAuditCard],
+    operating_points: &[OperatingPoint],
+    claims: &[QoiClaim],
+) -> Result<ProductOutputAudit, OutputAuditError> {
     if operating_points.is_empty() {
         return Err(OutputAuditError::NoOperatingPoints);
     }
@@ -572,7 +636,9 @@ pub fn audit_product_output(
     })
 }
 
-fn unique_cards(registry: &[ModelCard]) -> Result<BTreeMap<String, &ModelCard>, OutputAuditError> {
+fn unique_cards(
+    registry: &[RegimeAuditCard],
+) -> Result<BTreeMap<String, &RegimeAuditCard>, OutputAuditError> {
     let mut cards = BTreeMap::new();
     for card in registry {
         validate_identity("model-card", &card.name)?;
@@ -660,7 +726,7 @@ fn audit_claim(
     claim: &QoiClaim,
     points: &[&OperatingPoint],
     model_cards: &[ConsumedModelCard],
-    selected_cards: &[&ModelCard],
+    selected_cards: &[&RegimeAuditCard],
 ) -> OutputClaimReceipt {
     let mut in_domain_points = Vec::new();
     let mut out_of_domain_points = Vec::new();
@@ -715,7 +781,7 @@ fn audit_claim(
 
 fn collect_violations(
     point: &OperatingPoint,
-    card: &ModelCard,
+    card: &RegimeAuditCard,
     violations: &mut Vec<RegimeViolation>,
 ) {
     for (axis, &(lo, hi)) in card.validity.bounds() {
