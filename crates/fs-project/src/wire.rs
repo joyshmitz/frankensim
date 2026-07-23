@@ -258,12 +258,18 @@ fn lower_structure(spec: &ProjectSpec, sections: &mut Vec<Node>) -> Result<(), P
     if let Some(materials) = &spec.materials {
         let mut items = vec![sym("materials")];
         for binding in materials {
-            items.push(list(vec![
+            let mut row = vec![
                 sym("binding"),
                 kw("region"),
                 text(&binding.region),
                 kw("card"),
                 text(&binding.card),
+            ];
+            if let Some(claim) = &binding.claim {
+                row.push(kw("claim"));
+                row.push(text(claim));
+            }
+            row.extend([
                 kw("state"),
                 text(&binding.state),
                 kw("temp-lo"),
@@ -272,22 +278,27 @@ fn lower_structure(spec: &ProjectSpec, sections: &mut Vec<Node>) -> Result<(), P
                 qty(binding.temp_hi)?,
                 kw("source"),
                 text(&binding.source),
-            ]));
+            ]);
+            items.push(list(row));
         }
         sections.push(list(items));
     }
     if let Some(interface_cards) = &spec.interface_cards {
         let mut items = vec![sym("interface-cards")];
         for binding in interface_cards {
-            items.push(list(vec![
+            let mut row = vec![
                 sym("card"),
                 kw("interface"),
                 text(&binding.interface),
                 kw("card"),
                 text(&binding.card),
-                kw("source"),
-                text(&binding.source),
-            ]));
+            ];
+            if let Some(claim) = &binding.claim {
+                row.push(kw("claim"));
+                row.push(text(claim));
+            }
+            row.extend([kw("source"), text(&binding.source)]);
+            items.push(list(row));
         }
         sections.push(list(items));
     }
@@ -1033,12 +1044,15 @@ fn read_materials(body: &[Node], out: &mut Vec<Violation>) -> Vec<MaterialBindin
         let pairs = read_pairs(
             inner,
             "binding",
-            &["region", "card", "state", "temp-lo", "temp-hi", "source"],
+            &[
+                "region", "card", "claim", "state", "temp-lo", "temp-hi", "source",
+            ],
             out,
         );
         bindings.push(MaterialBinding {
             region: expect_str(field(&pairs, "region"), "binding.region", out),
             card: expect_str(field(&pairs, "card"), "binding.card", out),
+            claim: field(&pairs, "claim").map(|node| expect_str(Some(node), "binding.claim", out)),
             state: expect_str(field(&pairs, "state"), "binding.state", out),
             temp_lo: expect_qty(field(&pairs, "temp-lo"), "binding.temp-lo", out),
             temp_hi: expect_qty(field(&pairs, "temp-hi"), "binding.temp-hi", out),
@@ -1060,10 +1074,16 @@ fn read_interface_cards(body: &[Node], out: &mut Vec<Violation>) -> Vec<Interfac
             });
             continue;
         };
-        let pairs = read_pairs(inner, "card", &["interface", "card", "source"], out);
+        let pairs = read_pairs(
+            inner,
+            "card",
+            &["interface", "card", "claim", "source"],
+            out,
+        );
         bindings.push(InterfaceCardBinding {
             interface: expect_str(field(&pairs, "interface"), "card.interface", out),
             card: expect_str(field(&pairs, "card"), "card.card", out),
+            claim: field(&pairs, "claim").map(|node| expect_str(Some(node), "card.claim", out)),
             source: expect_str(field(&pairs, "source"), "card.source", out),
         });
     }

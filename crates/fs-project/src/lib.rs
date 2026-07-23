@@ -12,6 +12,7 @@
 //! refused, and the only defaults are receipted, never silent. Version bumps
 //! travel through explicit [`migration`] receipts.
 
+pub mod bind;
 pub mod migration;
 pub mod spec;
 pub mod wire;
@@ -20,6 +21,12 @@ pub mod wire;
 /// older envelopes must pass through [`migration::migrate_envelope`].
 pub const FSIM_VERSION: u32 = 1;
 
+pub use bind::{
+    Advisory, BindingRequirements, BindingTarget, CONTACT_RESISTANCE_DIMS,
+    CONTACT_RESISTANCE_PROPERTY, CardLibrary, MaterialResolution, RequiredProperty,
+    ResolvedBinding, ResolvedProperty, RetainedReceipt, TEMPERATURE_AXIS,
+    THERMAL_CONDUCTIVITY_DIMS, THERMAL_CONDUCTIVITY_PROPERTY, resolve_bindings,
+};
 pub use migration::{MigratedProject, MigrationRule, ProjectMigrationReceipt, migrate_envelope};
 pub use spec::{
     Budgets, Cooling, DefaultReceipt, EntityDecl, Envelope, Fan, GeometryArtifact,

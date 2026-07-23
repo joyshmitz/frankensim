@@ -184,6 +184,11 @@ pub struct MaterialBinding {
     pub region: String,
     /// Hex digest of the matdb card's content hash.
     pub card: String,
+    /// Explicit claim pin (hex digest of a claim content hash) selecting
+    /// between coexisting conflicting claims on the card. Optional: a card
+    /// without conflicts needs no pin, and a conflict without a pin is a
+    /// validation refusal — the system never auto-picks between sources.
+    pub claim: Option<String>,
     /// Material state identifier on the card.
     pub state: String,
     /// Lower bound of the admitted temperature range.
@@ -202,6 +207,10 @@ pub struct InterfaceCardBinding {
     pub interface: String,
     /// Hex digest of the matdb interface-system card's content hash.
     pub card: String,
+    /// Explicit claim pin (hex digest of a claim content hash) selecting
+    /// between coexisting conflicting claims on the card; same semantics as
+    /// [`MaterialBinding::claim`].
+    pub claim: Option<String>,
     /// Source channel the card came from.
     pub source: String,
 }
@@ -369,6 +378,12 @@ fn interface_declaration(
         ));
         None
     }
+}
+
+/// A 64-char lowercase-or-uppercase hex content digest, the only admitted
+/// spelling for card and claim references.
+fn is_hex_digest(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 fn violation(code: &'static str, what: impl Into<String>, fix: impl Into<String>) -> Violation {
@@ -757,8 +772,7 @@ impl ProjectSpec {
                         "state the admitted temperature range low..high",
                     ));
                 }
-                if binding.card.len() != 64 || !binding.card.bytes().all(|b| b.is_ascii_hexdigit())
-                {
+                if !is_hex_digest(&binding.card) {
                     out.push(violation(
                         "project-material-card",
                         format!(
@@ -768,12 +782,23 @@ impl ProjectSpec {
                         "reference the matdb card by its full content hash",
                     ));
                 }
+                if let Some(claim) = &binding.claim
+                    && !is_hex_digest(claim)
+                {
+                    out.push(violation(
+                        "project-material-claim",
+                        format!(
+                            "claim pin for `{}` is not a 64-hex claim content hash",
+                            binding.region
+                        ),
+                        "pin the exact claim by its full content hash, or drop the pin if the card has no conflicting claims",
+                    ));
+                }
             }
         }
         if let Some(interface_cards) = &self.interface_cards {
             for binding in interface_cards {
-                if binding.card.len() != 64 || !binding.card.bytes().all(|b| b.is_ascii_hexdigit())
-                {
+                if !is_hex_digest(&binding.card) {
                     out.push(violation(
                         "project-interface-card",
                         format!(
@@ -781,6 +806,18 @@ impl ProjectSpec {
                             binding.interface
                         ),
                         "reference the matdb interface-system card by its full content hash",
+                    ));
+                }
+                if let Some(claim) = &binding.claim
+                    && !is_hex_digest(claim)
+                {
+                    out.push(violation(
+                        "project-interface-claim",
+                        format!(
+                            "claim pin for `{}` is not a 64-hex claim content hash",
+                            binding.interface
+                        ),
+                        "pin the exact claim by its full content hash, or drop the pin if the card has no conflicting claims",
                     ));
                 }
             }

@@ -13,10 +13,13 @@ layer = "L6"
 [dependencies]
 fs-blake3 = { path = "../fs-blake3" }
 fs-ir = { path = "../fs-ir" }
+fs-matdb = { path = "../fs-matdb" }
 fs-qty = { path = "../fs-qty" }
 fs-scenario = { path = "../fs-scenario" }
 
 [dev-dependencies]
+fs-conduction = { path = "../fs-conduction" }
+fs-evidence = { path = "../fs-evidence" }
 
 [lints]
 workspace = true

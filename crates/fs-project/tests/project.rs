@@ -99,6 +99,7 @@ fn reference_project() -> ProjectSpec {
         materials: Some(vec![MaterialBinding {
             region: "board".to_string(),
             card: "ab".repeat(32),
+            claim: None,
             state: "fr4/nominal".to_string(),
             temp_lo: kelvin(233.15),
             temp_hi: kelvin(398.15),
@@ -107,6 +108,7 @@ fn reference_project() -> ProjectSpec {
         interface_cards: Some(vec![InterfaceCardBinding {
             interface: "cpu-sink-tim".to_string(),
             card: "cd".repeat(32),
+            claim: None,
             source: "matdb".to_string(),
         }]),
         power: Some(vec![PowerDissipation {
@@ -570,4 +572,48 @@ fn the_broken_project_corpus_logs_every_violation_with_its_fix() {
             panic!("{label}: expected `{expected_code}`, got {findings:?}");
         }
     }
+}
+
+#[test]
+fn claim_pins_travel_through_both_spellings_and_validate_as_hex() {
+    // A pinned binding round-trips canonically in both spellings and
+    // reaches the same canonical hash.
+    let mut spec = reference_project();
+    spec.materials.as_mut().expect("materials")[0].claim = Some("ef".repeat(32));
+    spec.interface_cards.as_mut().expect("interface cards")[0].claim = Some("1234".repeat(16));
+
+    let sexpr = print_sexpr(&spec).expect("pinned project renders");
+    assert!(sexpr.contains(":claim"));
+    let decoded = parse_sexpr(&sexpr).expect("pinned project parses strictly");
+    assert_eq!(decoded.spec, spec);
+    assert!(decoded.spec.validate().is_empty());
+
+    let json = print_json(&spec).expect("json renders");
+    let from_json = parse_json(&json).expect("json parses");
+    assert_eq!(
+        from_json.hash(),
+        decoded.hash(),
+        "one hash across spellings"
+    );
+
+    // An absent pin renders no `:claim` field at all (absence is the
+    // canonical spelling of "no pin"), so pre-pin documents are untouched.
+    let unpinned = print_sexpr(&reference_project()).expect("renders");
+    assert!(!unpinned.contains(":claim"));
+
+    // A malformed pin is a named structural violation on each binding kind.
+    let mut bad = reference_project();
+    bad.materials.as_mut().expect("materials")[0].claim = Some("zz".repeat(32));
+    bad.interface_cards.as_mut().expect("interface cards")[0].claim = Some("abc".to_string());
+    let violations = bad.validate();
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.code == "project-material-claim")
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.code == "project-interface-claim")
+    );
 }

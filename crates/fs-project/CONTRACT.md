@@ -4,13 +4,17 @@ The versioned `.fsim` project schema (bead f85xj.6.1): the user-facing
 contract for the ratified thermal-design-assurance vertical
 (`frankensim-vertical-ratification-v1`). One semantic model, two spellings,
 canonical bytes, typed violations, receipted defaults, and explicit migration
-receipts.
+receipts. The `bind` module (bead f85xj.6.4) adds validate-time resolution of
+material/interface bindings against matdb cards: envelope-vs-domain refusal,
+surfaced uncertainty, retained usage receipts, and pin-only resolution of
+conflicting claims.
 
 ## Purpose and layer
 
 Layer L6 (HELM). Depends on `fs-ir` (AST + both concrete syntaxes),
-`fs-scenario` (entity identities, `Violation`), `fs-qty`, `fs-blake3`. This
-crate persists project intent; it runs no solves and admits no scenarios
+`fs-scenario` (entity identities, `Violation`), `fs-matdb` (cards, receipted
+queries), `fs-qty`, `fs-blake3`. This crate persists project intent and
+resolves its card bindings; it runs no solves and admits no scenarios
 itself.
 
 ## Public types and semantics
@@ -22,7 +26,8 @@ itself.
   ids — geometry never lives inline), `EntityDecl`
   assembly/part/region/interface declarations with persistent identities,
   `MaterialBinding` matdb card refs (state, admitted temperature range,
-  source), `InterfaceCardBinding` TIM/contact card refs, `PowerDissipation`
+  source, optional `claim` pin), `InterfaceCardBinding` TIM/contact card refs
+  (optional `claim` pin), `PowerDissipation`
   rows, `Cooling` (fans/vents/leakage; declared-empty lists are facts,
   omission is a violation), `Envelope`, `ThermalLimit` requirements with
   margins, `SolverSettings`, and `OutputRequest`s. Sections are `Option`s so
@@ -58,6 +63,38 @@ itself.
 - The ONE defaultable field is power-row `duty` (`1.0`, continuous
   dissipation is the conservative assumption); everything else is mandatory,
   and the default is always receipted.
+- `bind::resolve_bindings(&ProjectSpec, &CardLibrary, &BindingRequirements)
+  -> MaterialResolution` (bead f85xj.6.4): every declared region must bind
+  exactly one `fs_matdb::MaterialCard` (manufactured state spelled exactly as
+  the card's `MaterialStateId`) and every declared interface exactly one
+  `InterfaceSystemCard`. Per required property, the resolver queries matdb at
+  BOTH endpoints of the binding's admitted range (validity boxes are per-axis
+  intervals, so endpoint containment implies range containment) and requires
+  the SAME claim selected at both. Every value arrives as matdb
+  `Evidence` + `PropertyUsageReceipt`; receipts are retained
+  (`RetainedReceipt`: receipt, canonical bytes, content hash, context) for
+  ledger retention and later `verify_receipt` replay. `render_table()` is the
+  deterministic region -> card -> property -> uncertainty -> receipts log.
+  `BindingRequirements::thermal_steady_v1()` pins the cooling vertical's
+  property set (`thermal-conductivity`,
+  `area-specific-thermal-contact-resistance`, axis `T`), drift-tested against
+  `fs-conduction`'s constants.
+- Conflicting-claims doctrine: when a card carries coexisting conflicting
+  claims, resolution refuses (`project-binding-claims-conflict`, listing every
+  candidate hash) unless the project file records an explicit `:claim <hex>`
+  pin, which resolves through matdb's receipted pinned-claim query. There is
+  no auto-pick path, and `PreferObservationBacked` is deliberately never used
+  by the resolver. A pin never bypasses validity.
+- The per-region required range is the envelope's ambient range with its
+  ceiling raised to every declared thermal limit on that region (data must be
+  valid up to the limit being judged); an interface must be covered wherever
+  either side region can operate. The binding's admitted range must cover the
+  required range (`project-material-envelope-uncovered`), and the card's
+  claims must cover the admitted range (`project-binding-domain-uncovered` —
+  the extrapolation refusal, surfaced at validate time).
+- Uncertainty surfacing: `Unstated` uncertainty is an `Advisory`
+  (`binding-uncertainty-unstated`) up front, never a refusal and never
+  laundered — it caps downstream evidence at Estimated and the table says so.
 
 ## Invariants
 
@@ -78,8 +115,12 @@ Two tiers, exactly as in fs-scenario/fs-ir: wire-layer refusals are
 `ProjectError { code, detail, hint }` (syntax, non-project shape, unsupported
 version, non-canonical bytes, strict-mode defaults, quantity spelling,
 migration refusals); semantic findings are `Violation` triples collected by
-`validate()`/`DecodedProject::findings()`. Internal `expect` is limited to
-infallible writes to `String`.
+`validate()`/`DecodedProject::findings()`. Binding resolution reports the
+same triples (`project-binding-*` / `project-material-*` /
+`project-interface-*` codes, each with an actionable fix; matdb's own
+refusal text travels in `what`) plus non-refusing `Advisory` rows; it is
+total over garbage input, naming preconditions instead of panicking.
+Internal `expect` is limited to infallible writes to `String`.
 
 ## Determinism class
 
@@ -103,6 +144,20 @@ None.
 
 ## Conformance tests
 
+`tests/bind.rs` (f85xj.6.4): the reference project binds fully — three
+resolved bindings, six retained receipts, each replayed via
+`verify_receipt` and byte-decoded via `from_bytes_verified`, with the full
+chain logged in the table; envelope-outside-card-domain refuses at validate;
+an admitted range narrower than the envelope refuses with both ranges named;
+Unstated uncertainty warns without refusing; conflicting claims refuse
+without a pin (no resolved row exists — auto-pick impossible) and resolve to
+exactly the pinned claim with the `pinned-claim` receipt policy; pin
+refusals (unknown, out-of-domain, malformed) are typed; a range stitched
+from two claims refuses; card-unknown, state-mismatch, non-region target,
+duplicate, unbound-region/interface, wrong-dims, and missing-property each
+carry their named code with a fix; missing sections name the precondition;
+and the property constants drift-test against `fs-conduction`.
+
 `tests/project.rs`: the reference cooling project renders, parses strictly,
 is admissible, and hash-stable; canonical bytes are identical across both
 spellings; parse-render-parse idempotence across variants (empty cooling
@@ -120,8 +175,30 @@ with its fix as the error-message quality bar.
 - An admissible `.fsim` document proves the project is well-formed and
   internally consistent. It does NOT prove the referenced geometry artifacts,
   matdb cards, or capabilities exist, are compatible, or are validated —
-  existence checks belong to the import/admission path (bead .6.3) and the
-  capability registry, not this schema.
+  geometry existence checks belong to the import/admission path (bead .6.3)
+  and the capability registry, not this schema. Card existence and coverage
+  ARE checked by `bind::resolve_bindings`, but only against the
+  caller-supplied `CardLibrary`: the library keys cards by their own content
+  hashes (a key cannot lie about its card), while WHO supplied the collection
+  is the caller's trust channel — resolution proves binding coverage, never
+  card authenticity or scientific truth of the underlying claims.
+- Binding resolution is temperature-axis-only in v1: cards whose claims
+  depend on further validity axes refuse (`project-binding-axis`) rather
+  than being partially resolved. The required ceiling uses DECLARED thermal
+  limits, not solved temperatures — a solve exceeding its limit fails its
+  requirement; the resolver only guarantees the material data covers the
+  range over which that judgment is made. The declared `source` channel on a
+  binding is recorded into the table, not authenticated against claim
+  provenance.
+- A pinned-claim receipt proves the pin resolves and evaluates identically
+  on replay; WHO pinned it is proven by the project file's canonical bytes
+  (the pin is part of the hashed document), so a verifier must cross-check
+  `receipt.selected` against the project's pin, exactly as matdb's CONTRACT
+  states.
+- The optional `claim` pin was added to version 1 before the schema freeze
+  (.16.5): version 1 is still pre-freeze (see below), absence of the field
+  is the canonical spelling of "no pin", and pre-pin documents are
+  byte-identical under the extended grammar.
 - Entity identity pins prove byte-equal derivation inputs at declaration
   time; unequal pins prove nothing about physical sameness (re-exports change
   bytes), which is why drift is a violation to adjudicate, not an automatic
