@@ -1958,6 +1958,7 @@ name = "fs-session"
 version = "0.0.1"
 dependencies = [
  "fs-blake3",
+ "fs-evidence",
  "fs-exec",
  "fs-govern",
  "fs-ir",
@@ -1967,6 +1968,7 @@ dependencies = [
  "fs-plan",
  "fs-qty",
  "fs-regime",
+ "fs-voi",
 ]
 
 [[package]]

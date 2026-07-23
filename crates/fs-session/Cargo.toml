@@ -12,6 +12,7 @@ layer = "L6"
 
 [dependencies]
 fs-blake3 = { path = "../fs-blake3" }
+fs-evidence = { path = "../fs-evidence" }
 fs-exec = { path = "../fs-exec" }
 fs-govern = { path = "../fs-govern" }
 fs-ir = { path = "../fs-ir" }
@@ -20,6 +21,7 @@ fs-ledger = { path = "../fs-ledger" }
 fs-package = { path = "../fs-package" }
 fs-plan = { path = "../fs-plan" }
 fs-qty = { path = "../fs-qty" }
+fs-voi = { path = "../fs-voi" }
 
 [dev-dependencies]
 fs-regime = { path = "../fs-regime" }

@@ -13,6 +13,7 @@
 //! single-threaded `flush_scope_to_ledger` step because fsqlite connections are
 //! `!Send` by design.
 
+pub mod decision;
 pub mod estimate;
 pub mod gemm_tune;
 pub mod governor;
@@ -21,6 +22,11 @@ pub mod guidance;
 pub mod long_job;
 pub mod program_risk;
 pub mod token;
+
+pub use decision::{
+    AppliedSafetyFactor, DECISION_ASSESSMENT_IDENTITY_DOMAIN, DECISION_ASSESSMENT_IDENTITY_VERSION,
+    DecisionAssessment, DecisionAssessmentError, DecisionRequirement, EvidenceRef,
+};
 
 pub use estimate::{
     CalibrationHealth, CalibrationPolicy, CalibrationReport, Estimate, ZeroPredictionSummary,

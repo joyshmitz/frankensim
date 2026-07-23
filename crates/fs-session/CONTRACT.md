@@ -13,11 +13,31 @@ Layer **L6** (HELM). Runtime deps: `std`, fs-ir (admission bridge +
 study parsing), fs-exec (CancelGate/SolverState/TilePool), fs-govern
 (PR-001–PR-012 program-risk data/evaluation), fs-la (production GEMM),
 fs-ledger (persistence/content hash), fs-blake3 (domain-separated receipt
-identity), fs-package (exact receipt-schema catalog metadata), fs-plan (cost
-models), fs-obs, fs-qty.
+identity), fs-evidence (typed requirements, compliance, uncertainty, and V&V
+artifact references), fs-package (exact receipt-schema catalog metadata and
+verified replay roots), fs-plan (cost models), fs-voi (decision-aware evidence
+actions), fs-obs, fs-qty.
 Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
 
 ## Public types and semantics
+
+- `DecisionAssessment<Q>` — a pure L6 projection over an already-admitted
+  typed `EvidenceRef<Q>`, an effective sourced `ScalarRequirement`, an applied
+  safety factor and its policy artifact, an exact `ContextOfUse` reference, the
+  eight-term `EngineeringUncertaintyBudget`, its tri-state
+  `ComplianceVerdict`, paired budget/decision `UncertaintyAttribution`,
+  `fs-voi` next-action recommendations, and the Merkle root of a still-valid
+  `VerifiedPackage`. Assembly refuses zero top-level artifact identities,
+  mismatched QoI or units, wrong context families, cross-bound requirements or
+  budgets, attribution from another compliance replay, actions not in
+  one-to-one correspondence with verdict-flipping unknowns, and a replay
+  package whose retained report no longer validates. Its v1 BLAKE3 identity
+  binds all of those inputs in canonical field order; rebuilding offline from
+  the same exact artifacts therefore yields the same identity. The safety
+  factor is declarative metadata already reflected in the effective scalar
+  limit: this layer records its value and policy authority but does not invent
+  a domain-independent multiplication or division rule. `render_explain()` is
+  deterministic reviewer output, not a second source of scientific authority.
 
 - `CapabilityToken { session, ops globs, core_s, mem_bytes, wall_s,
   cores, ledger_scope }` — the explicit grant every IR program executes
@@ -792,6 +812,12 @@ tests lock both job-kind tags, mutate the private catalog and resume fields one
 at a time, and prove identity version/domain rotation and transport-version/
 length guards fail closed.
 
+`tests/decision.rs` is the G0/G3 decision-projection battery. It proves exact
+offline reconstruction, deterministic explanation output, one-by-one identity
+movement for quantity evidence, context, safety-factor policy, and replay
+package authorities, and fail-closed behavior for missing hashes, wrong V&V
+artifact families, QoI/unit cross-binding, and omitted flip actions.
+
 `tests/gemm_tune.rs` (bead yqug drills): cold start sweeps once and
 matches serial bits; ledger warm start seeds a fresh session without
 re-measuring; stale (foreign-fingerprint) and invalid cache rows are
@@ -819,6 +845,17 @@ macos-aarch64 under ambient load; the second-ISA (x86) counterpart is
 armed and runs when an x86 host picks it up.
 
 ## No-claim boundaries
+
+- **A `DecisionAssessment<Q>` is a projection, not a god type or new
+  certifier**: it checks consistency among retained artifacts and binds their
+  exact decision view. It does not resolve a content hash from storage,
+  authenticate the author of a context or requirement, establish that a safety
+  factor is appropriate, derive its application rule, recompute a quantity,
+  upgrade a compliance verdict, prove an attribution causal, or execute a
+  recommended action. `VerifiedPackage::validate_binding` preserves package
+  and policy-receipt integrity but does not make every nested scientific claim
+  verified. Ledger retrieval/admission and authoritative requirement-policy
+  schemas remain separate owner responsibilities.
 
 - **The governor meters what it is TOLD** (`Charge` deltas from the
   executor); OS-level resource sampling and per-thread accounting are
