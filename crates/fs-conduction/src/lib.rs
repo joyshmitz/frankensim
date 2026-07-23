@@ -1,5 +1,6 @@
 //! fs-conduction — STEADY heat conduction on tetrahedral complexes
-//! (bead `frankensim-extreal-program-f85xj.5.1`). Layer: L3 FLUX.
+//! (beads `frankensim-extreal-program-f85xj.5.1`, `.5.3`, and `.5.4`).
+//! Layer: L3 FLUX.
 //!
 //! The strong form solved here is
 //!
@@ -34,10 +35,12 @@
 //!
 //! - STEADY ONLY. There is no time derivative, no heat capacity, and no
 //!   transient staging in this crate.
-//! - NO radiation and NO convection PHYSICS. The Robin row is a
-//!   convective boundary *coupling*: `h` is an input, never a computed
-//!   correlation. Surface-to-ambient radiation and enclosure exchange
-//!   are separate beads that couple in through the same row.
+//! - Surface radiation supports a card-backed linearized Robin model and
+//!   deterministic gray-diffuse enclosure exchange over an admitted
+//!   view-factor matrix. This crate does not generate view factors, run QMC,
+//!   model participating media, or propagate a nonlinear uncertainty bound.
+//! - NO convection PHYSICS. The Robin row is a convective boundary *coupling*:
+//!   `h` is an input, never a computed correlation.
 //! - Thermal contact supports matching P1 traces on exact duplicated
 //!   coordinates. Nonmatching/mortar contact, pressure-dependent closure,
 //!   and implicit perfect contact are outside this rung.
@@ -56,6 +59,7 @@ pub mod fixtures;
 pub mod interface;
 pub mod material;
 pub mod mesh;
+pub mod radiation;
 pub mod solve;
 
 use core::fmt;
@@ -76,6 +80,12 @@ pub use material::{
     CONDUCTIVITY_DIMS, ConductivityModel, ConductivityTable, ProvenanceClass, TemperatureSpan,
 };
 pub use mesh::{BoundaryFace, ConductionMesh};
+pub use radiation::{
+    CoupledRadiationConfig, CoupledRadiationReport, CoupledRadiationSolution, EMISSIVITY_DIMS,
+    GrayDiffuseEnclosure, LinearizedRadiationPoint, LinearizedSurfaceRadiation, RadiationSurface,
+    RadiosityReport, STEFAN_BOLTZMANN_W_M2_K4, SURFACE_EMISSIVITY_PROPERTY, SurfaceEmissivity,
+    ViewFactorEvidence, ViewFactorMatrix, ViewFactorTolerance, solve_with_gray_diffuse_enclosure,
+};
 pub use solve::{
     ConductionProblem, ConductionReport, ConductionSolution, ConductionSolver, ConductionState,
     EnergyBalance, InitialGuess, LineSearch, LinearConfig, LinearSolveEvidence, Nonlinearity,
@@ -180,6 +190,16 @@ pub enum ConductionError {
         /// Stable scenario interface name, or a diagnostic placeholder when
         /// the interface was not declared.
         interface: String,
+        /// What was refused.
+        what: String,
+        /// Actionable correction.
+        fix: String,
+    },
+    /// A radiation model, surface binding, enclosure, or coupling iteration is
+    /// not admissible.
+    Radiation {
+        /// Stable surface/enclosure name, or a diagnostic placeholder.
+        surface: String,
         /// What was refused.
         what: String,
         /// Actionable correction.
@@ -334,6 +354,10 @@ impl fmt::Display for ConductionError {
                 f,
                 "thermal interface {interface:?} refused: {what}; fix: {fix}"
             ),
+            ConductionError::Radiation { surface, what, fix } => write!(
+                f,
+                "thermal radiation {surface:?} refused: {what}; fix: {fix}"
+            ),
             ConductionError::OutsideTemperatureSpan {
                 temperature,
                 low,
@@ -418,6 +442,7 @@ impl ConductionError {
             ConductionError::SingularPureNeumann => "conduction-singular-pure-neumann",
             ConductionError::Conductivity { .. } => "conduction-conductivity",
             ConductionError::Interface { .. } => "conduction-interface",
+            ConductionError::Radiation { .. } => "conduction-radiation",
             ConductionError::OutsideTemperatureSpan { .. } => "conduction-outside-span",
             ConductionError::MaterialQuery { .. } => "conduction-material-query",
             ConductionError::ScenarioRow { .. } => "conduction-scenario-row",

@@ -1,7 +1,8 @@
 # Model card: steady heat conduction (`fs-conduction`)
 
 Fields mirror `fs_evidence::ModelCard` so this document and a runtime card
-cannot drift apart. Bead `frankensim-extreal-program-f85xj.5.1`.
+cannot drift apart. Beads `frankensim-extreal-program-f85xj.5.1`, `.5.3`, and
+`.5.4`.
 
 | field | value |
 | --- | --- |
@@ -44,22 +45,31 @@ detail:
    gradient, on history, or on damage state. A spatially varying material is
    expressed by solving per-region or by the per-element multiplier that
    `assemble_operator_scaled` provides.
-6. **Boundary data is exact and known.** `T_D`, `q_n`, `h`, and `T_ref` are
-   inputs. Nothing in this crate computes a convective coefficient, a radiative
-   exchange, or a contact conductance.
+6. **Base boundary data is exact and known.** `T_D`, `q_n`, `h`, and `T_ref`
+   are inputs. The optional radiation path computes a card-backed linearized
+   coefficient or a diffuse-gray surface exchange from an admitted view-factor
+   matrix; it does not generate that matrix or compute a convective
+   correlation.
 7. **The Robin reference temperature is a declared property of the row.**
    `fs-scenario`'s Robin row carries only `h`, so `T_ref` is named at the
    lowering call. A correlation that supplies `h` must state the ambient it was
    fitted against; this crate will not infer one.
-8. **Interfaces are perfectly conducting.** Contact resistance is zero unless a
-   downstream model inserts it.
+8. **Contact is never implicit.** A coincident duplicated P1 trace must be
+   bound to one positive card-backed area-specific resistance; otherwise the
+   contact solve refuses. Perfect contact is not inferred.
+9. **Gray-diffuse radiation is surface-only.** Each named trace has one
+   hemispherical-total emissivity, surfaces are opaque and diffuse, and the
+   enclosure matrix is fixed. Participating media, spectral/specular effects,
+   and geometry-derived visibility are outside this model.
 
 ## Validity domain
 
 | axis | bound | set by |
 | --- | --- | --- |
 | `T` | the sampled conductivity span `[low, high]` K | `ConductivityTable::from_claims`, from the declared grid; the intersection over components is `ConductivityModel::temperature_span()` |
-| everything else | unconstrained | this crate constrains no other axis |
+| radiation `T` | the emissivity card's validity domain; for a linearized row, additionally `|T_s - T_mean| <= max_departure` | `SurfaceEmissivity::from_card` and `LinearizedSurfaceRadiation` |
+| view factors | each row closes within its admitted absolute tolerance and `A_i F_ij = A_j F_ji` within its admitted relative tolerance | `ViewFactorMatrix::admit` |
+| everything else | unconstrained | no other axis is constrained by this crate |
 
 Outside the temperature span the model REFUSES
 (`ConductionError::OutsideTemperatureSpan`) rather than extrapolating — during
@@ -97,6 +107,14 @@ value was evaluated.
 6. **Coarse boundary-layer resolution under a large Biot number.** The P₁ space
    cannot resolve a thermal boundary layer thinner than an element. Nothing in
    the report detects this; the residual will be small and the answer wrong.
+7. **A linearized radiation row used too far from its mean.** The constructor
+   requires a finite departure budget and evaluation outside it refuses. Inside
+   the domain, the report still exposes the measured difference from the full
+   `T⁴` law; the linearization is not silently relabelled exact.
+8. **An invalid enclosure matrix or exhausted outer fixed point.** Non-finite,
+   out-of-range, non-closing, nonreciprocal, or area-mismatched view factors
+   refuse before solving. Coupled conduction refuses if its declared
+   surface-temperature iteration budget is exhausted.
 
 ## Discrepancy
 
@@ -113,6 +131,9 @@ What IS reported, per solve, and exactly what each means:
 | `LinearSolveEvidence::true_relative_residual` | `‖b − Ax‖₂/‖b‖₂`, RECOMPUTED by this crate, not the Krylov recurrence estimate |
 | `EnergyBalance::closure_w` | consistency between the assembled operator and an independent post-integration of the same boundary data — identically `−Σ_free r_i`. It does not check the data itself |
 | `material_provenance` / `material_receipts` | whether every conductivity number carried an `fs-matdb` receipt, and how many travel with the solve |
+| `LinearizedRadiationPoint::discrepancy_w_m2` | pointwise difference between the declared linearization and the full surface-to-ambient `T⁴` expression; not a global model-form band |
+| `RadiosityReport::linear_residual_max_w_m2` / `relative_energy_closure()` | algebraic radiosity residual and closed-enclosure heat balance for the admitted matrix; neither validates the view-factor generator or surface assumptions |
+| `CoupledRadiationReport::surface_update_history_k` / `final_threshold_k` | whether the partitioned outer fixed point met its declared temperature rule; not a nonlinear error bound |
 
 The G1 orders (`tests/mms.rs`) are OBSERVED convergence rates on the fixture
 ladders, gated by `fs_mms::OrderGate`. They are not proven orders and not error
@@ -125,12 +146,12 @@ INTERPOLATION error rather than of the scheme.
 
 | tier | status | where |
 | --- | --- | --- |
-| G0 algebraic laws | green | `tests/conformance.rs` (symmetry, definiteness, element nullspace, elimination identity, Jacobian vs. central differences, energy balance, typed refusals) |
+| G0 algebraic laws | green | `tests/conformance.rs` plus `tests/contact.rs` and `tests/radiation.rs` (card receipts, view-factor row/reciprocity admission, deterministic replay, enclosure balance, typed refusals) |
 | G1 manufactured solutions | green, 5 ladders | `tests/mms.rs` |
-| G2 canonical benchmarks | partial | `tests/analytic.rs`: slab, slab+source, Dirichlet–Robin slab, cylindrical shell, straight fin — closed forms, not a community benchmark suite |
+| G2 canonical benchmarks | partial | `tests/analytic.rs` and `tests/radiation.rs`: slab, slab+source, Dirichlet–Robin slab, cylindrical/spherical shells, straight fin, parallel-plate view factor and two-surface radiosity — closed forms, not a community benchmark suite |
 | G3 metamorphic | not run | no metamorphic battery exists for this crate |
-| G4 cancellation | green | `tests/conformance.rs` cancellation drills, including a mid-iteration drain that asserts the state is unchanged |
-| G5 determinism | partial | same-ISA replay and snapshot-resume bitwise; no registered golden and no cross-ISA audit |
+| G4 cancellation | green | `tests/conformance.rs` cancellation drills plus radiation radiosity/coupling refusal checks |
+| G5 determinism | partial | same-ISA conduction replay, snapshot-resume, and radiosity replay are bitwise; no registered golden and no cross-ISA audit |
 
 ## Maturity
 

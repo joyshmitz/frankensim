@@ -327,6 +327,80 @@ impl ThermalBoundary {
             .iter()
             .any(|c| matches!(c, ThermalBc::Robin { .. }))
     }
+
+    /// Clone this partition and replace selected faces from its explicit
+    /// adiabatic remainder with uniform outward-flux rows.  Radiation uses
+    /// this as one frozen outer-fixed-point iterate. Existing physical rows
+    /// are never overwritten: overlap is a typed refusal.
+    pub(crate) fn with_uniform_outward_flux_overlays(
+        &self,
+        mesh: &ConductionMesh,
+        rows: &[(String, Vec<usize>, f64)],
+    ) -> Result<ThermalBoundary, ConductionError> {
+        let mut out = self.clone();
+        let mut claimed = vec![false; mesh.boundary().len()];
+        for (name, slots, flux) in rows {
+            if name.trim().is_empty() || out.names.iter().any(|existing| existing == name) {
+                return Err(ConductionError::Radiation {
+                    surface: name.clone(),
+                    what: "radiation overlay name is blank or collides with a boundary region"
+                        .to_string(),
+                    fix: "use a stable unique radiation-surface name".to_string(),
+                });
+            }
+            if slots.is_empty() {
+                return Err(ConductionError::Radiation {
+                    surface: name.clone(),
+                    what: "radiation overlay contains no faces".to_string(),
+                    fix: "bind the model to a nonempty boundary trace".to_string(),
+                });
+            }
+            let condition = ThermalBc::neumann(*flux)?;
+            let region = out.names.len();
+            for &slot in slots {
+                if slot >= out.face_region.len() {
+                    return Err(ConductionError::Radiation {
+                        surface: name.clone(),
+                        what: format!("boundary-face slot {slot} is out of range"),
+                        fix: "rebuild the radiation surface against this exact mesh".to_string(),
+                    });
+                }
+                if claimed[slot] {
+                    return Err(ConductionError::Radiation {
+                        surface: name.clone(),
+                        what: format!("boundary-face slot {slot} is in two radiation overlays"),
+                        fix: "partition radiation surfaces without overlap".to_string(),
+                    });
+                }
+                if let Some(owner) = out.face_region[slot] {
+                    return Err(ConductionError::Radiation {
+                        surface: name.clone(),
+                        what: format!(
+                            "boundary-face slot {slot} already carries region {:?}",
+                            out.names[owner]
+                        ),
+                        fix: "leave radiation faces in the explicit adiabatic remainder; additive mixed rows are not implemented in this rung"
+                            .to_string(),
+                    });
+                }
+                claimed[slot] = true;
+                out.face_region[slot] = Some(region);
+            }
+            out.names.push(name.clone());
+            out.conditions.push(condition);
+        }
+        let claimed_count = claimed.into_iter().filter(|claimed| *claimed).count();
+        out.adiabatic_remainder = out
+            .adiabatic_remainder
+            .checked_sub(claimed_count)
+            .ok_or_else(|| ConductionError::Radiation {
+                surface: "boundary-overlay".to_string(),
+                what: "radiation faces were not part of the declared adiabatic remainder"
+                    .to_string(),
+                fix: "construct the base boundary before binding radiation".to_string(),
+            })?;
+        Ok(out)
+    }
 }
 
 /// Builds a [`ThermalBoundary`] by tagging boundary faces with named

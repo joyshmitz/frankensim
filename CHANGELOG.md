@@ -242,6 +242,50 @@ workstream.
   scenario-interface auto-lowering, contact adjoint, dominance-attribution
   corpus case, retained registry comparison receipt, or L4 authority.
 
+### Post-checkpoint Level-A surface-radiation execution binding
+
+- Added card-backed hemispherical-total emissivity with an explicit material
+  state, immutable card identity, exact property-use receipt, validity-domain
+  query temperature, and source uncertainty statement. Missing, ambiguous,
+  dimensionally wrong, non-physical, or out-of-domain properties refuse.
+- Added a validity-bounded surface-to-ambient linearization
+  `h_rad = 4 ε σ T_mean³`. Each evaluation returns the exact Robin row consumed
+  by conduction, the full `ε σ (T_s⁴ - T_a⁴)` comparison, their pointwise
+  discrepancy, and first-order emissivity-width propagation. Evaluation beyond
+  the declared temperature departure refuses instead of stretching the model.
+- Added admitted closed-enclosure view-factor matrices with finite/range and row
+  closure checks, area-weighted reciprocity, stable content identity, and
+  explicit analytic or external-QMC evidence. External-QMC evidence requires a
+  seed, positive sample count, and generator/version label; this crate does not
+  generate or validate the rays themselves.
+- Added deterministic opaque gray-diffuse radiosity and a budgeted,
+  under-relaxed conduction coupling. Surface bindings retain an exact mesh
+  identity, flux overlays may replace only explicit adiabatic-remainder faces,
+  and the reports expose radiosity residuals, enclosure heat closure, fixed-point
+  updates, and convergence thresholds. The two-surface analytic fixture
+  produced `517.7298382565217 W/m²` with zero measured enclosure-energy
+  residual in the focused remote run.
+- Bound `thermal-a-parallel-plate-view-factor` to the executing radiation
+  battery and raised aggregate Level-A execution coverage from 14/19 to 15/19.
+  Four gaps remain: P2 primal, combined anisotropic-nonlinear MMS, and the P1/P2
+  adjoint-order ladders. This is a test-time binding, not a retained comparison
+  receipt or L4 authority.
+- Remote regression proof passed at stable `HEAD`
+  `b3b5f2c1c809eec06cde1e40cbc916d6995469b5` with
+  `RCH_REQUIRE_REMOTE=1 rch exec --no-self-healing -- env
+  CARGO_TARGET_DIR="${RCH_TARGET_BASE:-${TMPDIR:-/tmp}}/rch_target_frankensim_test"
+  cargo test --locked -p fs-conduction --all-targets` on worker `vmi1149989`:
+  53/53 tests passed (1 library, 2 adjoint, 8 analytic, 22 conformance, 6
+  contact, 8 MMS, and 6 radiation). RCH reported 632.1 seconds total, including
+  356.637 seconds of sync, 199.358 seconds for the remote command, and 2.292
+  seconds for artifact retrieval; the start and end SHAs were identical.
+- No general-geometry view-factor/QMC generator, participating-medium or
+  spectral/specular/semitransparent model, spatially varying emissivity/trace
+  flux, additive radiation on an occupied boundary row, monolithic nonlinear
+  operator, nonlinear uncertainty certificate, radiation adjoint,
+  radiation-dominated retained corpus case, or registered maturity promotion is
+  claimed by this rung.
+
 ### Post-checkpoint convection-correlation rung
 
 - Added `fs-convection`, an L3 library with 11 Nusselt relations spanning

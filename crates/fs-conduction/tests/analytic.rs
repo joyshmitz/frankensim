@@ -87,8 +87,8 @@ const LEVEL_A_ANALYTIC_BINDINGS: [(&str, Option<&str>, &str); 12] = [
     ),
     (
         "thermal-a-parallel-plate-view-factor",
-        None,
-        "fs-conduction implements no radiation physics",
+        Some("tests/radiation.rs::parallel_plate_view_factor_binds_level_a_and_reciprocity_laws"),
+        "the analytic infinite-parallel-plate matrix reproduces F12=F21=1 and gates row closure plus area-weighted reciprocity",
     ),
     (
         "thermal-a-contact-series",
@@ -919,7 +919,7 @@ fn level_a_analytic_binding_matrix_is_complete_and_gap_preserving() {
             .iter()
             .filter(|(_, test, _)| test.is_some())
             .count(),
-        8
+        9
     );
     for (id, test, basis) in LEVEL_A_ANALYTIC_BINDINGS {
         assert!(
@@ -928,7 +928,9 @@ fn level_a_analytic_binding_matrix_is_complete_and_gap_preserving() {
         );
         if let Some(test) = test {
             assert!(
-                test.starts_with("tests/analytic.rs::") || test.starts_with("tests/contact.rs::"),
+                test.starts_with("tests/analytic.rs::")
+                    || test.starts_with("tests/contact.rs::")
+                    || test.starts_with("tests/radiation.rs::"),
                 "{id}: executing test path must be stable"
             );
         }
