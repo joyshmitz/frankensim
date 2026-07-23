@@ -6721,14 +6721,14 @@ fn source_clause<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
 fn i13_terminal_source_snapshot_and_authority_clauses_are_exact() {
     const SOURCE: &[u8] = include_bytes!("../src/i13.rs");
     const EXPECTED_SHA256: &str =
-        "ee92bd9742a47bc2e7bb5c2d87267036a91e7c3e5e7e58a5c3303f6af48e0bd6";
+        "ee09c0f334945fdaa8062cf469ee8f104be2ec87ffb412ca565733051633071e";
 
     assert_eq!(
         lower_hex(&sha256_for_i13_source_lock(b"abc")),
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
         "source-lock SHA-256 implementation lost its independent KAT"
     );
-    assert_eq!(SOURCE.len(), 1_025_512);
+    assert_eq!(SOURCE.len(), 1_025_543);
     assert_eq!(
         lower_hex(&sha256_for_i13_source_lock(SOURCE)),
         EXPECTED_SHA256,

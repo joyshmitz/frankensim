@@ -384,7 +384,7 @@ fn i07_claims() -> Vec<ClaimSpec> {
                 "the bounded Part-21 lexer recognizes the entire unsupported payload without interpreting vendor semantics and preserves exact source octets separately from normalized tokens",
                 "all #references, nested aggregate/select/function tokens, external-reference strings, and context dependencies are structurally enumerated; reference remapping is total, injective on live identities, and independently replayed",
                 "capsules are inert data: network access, URI resolution, signature trust, plugin/macro/script execution, executable foreign payloads, and unbounded decompression are forbidden",
-                "byte-exact reinsertion and token-equivalent canonical reinsertion are distinct dispositions; any changed context, unresolved dependency, profile mismatch, unsafe token, or signature-covered region refuses reinsertion",
+                "byte-exact reinsertion and token-equivalent canonical reinsertion are distinct dispositions; any changed context, unresolved dependency, profile mismatch, token failing the frozen reinsertion-safety policy, or signature-covered region refuses reinsertion",
             ],
             qoi: "exact_opaque_octet_token_reference_closure_and_safety_verdict",
             unit: "bit",
@@ -396,7 +396,7 @@ fn i07_claims() -> Vec<ClaimSpec> {
                 tcb_overlap: "shares the bounded lexical token schema and fixture bytes; independent byte ledger, reference walker, remapper, and deny-all side-effect harness do not use production capsule code",
             },
             activation: "all baseline claims are adjudicated and the safe-opaque maximal feature is enabled",
-            kill: "one byte/token mismatch, missing dependency, noninjective remap, active side effect, unsafe reinsertion, signature laundering, or OpaquePreserved item granted semantic authority kills the capsule route",
+            kill: "one byte/token mismatch, missing dependency, noninjective remap, active side effect, reinsertion without a valid structural-safety receipt, signature laundering, or OpaquePreserved item granted semantic authority kills the capsule route",
             fallback: "retain the exact capsule only in the native evidence package, mark the construct Unsupported, and emit no AP242 artifact requiring it",
             no_claim: "opaque preservation proves syntax/bytes/reference custody only; it never proves vendor meaning, safety, conformance, semantic equivalence, or digital-signature validity",
         },
@@ -525,7 +525,7 @@ fn i07_claims() -> Vec<ClaimSpec> {
                 tcb_overlap: "shares bound theorem-card AST, semantic signatures, and rational geometry-relation data only; proof kernel is disjoint from production import/export",
             },
             activation: "the target card is frozen and a pre-candidate manifest successor freezes the complete proposition/definition/runtime-premise/translation AST required by the formal-projection fixture before any theorem attempt",
-            kill: "binding or kernel rejection, sorryAx, custom postulate/theorem-equivalent axiom, unsafe/native-oracle authority, transitive axiom outside exactly {propext, Quot.sound, Classical.choice}, failed naturality square, nonassociative/nonmonotone or under-enclosing budget composition, tolerance-as-equality laundering, or one independently verified premise-satisfying counterexample refutes exactly the bound theorem revision",
+            kill: "binding or kernel rejection, sorryAx, custom postulate/theorem-equivalent axiom, native-oracle authority outside the admitted kernel/checker TCB, transitive axiom outside exactly {propext, Quot.sound, Classical.choice}, failed naturality square, nonassociative/nonmonotone or under-enclosing budget composition, tolerance-as-equality laundering, or one independently verified premise-satisfying counterexample refutes exactly the bound theorem revision",
             fallback: "retain independently checked per-domain receipts with no global semantic-equivalence theorem",
             no_claim: "manifest version 1 prose mints no theorem color; checker success covers only the frozen exact category/congruence and separately typed budget-enriched approximation layer, never continuum equality from tolerance, and does not prove runtime premises, arbitrary vendor AP242, legal equivalence, or manufacturing/regulatory authority",
         },
@@ -1519,8 +1519,8 @@ identity/lineage, product/configuration, geometry-budget, PMI, material/evidence
 loss naturality squares; unit/counit or explicit natural isomorphisms on the exact subcategory; enriched \
 comparison/composition laws; no finite-tolerance-as-equality rule; runtime premise binding. AXIOM_POLICY \
 target i07.lean-axioms.v1 admits exactly propext, Quot.sound, \
-Classical.choice and rejects sorryAx, custom postulates, theorem-equivalent axioms, unsafe/native \
-oracles. FORMAL_PROJECTION_GATE: manifest version 1 is prose and mints no theorem authority. Before \
+Classical.choice and rejects sorryAx, custom postulates, theorem-equivalent axioms, native-oracle \
+declarations outside the admitted kernel/checker TCB. FORMAL_PROJECTION_GATE: manifest version 1 is prose and mints no theorem authority. Before \
 candidate/proof execution a FrozenManifest::amend successor must freeze canonical proposition AST, \
 all symbol/definition bytes+digests, total runtime-premise schema, total deterministic AST-to-Lean \
 translation, structural round-trip checks, fully qualified declaration/environment, complete \
@@ -1868,7 +1868,7 @@ declared route-coordinate bands only",
             leaf: "i07-opaque-max",
             claims_covered: &["i07-safe-opaque-extension-capsules"],
             unit_cases: UNIT_CASES,
-            g0: "GENERATORS: bounded safe/unsafe opaque token/reference/context capsules and cap \
+            g0: "GENERATORS: bounded reinsertion-admissible/reinsertion-refused opaque token/reference/context capsules and cap \
 twins. VALIDITY: exact raw octets, token AST, source context/profile, complete ref closure, injective \
 remap, inert-data and signature policies. LAWS: round-trip octet custody; token/ref equivalence; total \
 remap or refusal; sidecar-vs-reinsert distinction; no semantic authority; no side effects. SHRINKERS: \

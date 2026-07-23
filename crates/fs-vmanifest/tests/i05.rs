@@ -308,7 +308,11 @@ fn i05_numeric_timing_clock_fault_and_refinement_boundaries_are_pinned() {
 
     let faults = claim(&draft, "i05-safe-state-fault-semantics");
     assert!(faults.statement.contains("safe output"));
-    assert!(faults.kill.contains("unsafe output"));
+    assert!(
+        faults
+            .kill
+            .contains("output outside the fixture-declared safe envelope")
+    );
     assert!(faults.fallback.contains("independent interlock"));
     assert!(
         faults
@@ -500,7 +504,7 @@ fn i05_maximal_theorem_and_exhaustiveness_ratchets_mint_no_prose_authority() {
         "deterministic Lean translation",
         "exact axiom allowlist {propext,Quot.sound,Classical.choice}",
         "transitive axiom closure",
-        "rejection of sorryAx/custom postulates/native or unsafe oracle shortcuts",
+        "rejection of sorryAx/custom postulates/native-oracle shortcuts outside the admitted kernel/checker TCB",
         "retained kernel replay",
     ] {
         assert!(theorem_card.contains(token), "theorem card omits {token}");

@@ -624,7 +624,7 @@ impl fmt::Display for ShareError {
                 method,
             } => write!(
                 f,
-                "unsafe {method} correlation for {} field {path:?}",
+                "privacy policy rejects correlation method {method} for {} field {path:?}",
                 sensitivity.name()
             ),
         }

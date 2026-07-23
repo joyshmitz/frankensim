@@ -2087,7 +2087,7 @@ fn i03_freezes_with_exact_lattice_leaf_and_policy_mapping() {
             "{propext,Quot.sound,Classical.choice}",
             "complete transitive declaration/environment axiom closure",
             "sorryAx",
-            "unsafe/native-oracle proof authority",
+            "native-oracle proof authority outside the admitted kernel/checker TCB",
         ],
     );
     require(

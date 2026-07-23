@@ -151,7 +151,7 @@ fn i05_claims() -> Vec<ClaimSpec> {
                 "the exact rustc/LLVM target specification, linker, linker script, flags, environment, \
                  source-date epoch, and build inputs are content-addressed",
                 "the generated controller subset excludes allocator, panic unwinding, recursion, dynamic \
-                 dispatch, unbounded loops, unsafe code, FFI, assembly, and hidden target-feature dispatch; \
+                 dispatch, unbounded loops, Rust code outside the safe language subset, FFI, assembly, and hidden target-feature dispatch; \
                  separately pinned boot/vector/HAL/interrupt capsules are explicit TCB inputs",
             ],
             qoi: "binary_and_capability_replay_verdict",
@@ -263,7 +263,7 @@ fn i05_claims() -> Vec<ClaimSpec> {
                               or in-band telemetry",
             },
             activation: "clock-causality calibration is green and the external emergency stop is armed",
-            kill: "unsafe output, missing containment transition, silent fault, or success publication \
+            kill: "output outside the fixture-declared safe envelope, missing containment transition, silent fault, or success publication \
                    after containment failure halts the rig and refutes this lane",
             fallback: "de-energize through the independent interlock and retain a FailureBundle; no \
                        automatic retry of the same physical fault",
@@ -489,7 +489,7 @@ TIMING_KINDS={StaticUpperBound,CompositionalUpperBound,MeasuredSampleMaximum,Una
 CLOCKS={simulation,host_monotonic,DAQ,bus,device,target_cycle,external_probe}; clock maps bind calibration interval,wrap,reset,rate/offset/drift enclosure and timestamp-placement uncertainty; missed,late,dropped,duplicated,reordered,interpolated and caught-up events remain distinct\n\
 FAULTS=fault record binds source,class,activation interval,detection interval,recovery/containment interval,simultaneity,observability and physical-injection fidelity; normal completion, safe-state completion, containment failure, infrastructure failure and emergency-stop termination are non-confusable\n\
 REFINEMENT=reference and target share sampled-data,delay,saturation,reset and fault semantics; align through whole clock intervals without favorable point selection; compare mode trace plus directed per-QoI intervals over a frozen finite horizon; empirical, kernel-checked and physical-model-qualified authority are separate\n\
-THEOREM_AUTHORITY=version 1 has prose cards only and mints no proof/exhaustive-search authority; a pre-proof successor must freeze canonical proposition/definition/target-semantics ASTs, total runtime-premise schema, deterministic AST-to-Lean translation, exact axiom allowlist {propext,Quot.sound,Classical.choice} and transitive closure; sorryAx, custom postulates, native/unsafe oracle shortcuts and unbound generated premises are IntegrityFailed; a pre-search successor must freeze the executable finite-state grammar, validity and initial predicates, transition/cost semantics, enumeration or symbolic coverage algorithm, quotient proof obligations, independent decoder, whole-campaign preflight and completeness root\n\
+THEOREM_AUTHORITY=version 1 has prose cards only and mints no proof/exhaustive-search authority; a pre-proof successor must freeze canonical proposition/definition/target-semantics ASTs, total runtime-premise schema, deterministic AST-to-Lean translation, exact axiom allowlist {propext,Quot.sound,Classical.choice} and transitive closure; sorryAx, custom postulates, native-oracle shortcuts outside the admitted kernel/checker TCB and unbound generated premises are IntegrityFailed; a pre-search successor must freeze the executable finite-state grammar, validity and initial predicates, transition/cost semantics, enumeration or symbolic coverage algorithm, quotient proof obligations, independent decoder, whole-campaign preflight and completeness root\n\
 EVIDENCE_STATES=Execution{Succeeded,Failed,Cancelled,TimedOut,BudgetExhausted,InfrastructureFailed,IntegrityFailed}; Predicate{Accepted,Refuted,Unknown,NotEvaluated}; Claim{NoClaim,EvidencePartial,Reproduced,Refuted,Proved}; Promotion{Blocked,CoreEligible,MaxEligible}; one axis never substitutes for another and no green badge collapses them\n\
 HOLDOUT=the exact candidate, model, target/toolchain, thresholds, seeds, policy and checker versions freeze before held-out access; core and maximal partitions have one named consumer stage; premature/cross-stage read, replacement, retry-after-result, label leak or post-result amendment is IntegrityFailed\n\
 LIFECYCLE=request->drain->finalize; cancellation polls at IR node, basic block, task release, HIL sample and proof-search tile boundaries; losing/speculative work drains; checkpoints bind manifest/candidate/target and completed logical ids; resume/fork never republishes accepted ids\n\
@@ -649,7 +649,7 @@ LEAF_REQUIREMENT=every obligation references this policy fixture, declares all n
                        MACHINE ARTIFACTS before proof: proposition and definition AST bytes/digests, total decoder \
                        semantics, premise schema, deterministic Lean translation and structural round-trip, exact \
                        axiom allowlist {propext,Quot.sound,Classical.choice}, transitive axiom closure, explicit rejection \
-                       of sorryAx/custom postulates/native or unsafe oracle shortcuts, and retained kernel replay. This prose card grants \
+                       of sorryAx/custom postulates/native-oracle shortcuts outside the admitted kernel/checker TCB, and retained kernel replay. This prose card grants \
                        no theorem authority.",
             },
             partition: Partition::Development,

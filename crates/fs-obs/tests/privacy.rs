@@ -176,13 +176,17 @@ fn dictionary_testable_correlation_is_refused_for_personal_and_secret_data() {
     )
     .expect_err("unsalted PII correlation must refuse");
     assert!(matches!(
-        error,
+        &error,
         ShareError::UnsafeCorrelation {
             sensitivity: Sensitivity::PersonalData,
             method: "unsalted",
             ..
         }
     ));
+    assert_eq!(
+        error.to_string(),
+        "privacy policy rejects correlation method unsalted for personal_data field \"user.email\""
+    );
 
     let salted = ExternalCorrelationToken::new(
         ExternalCorrelationMethod::Salted {
@@ -197,13 +201,50 @@ fn dictionary_testable_correlation_is_refused_for_personal_and_secret_data() {
     )
     .expect_err("salted low-entropy secret correlation must refuse");
     assert!(matches!(
-        error,
+        &error,
         ShareError::UnsafeCorrelation {
             sensitivity: Sensitivity::Secret,
             method: "salted_dictionary_testable",
             ..
         }
     ));
+    assert_eq!(
+        error.to_string(),
+        "privacy policy rejects correlation method salted_dictionary_testable for secret field \"secret\""
+    );
+}
+
+#[test]
+fn keyed_credential_correlation_is_refused_with_actionable_diagnostics() {
+    let keyed = ExternalCorrelationToken::new(
+        ExternalCorrelationMethod::Keyed {
+            key_id: "privacy-hmac-v3".into(),
+        },
+        "fedcba9876543210fedcba9876543210",
+    )
+    .expect("fixture keyed token");
+    let error = evaluate_share(
+        vec![field(
+            "auth.bearer",
+            b"opaque-credential",
+            Sensitivity::Credential,
+            false,
+        )],
+        &request(ShareAudience::Local).with_correlation(CorrelationPolicy::External(keyed)),
+    )
+    .expect_err("credentials must never gain a correlation token");
+    assert!(matches!(
+        &error,
+        ShareError::UnsafeCorrelation {
+            path,
+            sensitivity: Sensitivity::Credential,
+            method: "credential_correlation",
+        } if path == "auth.bearer"
+    ));
+    assert_eq!(
+        error.to_string(),
+        "privacy policy rejects correlation method credential_correlation for credential field \"auth.bearer\""
+    );
 }
 
 #[test]

@@ -1360,7 +1360,9 @@ pub fn promote_with_policy(
         };
         let receipt_json = receipt.to_json();
         return Err(ImportPromotionError::Refused(Box::new(PromotionRefusal {
-            blocking: vec!["unsafe source structure cannot enter the repair suite".to_string()],
+            blocking: vec![
+                "inadmissible source structure cannot enter the repair suite".to_string(),
+            ],
             fixes: vec![
                 "remove invalid face indices and non-finite vertices at the source adapter"
                     .to_string(),
@@ -1466,7 +1468,7 @@ fn fix_for_finding(class: &str, max_hole_edges: usize, accepted: usize) -> Strin
              use the SDF re-mesh pipeline; sampled evidence is not a clean certificate"
         ),
         "invalid-face-index" | "non-finite-vertex" => {
-            format!("{class} is structurally unsafe: repair the source adapter")
+            format!("{class} is structurally inadmissible: repair the source adapter")
         }
         other => format!(
             "{other} exceeds the project maximum {accepted}: repair the source or report a \
