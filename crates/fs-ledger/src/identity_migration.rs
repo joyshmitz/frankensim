@@ -283,13 +283,13 @@ pub const IDENTITY_MIGRATION_RECEIPT_SCHEMA_DECLARATION: &[&str] = &[
     "encoding=typed-binary",
     "sources=IdentityMigrationBody",
     "source_fields=IdentityMigrationBody.legacy_content_id:semantic,IdentityMigrationBody.legacy_fnv:semantic,IdentityMigrationBody.canonical_content_id:semantic,IdentityMigrationBody.semantic_rule:semantic,IdentityMigrationBody.semantic_id:semantic,IdentityMigrationBody.identity_role:semantic,IdentityMigrationBody.identity_domain:semantic,IdentityMigrationBody.identity_schema_name:semantic,IdentityMigrationBody.identity_schema_id:semantic,IdentityMigrationBody.identity_schema_version:semantic,IdentityMigrationBody.identity_context:semantic,IdentityMigrationBody.canonical_preimage_id:semantic,IdentityMigrationBody.canonical_frame_bytes:semantic,IdentityMigrationBody.field_count:semantic,IdentityMigrationBody.collection_items:semantic,IdentityMigrationBody.limits:semantic,IdentityMigrationBody.trust_state:semantic,IdentityMigrationBody.anchor_content_id:semantic,IdentityMigrationBody.verifier_id:semantic,IdentityMigrationBody.key_policy_id:semantic,IdentityMigrationBody.no_claim_state:semantic,IdentityMigrationBody.legacy_bytes:derived:bound-by-content-id-and-byte-count,IdentityMigrationBody.canonical_bytes:derived:bound-by-content-id-and-byte-count",
-    "source_bindings=IdentityMigrationBody.legacy_bytes>legacy-content-id+legacy-byte-count,IdentityMigrationBody.legacy_fnv>legacy-fnv-le-u64,IdentityMigrationBody.canonical_bytes>canonical-content-id+canonical-byte-count,IdentityMigrationBody.semantic_rule>semantic-rule,IdentityMigrationBody.semantic_id>semantic-id,IdentityMigrationBody.identity_role>identity-role,IdentityMigrationBody.identity_domain>identity-domain,IdentityMigrationBody.identity_schema_name>identity-schema-name,IdentityMigrationBody.identity_schema_id>identity-schema-id,IdentityMigrationBody.identity_schema_version>identity-schema-version,IdentityMigrationBody.identity_context>identity-context,IdentityMigrationBody.canonical_preimage_id>canonical-preimage-content-id,IdentityMigrationBody.canonical_frame_bytes>canonical-frame-bytes,IdentityMigrationBody.field_count>field-count,IdentityMigrationBody.collection_items>collection-items,IdentityMigrationBody.limits>max-canonical-bytes+max-field-bytes+max-fields+max-collection-items+cancellation-poll-bytes,IdentityMigrationBody.trust_state>trust-state,IdentityMigrationBody.anchor_content_id>anchor-content-id,IdentityMigrationBody.verifier_id>verifier-id,IdentityMigrationBody.key_policy_id>key-policy-id,IdentityMigrationBody.no_claim_state>no-claim-state",
+    "source_bindings=IdentityMigrationBody.legacy_content_id>legacy-content-id,IdentityMigrationBody.legacy_fnv>legacy-fnv-le-u64,IdentityMigrationBody.canonical_content_id>canonical-content-id,IdentityMigrationBody.semantic_rule>semantic-rule,IdentityMigrationBody.semantic_id>semantic-id,IdentityMigrationBody.identity_role>identity-role,IdentityMigrationBody.identity_domain>identity-domain,IdentityMigrationBody.identity_schema_name>identity-schema-name,IdentityMigrationBody.identity_schema_id>identity-schema-id,IdentityMigrationBody.identity_schema_version>identity-schema-version,IdentityMigrationBody.identity_context>identity-context,IdentityMigrationBody.canonical_preimage_id>canonical-preimage-content-id,IdentityMigrationBody.canonical_frame_bytes>canonical-frame-bytes,IdentityMigrationBody.field_count>field-count,IdentityMigrationBody.collection_items>collection-items,IdentityMigrationBody.limits>max-canonical-bytes+max-field-bytes+max-fields+max-collection-items+cancellation-poll-bytes,IdentityMigrationBody.trust_state>trust-state,IdentityMigrationBody.anchor_content_id>anchor-content-id,IdentityMigrationBody.verifier_id>verifier-id,IdentityMigrationBody.key_policy_id>key-policy-id,IdentityMigrationBody.no_claim_state>no-claim-state",
     "external_semantic_fields=receipt-schema-domain,receipt-schema-version,canonical-field-order",
     "semantic_fields=receipt-schema-domain,receipt-schema-version,canonical-field-order,legacy-content-id,legacy-byte-count,legacy-fnv-le-u64,canonical-content-id,canonical-byte-count,semantic-rule,identity-role,semantic-id,identity-domain,identity-schema-name,identity-schema-id,identity-schema-version,identity-context,canonical-preimage-content-id,canonical-frame-bytes,field-count,collection-items,max-canonical-bytes,max-field-bytes,max-fields,max-collection-items,cancellation-poll-bytes,trust-state,anchor-content-id,verifier-id,key-policy-id,no-claim-state",
     "excluded_fields=exact-legacy-bytes:bound-by-content-id,exact-canonical-bytes:bound-by-content-id,created-at:provenance-envelope-only",
     "consumers=Ledger::record_identity_migration,Ledger::identity_migration_receipt,Ledger::identity_migration_candidates,IdentityMigrationReceipt::typed_semantic_id,IdentityMigrationReceipt::to_wire_bytes,IdentityMigrationReceipt::from_wire_bytes,Ledger::bind_artifact_semantic_identity,Ledger::artifact_semantic_binding,Ledger::bind_evidence_semantic_identity,Ledger::evidence_semantic_binding",
     "mutations=receipt-schema-domain:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,receipt-schema-version:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,canonical-field-order:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,legacy-content-id:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,legacy-byte-count:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,legacy-fnv-le-u64:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,canonical-content-id:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,canonical-byte-count:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,semantic-rule:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,identity-role:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,semantic-id:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,identity-domain:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,identity-schema-name:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,identity-schema-id:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,identity-schema-version:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,identity-context:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,canonical-preimage-content-id:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,canonical-frame-bytes:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,field-count:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,collection-items:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,max-canonical-bytes:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,max-field-bytes:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,max-fields:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,max-collection-items:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,cancellation-poll-bytes:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,trust-state:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,anchor-content-id:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,verifier-id:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,key-policy-id:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state,no-claim-state:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state",
-    "nonsemantic_mutations=created-at:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state",
+    "nonsemantic_mutations=exact-legacy-bytes:crates/fs-ledger/src/identity_migration.rs#migration_receipt_exact_payloads_are_excluded_but_content_roots_are_validated,exact-canonical-bytes:crates/fs-ledger/src/identity_migration.rs#migration_receipt_exact_payloads_are_excluded_but_content_roots_are_validated,created-at:crates/fs-ledger/tests/identity_migration.rs#receipt_identity_binds_exact_bytes_schema_and_audit_state",
     "field_guard=classify_identity_migration_receipt_fields",
     "transport_guard=IdentityMigrationReceipt::from_wire_bytes",
     "version_guard=crates/fs-ledger/tests/identity_migration.rs#wire_transport_refuses_truncation_extension_future_version_and_forged_id",
@@ -5125,6 +5125,71 @@ impl Ledger {
 mod tests {
     use super::*;
     use crate::schema;
+
+    enum MigrationPayloadExclusionSchemaV1 {}
+
+    impl CanonicalSchema for MigrationPayloadExclusionSchemaV1 {
+        const DOMAIN: &'static str = "org.frankensim.test.ledger-migration.payload-exclusion.v1";
+        const NAME: &'static str = "ledger-migration-payload-exclusion";
+        const VERSION: u32 = 1;
+        const CONTEXT: &'static str =
+            "G0 identity preimage exclusion and retained-payload validation fixture";
+        const FIELDS: &'static [FieldSpec] = &[FieldSpec::required("meaning", WireType::Bytes)];
+    }
+
+    type MigrationPayloadExclusionId = SemanticId<MigrationPayloadExclusionSchemaV1>;
+
+    fn migration_payload_exclusion_body() -> IdentityMigrationBody {
+        let receipt =
+            CanonicalEncoder::<MigrationPayloadExclusionId, _>::new(RECEIPT_ID_LIMITS, || false)
+                .expect("valid static payload-exclusion schema")
+                .bytes(Field::new(0, "meaning"), b"shape-a")
+                .expect("bounded payload-exclusion fixture")
+                .finish()
+                .expect("complete payload-exclusion fixture");
+        receipt_body_from_claim(IdentityMigrationClaim {
+            legacy_bytes: b"legacy-a",
+            legacy_fnv: LegacyProvenanceV1::new(0xcbf2_9ce4_8422_2325),
+            canonical_bytes: b"canonical-a",
+            semantic_rule: "payload-exclusion-v0-to-v1",
+            receipt,
+            audit: receipt.audit_record(),
+        })
+        .expect("valid migration payload-exclusion body")
+    }
+
+    #[test]
+    fn migration_receipt_exact_payloads_are_excluded_but_content_roots_are_validated() {
+        let body = migration_payload_exclusion_body();
+        let receipt_id = derive_receipt_id(&body).expect("derive baseline receipt identity");
+
+        let mut changed_legacy = body.clone();
+        changed_legacy.legacy_bytes[0] ^= 1;
+        assert_eq!(
+            derive_receipt_id(&changed_legacy).expect("derive after excluded legacy-byte mutation"),
+            receipt_id,
+            "same-length retained legacy bytes are not direct identity inputs"
+        );
+        assert_eq!(
+            validate_receipt_body(&changed_legacy),
+            Err("legacy content ID does not match the exact retained bytes"),
+            "the retained legacy payload cannot escape with a stale semantic root"
+        );
+
+        let mut changed_canonical = body;
+        changed_canonical.canonical_bytes[0] ^= 1;
+        assert_eq!(
+            derive_receipt_id(&changed_canonical)
+                .expect("derive after excluded canonical-byte mutation"),
+            receipt_id,
+            "same-length retained canonical bytes are not direct identity inputs"
+        );
+        assert_eq!(
+            validate_receipt_body(&changed_canonical),
+            Err("canonical content ID does not match the exact retained bytes"),
+            "the retained canonical payload cannot escape with a stale semantic root"
+        );
+    }
 
     fn drop_v13_objects(ledger: &Ledger) {
         for ddl in [
