@@ -126,11 +126,21 @@ persistence.
   claim for a name in insertion order — conflicting observations stay
   separate `PropertyClaim`s, and fusion is an explicit query-time
   policy (PR-4), never a map overwrite that invents a canonical value.
+  Selection is either a named `SelectionPolicy` (`query`) or an exact
+  caller-supplied claim pin (`query_pinned`, receipt tag
+  `PINNED_CLAIM_POLICY_TAG = "pinned-claim"`, bead f85xj.6.4) — the
+  explicit resolution for coexisting conflicting claims. A pin never
+  bypasses validity (out-of-domain pins refuse), and a pinned receipt
+  carries its pin as the `selected` field: replay proves the pin
+  resolves and evaluates identically, while WHO pinned it must be
+  cross-checked against the external record (e.g. the project file),
+  exactly like the query point.
 - `MatDbError` — total, typed refusals: `DimsMismatch`,
   `MissingLicense`, `MissingSource`, `NonFinite` (with exact bits),
   `UnusableValidity`, `InvalidUncertainty`, `MalformedCurve`,
   `UnknownObservation`, `EmptyParameterBlock`, `NonFiniteParameter`,
-  `RevisionNotZero`, `SupersedesMismatch`.
+  `RevisionNotZero`, `SupersedesMismatch`; and on the pinned query
+  path, `PinnedClaimUnknown` and `PinnedClaimOutOfDomain`.
 - `LawId` / `ConstitutiveModelCard` (PR-2) — a law's stable (id,
   version) identity, its canonical dimensioned parameter block
   (nonempty, finite; BTreeMap = one canonical hash order),
@@ -289,7 +299,11 @@ unconstrained validity); and the RECEIPT-COMPLETENESS MUTATION BATTERY —
 fields, 11 per-field mutations all refuse typed
 (`ReceiptMismatch { field }` / `UnknownPolicyTag` /
 `EvaluatorVersionDrift` / the replay's own refusals) and every mutation
-moves the receipt content hash.
+moves the receipt content hash. The pinned-claim battery (f85xj.6.4):
+conflicting claims refuse under every named policy and resolve only
+through an explicit pin; a pin to a foreign or out-of-domain claim
+refuses typed; pinned receipts round-trip the portable wire format and
+replay via `verify_receipt`.
 
 `tests/pack.rs`: fixed v1 canonical byte-length/hash golden, exact
 byte/semantic round-trip, and externally pinned whole-pack verification;

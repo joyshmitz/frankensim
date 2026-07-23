@@ -28,7 +28,10 @@ use fs_evidence::{
 };
 use fs_qty::Dims;
 
-use crate::{ClaimId, ClaimSet, InterpolationPolicy, MatDbError, PropertyValue, UncertaintyModel};
+use crate::{
+    ClaimId, ClaimSet, InterpolationPolicy, MatDbError, PropertyClaim, PropertyValue,
+    UncertaintyModel,
+};
 
 /// Semantic version of the portable property-usage receipt identity.
 ///
@@ -248,7 +251,10 @@ impl SelectionPolicy {
         }
     }
 
-    /// The policy a receipt tag names.
+    /// The policy a receipt tag names. The pinned-claim tag is NOT a
+    /// `SelectionPolicy` (its pin travels in the receipt's `selected`
+    /// field), so this refuses it; receipt admission uses
+    /// [`admitted_policy_tag`].
     ///
     /// # Errors
     /// [`MatDbError::UnknownPolicyTag`] for a tag no policy owns.
@@ -259,6 +265,44 @@ impl SelectionPolicy {
             other => Err(MatDbError::UnknownPolicyTag {
                 tag: other.to_string(),
             }),
+        }
+    }
+}
+
+/// Receipt tag of the pinned-claim selection: the caller names the exact
+/// claim id, so a card with coexisting conflicting claims resolves only by
+/// an EXPLICIT recorded choice — never an auto-pick. The pin itself is the
+/// receipt's `selected` field; replay authority additionally requires the
+/// verifier to cross-check `selected` against the externally recorded pin,
+/// exactly as it must trust-check the query point.
+pub const PINNED_CLAIM_POLICY_TAG: &str = "pinned-claim";
+
+/// The closed set of policy tags a portable receipt may carry, mapped to
+/// their static spellings. `None` is a foreign tag and refuses upstream.
+fn admitted_policy_tag(tag: &str) -> Option<&'static str> {
+    match tag {
+        "single-claim-only" => Some("single-claim-only"),
+        "prefer-observation-backed" => Some("prefer-observation-backed"),
+        PINNED_CLAIM_POLICY_TAG => Some(PINNED_CLAIM_POLICY_TAG),
+        _ => None,
+    }
+}
+
+/// How one query selects among in-domain candidates: a named policy or an
+/// explicit caller-supplied claim pin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaimSelection {
+    /// Selection under a named [`SelectionPolicy`].
+    Policy(SelectionPolicy),
+    /// Selection pinned to one exact claim id.
+    Pinned(ClaimId),
+}
+
+impl ClaimSelection {
+    fn tag(self) -> &'static str {
+        match self {
+            ClaimSelection::Policy(policy) => policy.tag(),
+            ClaimSelection::Pinned(_) => PINNED_CLAIM_POLICY_TAG,
         }
     }
 }
@@ -419,7 +463,7 @@ pub const PROPERTY_USAGE_RECEIPT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
     "encoder=PropertyUsageReceipt::try_content_hash",
     "encoder_helpers=PropertyUsageReceipt::content_hash,PropertyUsageReceipt::identity_preimage,property_usage_receipt_hash,EvaluationDecision::encode,ReceiptEncoder::new,ReceiptEncoder::bytes,ReceiptEncoder::u8,ReceiptEncoder::u32,ReceiptEncoder::u64,ReceiptEncoder::count,ReceiptEncoder::string,ReceiptEncoder::hash,ReceiptEncoder::f64,ReceiptEncoder::boolean,ReceiptEncoder::finish",
     "schema_constants=PROPERTY_USAGE_RECEIPT_IDENTITY_VERSION,PROPERTY_USAGE_RECEIPT_IDENTITY_DOMAIN,PROPERTY_USAGE_RECEIPT_SCHEMA_VERSION,PROPERTY_USAGE_RECEIPT_MAGIC,FIELD_PROPERTY,FIELD_QUERY_POINT,FIELD_CONSIDERED,FIELD_IN_DOMAIN,FIELD_SELECTED,FIELD_POLICY,FIELD_DECISION,FIELD_OBSERVATION_BACKED,FIELD_EVALUATOR_VERSION,FIELD_SOURCE_HASHES,DECISION_CONSTANT_WITHIN_VALIDITY,DECISION_EXACT_SCALAR,DECISION_EXACT_TABULATED,DECISION_LINEAR_INSIDE,MATDB_EVALUATOR_VERSION,MAX_PROPERTY_USAGE_RECEIPT_BYTES,MAX_PROPERTY_USAGE_PROPERTY_BYTES,MAX_PROPERTY_USAGE_QUERY_AXES,MAX_PROPERTY_USAGE_AXIS_BYTES,MAX_PROPERTY_USAGE_CLAIM_IDS,MAX_PROPERTY_USAGE_POLICY_BYTES,MAX_PROPERTY_USAGE_SOURCE_HASHES",
-    "schema_functions=PropertyUsageReceipt::validate_portable,PropertyUsageReceipt::to_bytes,PropertyUsageReceipt::from_bytes,PropertyUsageReceipt::from_bytes_verified,EvaluationDecision::decode,SelectionPolicy::tag,SelectionPolicy::from_tag,query_point_exact_eq,evaluation_decision_exact_eq,ReceiptReader::new,ReceiptReader::take,ReceiptReader::require_remaining_items,ReceiptReader::expect,ReceiptReader::expect_tag,ReceiptReader::u8,ReceiptReader::u32,ReceiptReader::u64,ReceiptReader::count,ReceiptReader::string,ReceiptReader::hash,ReceiptReader::f64,ReceiptReader::boolean,ReceiptReader::finish,invalid_field,resource_limit,check_bytes,check_count,crates/fs-blake3/src/lib.rs#hash_domain",
+    "schema_functions=PropertyUsageReceipt::validate_portable,PropertyUsageReceipt::to_bytes,PropertyUsageReceipt::from_bytes,PropertyUsageReceipt::from_bytes_verified,EvaluationDecision::decode,SelectionPolicy::tag,SelectionPolicy::from_tag,admitted_policy_tag,ClaimSelection::tag,query_point_exact_eq,evaluation_decision_exact_eq,ReceiptReader::new,ReceiptReader::take,ReceiptReader::require_remaining_items,ReceiptReader::expect,ReceiptReader::expect_tag,ReceiptReader::u8,ReceiptReader::u32,ReceiptReader::u64,ReceiptReader::count,ReceiptReader::string,ReceiptReader::hash,ReceiptReader::f64,ReceiptReader::boolean,ReceiptReader::finish,invalid_field,resource_limit,check_bytes,check_count,crates/fs-blake3/src/lib.rs#hash_domain",
     "schema_dependencies=none",
     "digest=blake3-256-domain-separated",
     "encoding=canonical-transport-exact-bits",
@@ -429,7 +473,7 @@ pub const PROPERTY_USAGE_RECEIPT_IDENTITY_SCHEMA_DECLARATION: &[&str] = &[
     "external_semantic_fields=identity-domain,identity-version,wire-magic,canonical-field-order,field-tag-u8,length-count-u64-le,fixed-numeric-little-endian,in-band-identity",
     "semantic_fields=identity-domain,identity-version,wire-magic,canonical-field-order,field-tag-u8,length-count-u64-le,fixed-numeric-little-endian,in-band-identity,wire-schema-version,property-byte-count,property-utf8,query-point-count,query-point-order,query-axis-byte-count,query-axis-utf8,query-coordinate-f64-exact-bits,considered-count,considered-order,considered-claim-id,in-domain-count,in-domain-order,in-domain-claim-id,selected-claim-id,policy-byte-count,policy-utf8,decision-tag,decision-at-f64-exact-bits,decision-x-lo-f64-exact-bits,decision-x-hi-f64-exact-bits,observation-backed-flag,evaluator-version,source-hash-count,source-hash-order,source-hash",
     "excluded_fields=none",
-    "consumers=PropertyUsageReceipt::try_content_hash,PropertyUsageReceipt::content_hash,PropertyUsageReceipt::to_bytes,PropertyUsageReceipt::from_bytes,PropertyUsageReceipt::from_bytes_verified,ClaimSet::query,ClaimSet::verify_receipt,MaterialAnswer",
+    "consumers=PropertyUsageReceipt::try_content_hash,PropertyUsageReceipt::content_hash,PropertyUsageReceipt::to_bytes,PropertyUsageReceipt::from_bytes,PropertyUsageReceipt::from_bytes_verified,ClaimSet::query,ClaimSet::query_pinned,ClaimSet::verify_receipt,MaterialAnswer",
     "mutations=identity-domain:crates/fs-matdb/tests/query.rs#property_usage_receipt_v2_round_trips_and_replays_exactly,identity-version:crates/fs-matdb/tests/query.rs#property_usage_receipt_v2_round_trips_and_replays_exactly,wire-magic:crates/fs-matdb/tests/query.rs#property_usage_receipt_v2_decoder_fails_closed,canonical-field-order:crates/fs-matdb/tests/query.rs#property_usage_receipt_v2_round_trips_and_replays_exactly,field-tag-u8:crates/fs-matdb/tests/query.rs#property_usage_receipt_v2_decoder_fails_closed,length-count-u64-le:crates/fs-matdb/tests/query.rs#property_usage_receipt_v2_binds_collection_boundaries,fixed-numeric-little-endian:crates/fs-matdb/tests/query.rs#property_usage_receipt_v2_round_trips_and_replays_exactly,in-band-identity:crates/fs-matdb/tests/query.rs#property_usage_receipt_v2_decoder_fails_closed,wire-schema-version:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,property-byte-count:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,property-utf8:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,query-point-count:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,query-point-order:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,query-axis-byte-count:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,query-axis-utf8:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,query-coordinate-f64-exact-bits:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,considered-count:crates/fs-matdb/tests/query.rs#property_usage_receipt_v2_binds_collection_boundaries,considered-order:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,considered-claim-id:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,in-domain-count:crates/fs-matdb/tests/query.rs#property_usage_receipt_v2_binds_collection_boundaries,in-domain-order:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,in-domain-claim-id:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,selected-claim-id:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,policy-byte-count:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,policy-utf8:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,decision-tag:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,decision-at-f64-exact-bits:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,decision-x-lo-f64-exact-bits:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,decision-x-hi-f64-exact-bits:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,observation-backed-flag:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,evaluator-version:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,source-hash-count:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,source-hash-order:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently,source-hash:crates/fs-matdb/tests/query.rs#property_usage_receipt_identity_fields_move_independently",
     "nonsemantic_mutations=none",
     "field_guard=classify_property_usage_receipt_identity_fields",
@@ -535,11 +579,8 @@ impl PropertyUsageReceipt {
 
         reader.expect_tag(FIELD_POLICY, "policy")?;
         let policy_text = reader.string("policy-bytes", MAX_PROPERTY_USAGE_POLICY_BYTES)?;
-        let policy = match SelectionPolicy::from_tag(&policy_text) {
-            Ok(policy) => policy.tag(),
-            Err(_) => {
-                return Err(PropertyUsageReceiptError::UnknownPolicyTag { tag: policy_text });
-            }
+        let Some(policy) = admitted_policy_tag(&policy_text) else {
+            return Err(PropertyUsageReceiptError::UnknownPolicyTag { tag: policy_text });
         };
 
         reader.expect_tag(FIELD_DECISION, "decision")?;
@@ -657,6 +698,7 @@ impl PropertyUsageReceipt {
         encoder.finish()
     }
 
+    #[allow(clippy::too_many_lines)] // the closed portable profile IS this one straight-line check sequence
     fn validate_portable(&self) -> Result<(), PropertyUsageReceiptError> {
         if self.schema_version != PROPERTY_USAGE_RECEIPT_SCHEMA_VERSION {
             return Err(PropertyUsageReceiptError::UnsupportedSchemaVersion {
@@ -747,11 +789,11 @@ impl PropertyUsageReceipt {
             self.policy.len(),
             MAX_PROPERTY_USAGE_POLICY_BYTES,
         )?;
-        SelectionPolicy::from_tag(self.policy).map_err(|_| {
-            PropertyUsageReceiptError::UnknownPolicyTag {
+        if admitted_policy_tag(self.policy).is_none() {
+            return Err(PropertyUsageReceiptError::UnknownPolicyTag {
                 tag: self.policy.to_string(),
-            }
-        })?;
+            });
+        }
         match &self.decision {
             EvaluationDecision::ExactTabulated { at } if !at.is_finite() => {
                 return Err(invalid_field(
@@ -1054,6 +1096,92 @@ pub struct MaterialAnswer {
     pub receipt: PropertyUsageReceipt,
 }
 
+/// Narrow the in-domain candidates under the caller's selection. Policy
+/// arms may keep several candidates (the caller refuses ambiguity); the
+/// pinned arm refuses here with the pin-specific diagnosis.
+fn select_candidates<'p, 'c>(
+    property: &str,
+    selection: ClaimSelection,
+    considered: &[ClaimId],
+    in_domain_pairs: &[&'p (ClaimId, &'c PropertyClaim)],
+) -> Result<Vec<&'p (ClaimId, &'c PropertyClaim)>, MatDbError> {
+    match selection {
+        ClaimSelection::Policy(SelectionPolicy::SingleClaimOnly) => Ok(in_domain_pairs.to_vec()),
+        ClaimSelection::Policy(SelectionPolicy::PreferObservationBacked) => {
+            let backed: Vec<_> = in_domain_pairs
+                .iter()
+                .filter(|(_, claim)| !claim.observations.is_empty())
+                .copied()
+                .collect();
+            if backed.is_empty() {
+                Ok(in_domain_pairs.to_vec())
+            } else {
+                Ok(backed)
+            }
+        }
+        ClaimSelection::Pinned(pinned) => {
+            let matched: Vec<_> = in_domain_pairs
+                .iter()
+                .filter(|(id, _)| *id == pinned)
+                .copied()
+                .collect();
+            if matched.is_empty() {
+                return Err(if considered.contains(&pinned) {
+                    MatDbError::PinnedClaimOutOfDomain {
+                        property: property.to_string(),
+                        pinned,
+                    }
+                } else {
+                    MatDbError::PinnedClaimUnknown {
+                        property: property.to_string(),
+                        pinned,
+                    }
+                });
+            }
+            Ok(matched)
+        }
+    }
+}
+
+/// Honest slice mapping. Numerical: the stated band as an ESTIMATE around
+/// the value (never Exact/Enclosure — a datum is not interval-certified
+/// numerics), or an explicit no-claim for Unstated uncertainty.
+/// Statistical: the stated half-width.
+fn honest_certificates(
+    uncertainty: &UncertaintyModel,
+    value: f64,
+) -> (NumericalCertificate, StatisticalCertificate) {
+    match *uncertainty {
+        UncertaintyModel::Unstated => (
+            NumericalCertificate::no_claim(),
+            StatisticalCertificate::None,
+        ),
+        UncertaintyModel::HalfWidth {
+            half_width,
+            confidence,
+        } => (
+            NumericalCertificate::estimate(value - half_width, value + half_width),
+            StatisticalCertificate::HalfWidth {
+                half_width,
+                confidence,
+            },
+        ),
+        UncertaintyModel::RelativeHalfWidth {
+            fraction,
+            confidence,
+        } => {
+            let half_width = fraction * value.abs();
+            (
+                NumericalCertificate::estimate(value - half_width, value + half_width),
+                StatisticalCertificate::HalfWidth {
+                    half_width,
+                    confidence,
+                },
+            )
+        }
+    }
+}
+
 impl ClaimSet {
     /// Answer a property query at a point under an explicit selection
     /// policy.
@@ -1071,6 +1199,38 @@ impl ClaimSet {
         property: &str,
         point: &QueryPoint,
         policy: SelectionPolicy,
+    ) -> Result<MaterialAnswer, MatDbError> {
+        self.query_selected(property, point, ClaimSelection::Policy(policy))
+    }
+
+    /// Answer a property query with selection pinned to one exact claim
+    /// id: the EXPLICIT resolution for a card carrying coexisting
+    /// conflicting claims. The receipt records the
+    /// [`PINNED_CLAIM_POLICY_TAG`] policy with the pin as its `selected`
+    /// claim; a verifier must cross-check `selected` against the
+    /// externally recorded pin, since the receipt alone cannot prove who
+    /// chose it.
+    ///
+    /// # Errors
+    /// [`MatDbError::PinnedClaimUnknown`] when the pin names no claim
+    /// under the property; [`MatDbError::PinnedClaimOutOfDomain`] when
+    /// the pinned claim does not cover the point (a pin never bypasses
+    /// the extrapolation refusal); plus every refusal [`Self::query`]
+    /// can return except [`MatDbError::AmbiguousSelection`].
+    pub fn query_pinned(
+        &self,
+        property: &str,
+        point: &QueryPoint,
+        pinned: ClaimId,
+    ) -> Result<MaterialAnswer, MatDbError> {
+        self.query_selected(property, point, ClaimSelection::Pinned(pinned))
+    }
+
+    fn query_selected(
+        &self,
+        property: &str,
+        point: &QueryPoint,
+        selection: ClaimSelection,
     ) -> Result<MaterialAnswer, MatDbError> {
         let considered_pairs = self.claims_for(property);
         if considered_pairs.is_empty() {
@@ -1090,21 +1250,7 @@ impl ClaimSet {
             });
         }
         let in_domain: Vec<ClaimId> = in_domain_pairs.iter().map(|(id, _)| *id).collect();
-        let selected_pairs: Vec<_> = match policy {
-            SelectionPolicy::SingleClaimOnly => in_domain_pairs.clone(),
-            SelectionPolicy::PreferObservationBacked => {
-                let backed: Vec<_> = in_domain_pairs
-                    .iter()
-                    .filter(|(_, claim)| !claim.observations.is_empty())
-                    .copied()
-                    .collect();
-                if backed.is_empty() {
-                    in_domain_pairs.clone()
-                } else {
-                    backed
-                }
-            }
-        };
+        let selected_pairs = select_candidates(property, selection, &considered, &in_domain_pairs)?;
         if selected_pairs.len() != 1 {
             return Err(MatDbError::AmbiguousSelection {
                 property: property.to_string(),
@@ -1129,47 +1275,14 @@ impl ClaimSet {
             considered,
             in_domain,
             selected: *selected_id,
-            policy: policy.tag(),
+            policy: selection.tag(),
             decision,
             observation_backed: !claim.observations.is_empty(),
             evaluator_version: MATDB_EVALUATOR_VERSION,
             source_hashes,
         };
 
-        // Honest slice mapping. Numerical: the stated band as an
-        // ESTIMATE around the value (never Exact/Enclosure — a datum is
-        // not interval-certified numerics), or an explicit no-claim for
-        // Unstated uncertainty. Statistical: the stated half-width.
-        // Model: the claim's validity with the verified in-domain fact.
-        let (numerical, statistical) = match claim.uncertainty {
-            UncertaintyModel::Unstated => (
-                NumericalCertificate::no_claim(),
-                StatisticalCertificate::None,
-            ),
-            UncertaintyModel::HalfWidth {
-                half_width,
-                confidence,
-            } => (
-                NumericalCertificate::estimate(value - half_width, value + half_width),
-                StatisticalCertificate::HalfWidth {
-                    half_width,
-                    confidence,
-                },
-            ),
-            UncertaintyModel::RelativeHalfWidth {
-                fraction,
-                confidence,
-            } => {
-                let half_width = fraction * value.abs();
-                (
-                    NumericalCertificate::estimate(value - half_width, value + half_width),
-                    StatisticalCertificate::HalfWidth {
-                        half_width,
-                        confidence,
-                    },
-                )
-            }
-        };
+        let (numerical, statistical) = honest_certificates(&claim.uncertainty, value);
         let model = ModelEvidence {
             cards: vec![format!("fs-matdb:{property}")],
             assumptions: vec![format!(
@@ -1242,12 +1355,19 @@ impl ClaimSet {
             }
             error => MatDbError::PropertyUsageReceiptNotPortable { error },
         })?;
-        let policy = SelectionPolicy::from_tag(receipt.policy)?;
+        let selection = if receipt.policy == PINNED_CLAIM_POLICY_TAG {
+            // The pin travels as the receipt's own `selected` field; the
+            // replay proves that pin resolves and evaluates identically,
+            // while WHO pinned it is the verifier's external cross-check.
+            ClaimSelection::Pinned(receipt.selected)
+        } else {
+            ClaimSelection::Policy(SelectionPolicy::from_tag(receipt.policy)?)
+        };
         let mut point = QueryPoint::new();
         for (axis, value) in &receipt.query_point {
             point = point.with(axis.clone(), *value)?;
         }
-        let replayed = self.query(&receipt.property, &point, policy)?;
+        let replayed = self.query_selected(&receipt.property, &point, selection)?;
         let fresh = &replayed.receipt;
         for (field, matches) in [
             (

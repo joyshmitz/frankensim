@@ -1,6 +1,7 @@
 //! fs-matdb PR-4 conformance: every answer is Evidence + receipt;
 //! extrapolation refuses; fusion is explicit; unstated uncertainty
 //! never launders into a certificate.
+#![allow(clippy::float_cmp)] // bit-exact propagation of stored values is the contract under test
 
 use fs_blake3::{hash_bytes, hash_domain};
 use fs_evidence::NumericalKind;
@@ -8,7 +9,7 @@ use fs_evidence::ValidityDomain;
 use fs_matdb::{
     ClaimSet, EvaluationDecision, InterpolationPolicy, MATDB_EVALUATOR_VERSION,
     MAX_PROPERTY_USAGE_PROPERTY_BYTES, MAX_PROPERTY_USAGE_QUERY_AXES, MatDbError,
-    ObservationDataset, PROPERTY_USAGE_RECEIPT_IDENTITY_DOMAIN,
+    ObservationDataset, PINNED_CLAIM_POLICY_TAG, PROPERTY_USAGE_RECEIPT_IDENTITY_DOMAIN,
     PROPERTY_USAGE_RECEIPT_IDENTITY_VERSION, PROPERTY_USAGE_RECEIPT_SCHEMA_VERSION, PropertyClaim,
     PropertyKey, PropertyUsageReceipt, PropertyUsageReceiptError, PropertyValue, Provenance,
     QueryPoint, SelectionPolicy, UncertaintyModel,
@@ -394,6 +395,7 @@ fn unstated_uncertainty_is_marked_and_never_certifies() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one mutation per receipt field, in field order
 fn receipt_completeness_mutation_battery() {
     // PR-5: a receipt with ANY deleted, substituted, or stale field
     // fails verification with a typed refusal. Fixture: two claims so
@@ -547,6 +549,7 @@ fn receipt_completeness_mutation_battery() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // the sealed-registry version guard walks every field once
 fn property_usage_receipt_v2_round_trips_and_replays_exactly() {
     let (set, receipt) = portable_receipt_fixture();
     assert_eq!(PROPERTY_USAGE_RECEIPT_IDENTITY_VERSION, 2);
@@ -830,6 +833,7 @@ fn property_usage_receipt_identity_fields_move_independently() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one closed-decoder drill per malformation class
 fn property_usage_receipt_v2_decoder_fails_closed() {
     let (_, receipt) = portable_receipt_fixture();
     let bytes = receipt.to_bytes().expect("fixture encodes");
@@ -1021,4 +1025,111 @@ fn property_usage_receipt_v2_encoder_enforces_canonical_caps_and_relations() {
             ..
         })
     ));
+}
+
+// ---------------------------------------------------------------------------
+// Pinned-claim selection (bead f85xj.6.4): conflicting claims resolve ONLY
+// by an explicit recorded pin, and a pin never bypasses the extrapolation
+// refusal.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn conflicting_claims_resolve_only_by_an_explicit_pin() {
+    let mut set = ClaimSet::new();
+    let handbook = set
+        .insert_claim(density(2699.0, "handbook", stated()))
+        .expect("handbook claim inserts");
+    let vendor = set
+        .insert_claim(density(2712.0, "vendor datasheet", stated()))
+        .expect("vendor claim inserts");
+
+    // No policy auto-picks between coexisting conflicting sources.
+    assert!(matches!(
+        set.query("density", &room(), SelectionPolicy::SingleClaimOnly),
+        Err(MatDbError::AmbiguousSelection { ref candidates, .. }) if candidates.len() == 2
+    ));
+    assert!(matches!(
+        set.query("density", &room(), SelectionPolicy::PreferObservationBacked),
+        Err(MatDbError::AmbiguousSelection { .. })
+    ));
+
+    // The pin is the explicit selection, and the receipt records it as such.
+    let answer = set
+        .query_pinned("density", &room(), vendor)
+        .expect("pinned query answers");
+    assert_eq!(answer.evidence.value.value, 2712.0);
+    let receipt = &answer.receipt;
+    assert_eq!(receipt.policy, PINNED_CLAIM_POLICY_TAG);
+    assert_eq!(receipt.selected, vendor);
+    assert_eq!(receipt.considered.len(), 2);
+    assert_eq!(receipt.in_domain.len(), 2);
+    assert!(receipt.considered.contains(&handbook));
+    assert_eq!(receipt.source_hashes[0], vendor.0);
+
+    // The pinned receipt replays against the live set.
+    set.verify_receipt(receipt).expect("pinned receipt replays");
+
+    // And the other pin selects the other claim: no hidden preference.
+    let other = set
+        .query_pinned("density", &room(), handbook)
+        .expect("other pin answers");
+    assert_eq!(other.evidence.value.value, 2699.0);
+}
+
+#[test]
+fn a_pin_never_bypasses_domain_and_a_foreign_pin_refuses() {
+    let mut set = ClaimSet::new();
+    let wide = density(2700.0, "wide-range source", stated());
+    let mut narrow = density(2705.0, "narrow-range source", stated());
+    narrow.validity = ValidityDomain::unconstrained().with("T", 250.0, 300.0);
+    set.insert_claim(wide).expect("wide claim inserts");
+    let narrow_id = set.insert_claim(narrow).expect("narrow claim inserts");
+
+    // 350 K is inside the wide claim but outside the pinned narrow one:
+    // the pin refuses instead of silently extrapolating or substituting.
+    let hot = QueryPoint::new().with("T", 350.0).expect("finite point");
+    assert!(matches!(
+        set.query_pinned("density", &hot, narrow_id),
+        Err(MatDbError::PinnedClaimOutOfDomain { ref property, pinned })
+            if property == "density" && pinned == narrow_id
+    ));
+
+    // A pin that names no claim under the property refuses by name.
+    let foreign = fs_matdb::ClaimId(hash_bytes(b"no such claim"));
+    assert!(matches!(
+        set.query_pinned("density", &room(), foreign),
+        Err(MatDbError::PinnedClaimUnknown { ref property, pinned })
+            if property == "density" && pinned == foreign
+    ));
+
+    // Outside EVERY claim the ordinary extrapolation refusal still fires
+    // first: a pin is a selection, not a domain waiver.
+    let molten = QueryPoint::new().with("T", 500.0).expect("finite point");
+    assert!(matches!(
+        set.query_pinned("density", &molten, narrow_id),
+        Err(MatDbError::NoClaimInDomain { .. })
+    ));
+}
+
+#[test]
+fn pinned_receipts_survive_the_portable_round_trip() {
+    let mut set = ClaimSet::new();
+    set.insert_claim(density(2699.0, "handbook", stated()))
+        .expect("handbook claim inserts");
+    let vendor = set
+        .insert_claim(density(2712.0, "vendor datasheet", stated()))
+        .expect("vendor claim inserts");
+
+    let receipt = set
+        .query_pinned("density", &room(), vendor)
+        .expect("pinned query answers")
+        .receipt;
+    let identity = receipt.try_content_hash().expect("portable identity");
+    let bytes = receipt.to_bytes().expect("portable encoding");
+    let decoded =
+        PropertyUsageReceipt::from_bytes_verified(&bytes, identity).expect("verified decode");
+    assert_eq!(decoded, receipt);
+    assert_eq!(decoded.policy, PINNED_CLAIM_POLICY_TAG);
+    set.verify_receipt(&decoded)
+        .expect("decoded receipt replays");
 }

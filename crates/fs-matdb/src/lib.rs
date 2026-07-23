@@ -62,9 +62,10 @@ pub use query::{
     MAX_PROPERTY_USAGE_CLAIM_IDS, MAX_PROPERTY_USAGE_POLICY_BYTES,
     MAX_PROPERTY_USAGE_PROPERTY_BYTES, MAX_PROPERTY_USAGE_QUERY_AXES,
     MAX_PROPERTY_USAGE_RECEIPT_BYTES, MAX_PROPERTY_USAGE_SOURCE_HASHES, MaterialAnswer,
-    PROPERTY_USAGE_RECEIPT_IDENTITY_DOMAIN, PROPERTY_USAGE_RECEIPT_IDENTITY_SCHEMA_DECLARATION,
-    PROPERTY_USAGE_RECEIPT_IDENTITY_VERSION, PROPERTY_USAGE_RECEIPT_SCHEMA_VERSION, PropertySample,
-    PropertyUsageReceipt, PropertyUsageReceiptError, QueryPoint, SelectionPolicy,
+    PINNED_CLAIM_POLICY_TAG, PROPERTY_USAGE_RECEIPT_IDENTITY_DOMAIN,
+    PROPERTY_USAGE_RECEIPT_IDENTITY_SCHEMA_DECLARATION, PROPERTY_USAGE_RECEIPT_IDENTITY_VERSION,
+    PROPERTY_USAGE_RECEIPT_SCHEMA_VERSION, PropertySample, PropertyUsageReceipt,
+    PropertyUsageReceiptError, QueryPoint, SelectionPolicy,
 };
 pub use species_pack::{
     NormalizedSpeciesPack, SPECIES_MOLAR_MASS_DIMS, SPECIES_PACK_SCHEMA_VERSION,
@@ -198,6 +199,22 @@ pub enum MatDbError {
         /// The surviving candidates.
         candidates: Vec<ClaimId>,
     },
+    /// A pinned-claim query names a claim id that no claim under the
+    /// property carries; the pin is stale or points at another card.
+    PinnedClaimUnknown {
+        /// The property.
+        property: String,
+        /// The pin that matched nothing.
+        pinned: ClaimId,
+    },
+    /// The pinned claim exists but the query point lies outside its
+    /// validity: a pin never bypasses the extrapolation refusal.
+    PinnedClaimOutOfDomain {
+        /// The property.
+        property: String,
+        /// The pinned claim.
+        pinned: ClaimId,
+    },
     /// A curve claim's abscissa axis is missing from the query point.
     MissingQueryAxis {
         /// The required axis.
@@ -254,6 +271,7 @@ pub enum MatDbError {
 }
 
 impl fmt::Display for MatDbError {
+    #[allow(clippy::too_many_lines)] // one arm per refusal: the exhaustive catalog is the point
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             MatDbError::DimsMismatch {
@@ -342,6 +360,18 @@ impl fmt::Display for MatDbError {
                 "{} in-domain claims for '{property}' survive the policy; fusion must be an \
                  explicit policy, so ambiguity refuses",
                 candidates.len()
+            ),
+            MatDbError::PinnedClaimUnknown { property, pinned } => write!(
+                f,
+                "pinned claim {} matches no claim under '{property}'; the pin is stale or \
+                 belongs to another card",
+                pinned.0.to_hex()
+            ),
+            MatDbError::PinnedClaimOutOfDomain { property, pinned } => write!(
+                f,
+                "pinned claim {} for '{property}' does not cover the query point; a pin never \
+                 bypasses the extrapolation refusal",
+                pinned.0.to_hex()
             ),
             MatDbError::MissingQueryAxis { axis } => {
                 write!(f, "the query point lacks required abscissa axis '{axis}'")
@@ -855,8 +885,8 @@ impl ClaimSet {
         self.key_dims
             .insert(claim.key.name().to_string(), claim.key.dims());
         let name = claim.key.name().to_string();
-        if !self.claims.contains_key(&id) {
-            self.claims.insert(id, claim);
+        if let std::collections::btree_map::Entry::Vacant(slot) = self.claims.entry(id) {
+            slot.insert(claim);
             self.by_key.entry(name).or_default().push(id);
         }
         Ok(id)
