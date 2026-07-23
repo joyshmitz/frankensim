@@ -44,10 +44,10 @@ pub use migration::{MigratedProject, MigrationRule, ProjectMigrationReceipt, mig
 pub use spec::{
     Budgets, ConsequenceClass, Cooling, DecisionGate, DefaultReceipt, EntityDecl, Envelope, Fan,
     GeometryArtifact, GeometryAssignment, InterfaceCardBinding, InterfaceState, MaterialBinding,
-    Metadata, OutputRequest, PowerDissipation, ProjectSpec, RequirementDirection,
-    RequirementSeverity, RequirementSource, RequirementSourceKind, RequirementSourceReview,
-    SafetyFactorPolicy, Seeds, SolverSettings, ThermalLimit, UnitsDoctrine, Vent, Versions,
-    requirement_source_reviews,
+    Metadata, OutputRequest, PerfectContactBinding, PowerDissipation, ProjectSpec,
+    RequirementDirection, RequirementSeverity, RequirementSource, RequirementSourceKind,
+    RequirementSourceReview, SafetyFactorPolicy, Seeds, SolverSettings, ThermalLimit,
+    UnitsDoctrine, Vent, Versions, requirement_source_reviews,
 };
 pub use wire::{
     CanonicalizationReceipt, DecodedProject, ProjectError, canonical_hash, lower, parse_json,

@@ -20,7 +20,11 @@ card-backed interface carries one typed manufactured-state class
 (bolted-with-pattern, adhesive, TIM, dry contact, or fluid-filled gap), with
 explicit uncertainty half-widths on continuous state parameters. The state is
 validated, canonical, identity-bearing through the project bytes, and visible
-in the deterministic resolution table.
+in the deterministic resolution table. A separate `PerfectContactBinding`
+records deliberate idealized contact with an explicit authority and rationale;
+it never masquerades as a matdb card or zero-resistance receipt, and binding
+refuses until the conduction layer has an authoritative perfect-contact
+operator.
 Bead f85xj.17.6 extends the same canonical project identity with mandatory
 requirement authority and typed context-of-use gating: requirement/policy
 sources carry exact document versions and locators, and an explicitly
@@ -55,7 +59,10 @@ bindings; it runs no solves and admits no scenarios itself.
   exact bolt count/pattern and torque with half-width; adhesive and TIM rows
   declare thickness with half-width; dry contact declares pressure with
   half-width and finish; fluid gaps declare separation with half-width and
-  fluid identity. `PowerDissipation`
+  fluid identity. `PerfectContactBinding` is a mutually exclusive interface
+  law declaration carrying a versioned policy/design/user authority and
+  rationale. Those strings are canonical recorded provenance, not
+  authenticated evidence. `PowerDissipation`
   rows, `Cooling` (fans/vents/leakage; declared-empty lists are facts,
   omission is a violation), `Envelope`, sourced `ThermalLimit` requirements
   with explicit QoI, direction, effective limit, guard margin, severity,
@@ -131,8 +138,13 @@ bindings; it runs no solves and admits no scenarios itself.
 - `bind::resolve_bindings(&ProjectSpec, &CardLibrary, &BindingRequirements)
   -> MaterialResolution` (bead f85xj.6.4): every declared region must bind
   exactly one `fs_matdb::MaterialCard` (manufactured state spelled exactly as
-  the card's `MaterialStateId`) and every declared interface exactly one
-  `InterfaceSystemCard`. Per required property, the resolver queries matdb at
+  the card's `MaterialStateId`) and every declared interface exactly one law:
+  one `InterfaceSystemCard` or one explicit perfect-contact declaration.
+  Card-backed laws resolve normally. Perfect-contact intent occupies the law
+  slot but returns `project-perfect-contact-unsupported`, publishes no
+  interface row or receipt, and cannot proceed to a solve until
+  `fs-conduction` supplies a verified explicit operator. Per required
+  property, the resolver queries matdb at
   BOTH endpoints of the binding's admitted range (validity boxes are per-axis
   intervals, so endpoint containment implies range containment) and requires
   the SAME claim selected at both. Every value arrives as matdb
@@ -271,6 +283,10 @@ direct resolver callers cannot bypass source validation; the resolved
 uncertainty equals the selected claim's uncertainty exactly; and an attempted
 binding-side uncertainty override is an unknown-field refusal rather than a
 silent narrowing path.
+The f85xj.17.3 perfect-contact assertions prove canonical s-expression/JSON
+round trips, typed authority/rationale validation, card/perfect law conflicts,
+coverage without a false unbound finding, typed unsupported-operator refusal,
+and atomic absence of any fabricated interface property row or receipt.
 
 `tests/project.rs`: the reference cooling project renders, parses strictly,
 is admissible, and hash-stable; canonical bytes are identical across both
@@ -360,12 +376,17 @@ explicit face index.
   machinery exists so the freeze can be honest when it lands.
 - Validation is structural and dimensional; it makes no physics claim (a
   well-formed project can still describe an unsolvable or nonsensical study).
-- The f85xj.17.3 state slice does not yet discover undeclared geometric
-  proximity, construct `fs-conduction::InterfaceFacePair`s, or admit an
-  explicit perfect-contact declaration. Exact coincident-face refusal remains
-  in `fs-conduction`; the scenario-to-mesh coverage/lowering seam is still
-  required before the bead can close. Mechanical preload and stiffness are
-  staged schema consumers, not claims of this thermal state record.
+- The f85xj.17.3 finite-mesh audit finds bounded proximity candidates between
+  resolved region tessellations; it does not certify continuum contact,
+  physical-law completeness, or authenticated transforms. The explicit
+  perfect-contact declaration proves only that the idealization and its stated
+  authority/rationale are present in canonical project bytes. It does not
+  define a zero-resistance discretization, create a matdb claim, authenticate
+  the named authority, or bypass `fs-conduction`'s exact-coincident-face
+  refusal. Constructing `fs-conduction::InterfaceFacePair`s and the
+  scenario-to-mesh/contact lowering seam remain required before the bead can
+  close. Mechanical preload and stiffness are staged schema consumers, not
+  claims of this thermal state record.
 - A versioned requirement source proves which bytes/edition/locator the caller
   declared, not that the clause was transcribed correctly, applies to this
   product, or is legally authoritative. `UserDeclaration` is intentionally the

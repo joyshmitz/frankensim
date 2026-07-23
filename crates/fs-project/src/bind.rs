@@ -457,6 +457,7 @@ pub fn resolve_bindings(
     resolve_interface_bindings(
         &mut resolution,
         interface_cards,
+        spec.perfect_contacts.as_deref().unwrap_or_default(),
         library,
         requirements,
         &interface_sides,
@@ -611,6 +612,7 @@ fn material_range(
 fn resolve_interface_bindings(
     resolution: &mut MaterialResolution,
     interface_cards: &[crate::spec::InterfaceCardBinding],
+    perfect_contacts: &[crate::spec::PerfectContactBinding],
     library: &CardLibrary,
     requirements: &BindingRequirements,
     interface_sides: &BTreeMap<&str, (&str, &str)>,
@@ -618,7 +620,7 @@ fn resolve_interface_bindings(
     ambient_lo: f64,
     ambient_hi: f64,
 ) {
-    let mut bound: BTreeSet<&str> = BTreeSet::new();
+    let mut bound: BTreeMap<&str, &'static str> = BTreeMap::new();
     for binding in interface_cards {
         let name = binding.interface.as_str();
         let Some((from, to)) = interface_sides.get(name) else {
@@ -631,11 +633,13 @@ fn resolve_interface_bindings(
             ));
             continue;
         };
-        if !bound.insert(name) {
+        if let Some(previous) = bound.insert(name, "interface-system card") {
             resolution.violations.push(violation(
-                "project-interface-binding-duplicate",
-                format!("interface `{name}` is bound to more than one interface-system card"),
-                "bind each interface exactly once",
+                "project-interface-law-conflict",
+                format!(
+                    "interface `{name}` declares both {previous} and interface-system-card laws"
+                ),
+                "declare exactly one interface law: one interface-system card or one deliberate perfect-contact declaration",
             ));
             continue;
         }
@@ -683,12 +687,41 @@ fn resolve_interface_bindings(
             &requirements.interface_properties,
         );
     }
+    for binding in perfect_contacts {
+        let name = binding.interface.as_str();
+        if !interface_sides.contains_key(name) {
+            resolution.violations.push(violation(
+                "project-perfect-contact-target-kind",
+                format!(
+                    "perfect-contact declaration targets `{name}`, which is not a declared interface entity"
+                ),
+                "apply perfect-contact intent only to interface entities declared in the assembly",
+            ));
+            continue;
+        }
+        if let Some(previous) = bound.insert(name, "perfect-contact") {
+            resolution.violations.push(violation(
+                "project-interface-law-conflict",
+                format!("interface `{name}` declares both {previous} and perfect-contact laws"),
+                "declare exactly one interface law: one interface-system card or one deliberate perfect-contact declaration",
+            ));
+            continue;
+        }
+        resolution.violations.push(violation(
+            "project-perfect-contact-unsupported",
+            format!(
+                "interface `{name}` deliberately requests perfect contact under authority `{}`, but the current conduction layer has no authoritative perfect-contact operator",
+                binding.authority
+            ),
+            "use a card-backed finite positive contact resistance, or implement and verify an explicit perfect-contact conduction operator before solving",
+        ));
+    }
     for name in interface_sides.keys() {
-        if !bound.contains(name) {
+        if !bound.contains_key(name) {
             resolution.violations.push(violation(
                 "project-interface-unbound",
-                format!("interface `{name}` has no interface-system card binding"),
-                "every declared interface needs exactly one TIM/contact system card",
+                format!("interface `{name}` has no declared interface law"),
+                "every declared interface needs exactly one interface-system card or one deliberate perfect-contact declaration",
             ));
         }
     }

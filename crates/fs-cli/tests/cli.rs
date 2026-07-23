@@ -77,6 +77,7 @@ fn valid_project() -> ProjectSpec {
         ]),
         materials: Some(Vec::new()),
         interface_cards: Some(Vec::new()),
+        perfect_contacts: None,
         power: Some(vec![PowerDissipation {
             region: "hot".to_string(),
             watts: watts(5.0),

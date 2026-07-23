@@ -23,9 +23,9 @@ use crate::FSIM_VERSION;
 use crate::spec::{
     Budgets, ConsequenceClass, Cooling, DecisionGate, DefaultReceipt, EntityDecl, Envelope, Fan,
     GeometryArtifact, GeometryAssignment, InterfaceCardBinding, InterfaceState, MaterialBinding,
-    Metadata, OutputRequest, PowerDissipation, ProjectSpec, RequirementDirection,
-    RequirementSeverity, RequirementSource, RequirementSourceKind, SafetyFactorPolicy, Seeds,
-    SolverSettings, ThermalLimit, UnitsDoctrine, Vent, Versions,
+    Metadata, OutputRequest, PerfectContactBinding, PowerDissipation, ProjectSpec,
+    RequirementDirection, RequirementSeverity, RequirementSource, RequirementSourceKind,
+    SafetyFactorPolicy, Seeds, SolverSettings, ThermalLimit, UnitsDoctrine, Vent, Versions,
 };
 
 /// Domain for canonical `.fsim` byte hashing.
@@ -428,6 +428,21 @@ fn lower_structure(spec: &ProjectSpec, sections: &mut Vec<Node>) -> Result<(), P
                 ]),
             }
             items.push(list(row));
+        }
+        sections.push(list(items));
+    }
+    if let Some(perfect_contacts) = &spec.perfect_contacts {
+        let mut items = vec![sym("perfect-contacts")];
+        for binding in perfect_contacts {
+            items.push(list(vec![
+                sym("contact"),
+                kw("interface"),
+                text(&binding.interface),
+                kw("authority"),
+                text(&binding.authority),
+                kw("rationale"),
+                text(&binding.rationale),
+            ]));
         }
         sections.push(list(items));
     }
@@ -1048,6 +1063,9 @@ pub fn recognize(node: &Node) -> Result<DecodedProject, ProjectError> {
             "materials" => spec.materials = Some(read_materials(body, &mut recognition)),
             "interface-cards" => {
                 spec.interface_cards = Some(read_interface_cards(body, &mut recognition));
+            }
+            "perfect-contacts" => {
+                spec.perfect_contacts = Some(read_perfect_contacts(body, &mut recognition));
             }
             "power" => spec.power = Some(read_power(body, &mut recognition, &mut defaults)),
             "cooling" => spec.cooling = read_cooling(body, &mut recognition),
@@ -1847,6 +1865,33 @@ fn read_interface_cards(body: &[Node], out: &mut Vec<Violation>) -> Vec<Interfac
             claim: field(&pairs, "claim").map(|node| expect_str(Some(node), "card.claim", out)),
             source: expect_str(field(&pairs, "source"), "card.source", out),
             state,
+        });
+    }
+    bindings
+}
+
+fn read_perfect_contacts(body: &[Node], out: &mut Vec<Violation>) -> Vec<PerfectContactBinding> {
+    let mut bindings = Vec::new();
+    for node in body {
+        let Some(("contact", inner)) = section_name(node) else {
+            out.push(Violation {
+                code: "project-malformed-clause",
+                what: "`perfect-contacts` rows must be `(contact ...)`".to_string(),
+                fix: "declare deliberate idealization with `(contact :interface ... :authority ... :rationale ...)`"
+                    .to_string(),
+            });
+            continue;
+        };
+        let pairs = read_pairs(
+            inner,
+            "contact",
+            &["interface", "authority", "rationale"],
+            out,
+        );
+        bindings.push(PerfectContactBinding {
+            interface: expect_str(field(&pairs, "interface"), "contact.interface", out),
+            authority: expect_str(field(&pairs, "authority"), "contact.authority", out),
+            rationale: expect_str(field(&pairs, "rationale"), "contact.rationale", out),
         });
     }
     bindings

@@ -158,6 +158,7 @@ fn project_for_receipt(format: &str, source_hash: u64, parser_version: &str) -> 
         ]),
         materials: Some(Vec::new()),
         interface_cards: Some(Vec::new()),
+        perfect_contacts: None,
         power: Some(vec![PowerDissipation {
             region: "air".to_string(),
             watts: watts(5.0),

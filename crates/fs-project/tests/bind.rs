@@ -19,9 +19,10 @@ use fs_matdb::{
 use fs_project::{
     BindingRequirements, CONTACT_RESISTANCE_DIMS, CONTACT_RESISTANCE_PROPERTY, CardLibrary,
     EntityDecl, Envelope, InterfaceCardBinding, InterfaceState, MaterialBinding,
-    MaterialResolution, ProjectSpec, RequirementDirection, RequirementSeverity, RequirementSource,
-    RequirementSourceKind, SafetyFactorPolicy, TEMPERATURE_AXIS, THERMAL_CONDUCTIVITY_DIMS,
-    THERMAL_CONDUCTIVITY_PROPERTY, ThermalLimit, resolve_bindings,
+    MaterialResolution, PerfectContactBinding, ProjectSpec, RequirementDirection,
+    RequirementSeverity, RequirementSource, RequirementSourceKind, SafetyFactorPolicy,
+    TEMPERATURE_AXIS, THERMAL_CONDUCTIVITY_DIMS, THERMAL_CONDUCTIVITY_PROPERTY, ThermalLimit,
+    resolve_bindings,
 };
 use fs_qty::QtyAny;
 use fs_regime::{
@@ -761,7 +762,7 @@ fn structural_refusals_cover_cards_states_targets_and_coverage() {
         &resolution,
         "project-interface-unbound",
         "`tim`",
-        "exactly one TIM/contact system card",
+        "exactly one interface-system card",
     );
 
     // A card claim under the right name with the wrong dimensions.
@@ -798,6 +799,47 @@ fn structural_refusals_cover_cards_states_targets_and_coverage() {
         "project-binding-property-missing",
         "region `board`",
         "bind a card that states this property",
+    );
+}
+
+#[test]
+fn deliberate_perfect_contact_is_bound_as_intent_but_refuses_solver_authority() {
+    let (library, board, spreader, tim) = reference_library();
+    let mut spec = reference_spec(&board, &spreader, &tim);
+    spec.interface_cards = Some(Vec::new());
+    spec.perfect_contacts = Some(vec![PerfectContactBinding {
+        interface: "tim".to_string(),
+        authority: "thermal-policy:rev-7".to_string(),
+        rationale: "approved screening idealization".to_string(),
+    }]);
+
+    let resolution = resolve_bindings(&spec, &library, &BindingRequirements::thermal_steady_v1());
+    assert!(!resolution.admissible());
+    assert_code(
+        &resolution,
+        "project-perfect-contact-unsupported",
+        "thermal-policy:rev-7",
+        "explicit perfect-contact conduction operator",
+    );
+    assert!(
+        !resolution
+            .violations
+            .iter()
+            .any(|violation| violation.code == "project-interface-unbound"),
+        "the explicit declaration covers the interface law slot: {:?}",
+        resolution.violations
+    );
+    assert!(
+        !resolution
+            .bindings
+            .iter()
+            .any(|binding| binding.target == fs_project::BindingTarget::Interface("tim".into())),
+        "unsupported perfect contact must not fabricate a resolved property row"
+    );
+    assert_eq!(
+        resolution.receipts().count(),
+        4,
+        "only two material cards may produce endpoint receipts"
     );
 }
 

@@ -15,11 +15,11 @@ use fs_package::{EvidencePackage, Provenance, VerifiedPackage};
 use fs_project::{
     Budgets, ConsequenceClass, Cooling, DecisionGate, EntityDecl, Envelope, FSIM_VERSION, Fan,
     GeometryArtifact, GeometryAssignment, HalfSpaceSide, InterfaceCardBinding, InterfaceState,
-    MaterialBinding, MeshSelector, Metadata, OutputRequest, PowerDissipation, ProjectSpec,
-    RequirementDirection, RequirementSeverity, RequirementSource, RequirementSourceKind,
-    SafetyFactorPolicy, Seeds, SolverSettings, ThermalLimit, UnitsDoctrine, Vent, Versions,
-    canonical_hash, migrate_envelope, parse_json, parse_sexpr, parse_sexpr_lenient, print_json,
-    print_sexpr, project_decision_authorities, project_decision_authority,
+    MaterialBinding, MeshSelector, Metadata, OutputRequest, PerfectContactBinding,
+    PowerDissipation, ProjectSpec, RequirementDirection, RequirementSeverity, RequirementSource,
+    RequirementSourceKind, SafetyFactorPolicy, Seeds, SolverSettings, ThermalLimit, UnitsDoctrine,
+    Vent, Versions, canonical_hash, migrate_envelope, parse_json, parse_sexpr, parse_sexpr_lenient,
+    print_json, print_sexpr, project_decision_authorities, project_decision_authority,
     requirement_source_reviews,
 };
 use fs_qty::QtyAny;
@@ -226,6 +226,7 @@ fn reference_project() -> ProjectSpec {
                 thickness_half_width: QtyAny::new(10e-6, fs_project::spec::dims::LENGTH),
             },
         }]),
+        perfect_contacts: None,
         power: Some(vec![PowerDissipation {
             region: "cpu".to_string(),
             watts: watts(35.0),
@@ -1105,4 +1106,59 @@ fn interface_state_refuses_vacuous_bands_and_cross_class_fields() {
         "class-foreign parameters must never be silently discarded: {:?}",
         decoded.recognition
     );
+}
+
+#[test]
+fn deliberate_perfect_contact_round_trips_and_conflicts_fail_closed() {
+    let mut spec = reference_project();
+    spec.interface_cards = Some(Vec::new());
+    spec.perfect_contacts = Some(vec![PerfectContactBinding {
+        interface: "cpu-sink-tim".to_string(),
+        authority: "thermal-policy:rev-7".to_string(),
+        rationale: "screening idealization approved for this design study".to_string(),
+    }]);
+
+    assert!(
+        spec.validate().is_empty(),
+        "explicit project intent is structurally valid even though binding will refuse unsupported solver authority: {:?}",
+        spec.validate()
+    );
+    let sexpr = print_sexpr(&spec).expect("perfect-contact project renders");
+    assert!(sexpr.contains("(perfect-contacts (contact"));
+    assert!(sexpr.contains(":authority \"thermal-policy:rev-7\""));
+    let from_sexpr = parse_sexpr(&sexpr).expect("perfect-contact project parses");
+    assert_eq!(from_sexpr.spec, spec);
+    let json = print_json(&spec).expect("perfect-contact JSON renders");
+    let from_json = parse_json(&json).expect("perfect-contact JSON parses");
+    assert_eq!(from_json.spec, spec);
+    assert_eq!(from_json.hash(), from_sexpr.hash());
+
+    let mut conflict = spec.clone();
+    conflict.interface_cards = reference_project().interface_cards;
+    let findings = conflict.validate();
+    assert!(
+        findings
+            .iter()
+            .any(|finding| finding.code == "project-interface-law-conflict"),
+        "card-backed and perfect-contact laws must never coexist: {findings:?}"
+    );
+
+    let perfect = spec
+        .perfect_contacts
+        .as_mut()
+        .expect("perfect contacts")
+        .first_mut()
+        .expect("perfect contact");
+    perfect.authority = " thermal-policy:rev-7".to_string();
+    perfect.rationale.clear();
+    let findings = spec.validate();
+    for code in [
+        "project-perfect-contact-authority-invalid",
+        "project-perfect-contact-rationale-invalid",
+    ] {
+        assert!(
+            findings.iter().any(|finding| finding.code == code),
+            "missing `{code}` in {findings:?}"
+        );
+    }
 }

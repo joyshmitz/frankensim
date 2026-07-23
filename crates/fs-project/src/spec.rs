@@ -425,6 +425,23 @@ pub struct InterfaceCardBinding {
     pub state: InterfaceState,
 }
 
+/// One deliberate perfect-contact declaration, separate from card-backed
+/// finite-resistance interface laws.
+///
+/// This records project intent only. It does not fabricate an
+/// `InterfaceSystemCard`, a zero-resistance property receipt, or solver
+/// authority that the current conduction layer does not provide.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PerfectContactBinding {
+    /// Interface declared name the perfect-contact intent applies to.
+    pub interface: String,
+    /// Versioned policy, design record, or user authority for the deliberate
+    /// idealization. This is recorded provenance, not authenticated here.
+    pub authority: String,
+    /// Human-auditable reason the idealization was chosen.
+    pub rationale: String,
+}
+
 /// One power dissipation row of the power map.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PowerDissipation {
@@ -723,6 +740,9 @@ pub struct ProjectSpec {
     pub materials: Option<Vec<MaterialBinding>>,
     /// Interface (TIM/contact) card bindings.
     pub interface_cards: Option<Vec<InterfaceCardBinding>>,
+    /// Deliberate perfect-contact declarations. Absence means none; these are
+    /// mutually exclusive with card-backed laws for the same interface.
+    pub perfect_contacts: Option<Vec<PerfectContactBinding>>,
     /// Power map.
     pub power: Option<Vec<PowerDissipation>>,
     /// Fans, vents, leakage.
@@ -955,6 +975,7 @@ impl ProjectSpec {
         let mut out = Vec::new();
         self.check_sections(&mut out);
         self.check_quantities(&mut out);
+        self.check_interface_law_conflicts(&mut out);
         let ids = self.resolve_entities(&mut out);
         self.check_references(&ids, &mut out);
         self.check_assignment_coverage(&ids, &mut out);
@@ -1485,6 +1506,58 @@ impl ProjectSpec {
                 }
             }
         }
+        if let Some(perfect_contacts) = &self.perfect_contacts {
+            for binding in perfect_contacts {
+                if !is_canonical_binding_text(&binding.authority) {
+                    out.push(violation(
+                        "project-perfect-contact-authority-invalid",
+                        format!(
+                            "perfect-contact declaration for `{}` has an empty or noncanonical authority",
+                            binding.interface
+                        ),
+                        "state a nonempty, trim-canonical, control-free versioned policy, design record, or user authority",
+                    ));
+                }
+                if !is_canonical_binding_text(&binding.rationale) {
+                    out.push(violation(
+                        "project-perfect-contact-rationale-invalid",
+                        format!(
+                            "perfect-contact declaration for `{}` has an empty or noncanonical rationale",
+                            binding.interface
+                        ),
+                        "state a nonempty, trim-canonical, control-free reason for the deliberate idealization",
+                    ));
+                }
+            }
+        }
+    }
+
+    fn check_interface_law_conflicts(&self, out: &mut Vec<Violation>) {
+        let mut laws: BTreeMap<&str, &'static str> = BTreeMap::new();
+        for binding in self.interface_cards.as_deref().unwrap_or_default() {
+            if let Some(previous) = laws.insert(binding.interface.as_str(), "card-backed") {
+                out.push(violation(
+                    "project-interface-law-conflict",
+                    format!(
+                        "interface `{}` declares both {previous} and card-backed interface laws",
+                        binding.interface
+                    ),
+                    "declare exactly one interface law: one interface-system card or one deliberate perfect-contact declaration",
+                ));
+            }
+        }
+        for binding in self.perfect_contacts.as_deref().unwrap_or_default() {
+            if let Some(previous) = laws.insert(binding.interface.as_str(), "perfect-contact") {
+                out.push(violation(
+                    "project-interface-law-conflict",
+                    format!(
+                        "interface `{}` declares both {previous} and perfect-contact interface laws",
+                        binding.interface
+                    ),
+                    "declare exactly one interface law: one interface-system card or one deliberate perfect-contact declaration",
+                ));
+            }
+        }
     }
 
     /// Recompute persistent identities from the declarations, verifying any
@@ -1641,6 +1714,16 @@ impl ProjectSpec {
                     ids,
                     out,
                     format!("interface card `{}`", binding.card),
+                    &binding.interface,
+                );
+            }
+        }
+        if let Some(perfect_contacts) = &self.perfect_contacts {
+            for binding in perfect_contacts {
+                check_ref(
+                    ids,
+                    out,
+                    "perfect-contact declaration".to_string(),
                     &binding.interface,
                 );
             }
