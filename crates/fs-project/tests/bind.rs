@@ -5,6 +5,7 @@
 //! card with coexisting conflicting claims resolves only through the
 //! explicit claim pin recorded in the project file — auto-pick is
 //! impossible by construction.
+#![allow(clippy::float_cmp)] // bit-exact propagation of stored card values is the contract under test
 
 use fs_blake3::hash_bytes;
 use fs_evidence::ValidityDomain;
