@@ -16,6 +16,8 @@
 //! [`decision_headline_markdown`] projects an already-admitted
 //! [`fs_session::DecisionAssessment`] into a compact reviewer-facing headline.
 //! It does not recompute compliance, uncertainty, attribution, or action value.
+//! [`project_decision_gate_markdown`] explains whether the declared project
+//! context may use an already-computed tri-state verdict.
 //! [`regime_no_claims_markdown`] projects final operating-envelope demotions
 //! into the report's no-claim section without changing their evidence state.
 //! [`retain_regime_demotions_in_package`] preserves those same receipts in an
@@ -32,6 +34,7 @@ use fs_evidence::{
     uncertainty::{BudgetContribution, ComplianceVerdict, RequirementRelation},
 };
 use fs_package::{Claim, EvidencePackage, PackageError};
+use fs_project::ProjectDecisionAuthority;
 use fs_regime::{OutputClaimReceipt, ProductOutputAudit};
 use fs_session::DecisionAssessment;
 
@@ -239,6 +242,60 @@ pub fn regime_no_claims_markdown(audit: &ProductOutputAudit) -> Option<String> {
     Some(output)
 }
 
+/// Render project requirement lineage and context gating for one lower-layer
+/// verdict without assembling or recomputing a decision assessment.
+#[must_use]
+pub fn project_decision_gate_markdown(
+    authority: &ProjectDecisionAuthority,
+    compliance: &ComplianceVerdict,
+) -> String {
+    let requirement = authority.requirement();
+    let scalar = requirement.scalar();
+    let context = authority.context();
+    let verdict = match compliance {
+        ComplianceVerdict::Compliant { .. } => "compliant",
+        ComplianceVerdict::NonCompliant { .. } => "non-compliant",
+        ComplianceVerdict::Indeterminate { .. } => "indeterminate",
+    };
+    let gate_outcome = if matches!(compliance, ComplianceVerdict::Indeterminate { .. })
+        && !context.permits_indeterminate()
+    {
+        "refused: this context requires a determinate assessment"
+    } else {
+        "admitted"
+    };
+    let relation = match scalar.relation() {
+        RequirementRelation::AtMost => "at-most",
+        RequirementRelation::AtLeast => "at-least",
+    };
+
+    format!(
+        "## Project decision gate: `{qoi}`\n\n- **Project:** `{project}` (created `{created}`)\n- **Context of use:** {context_of_use}\n- **Intended decision:** {intended_decision}\n- **Gate:** `{gate}`\n- **Consequence:** `{consequence}`\n- **Lower-layer verdict:** `{verdict}`\n- **Gate outcome:** **{gate_outcome}**\n- **Effective requirement:** `{relation}` `{limit}` `{unit}`\n- **Requirement source:** `{requirement_kind}` document `{requirement_document}` version `{requirement_version}` locator `{requirement_locator}`; artifact `{requirement_artifact}`\n- **Safety-factor policy:** factor `{factor}` from `{factor_kind}` document `{factor_document}` version `{factor_version}` locator `{factor_locator}`; artifact `{factor_artifact}`\n- **Context artifact:** `{context_id}` at `{context_hash}`\n\n_Projection only: this block reports declared project intent and an existing verdict. It does not authenticate either source, recompute compliance, or turn an admitted scoping result into sign-off authority._\n",
+        qoi = scalar.qoi(),
+        project = context.project_name(),
+        created = context.created(),
+        context_of_use = context.context_of_use(),
+        intended_decision = context.intended_decision(),
+        gate = context.decision_gate().slug(),
+        consequence = context.consequence().slug(),
+        unit = scalar.unit(),
+        limit = scalar.limit(),
+        requirement_kind = requirement.source().kind().slug(),
+        requirement_document = requirement.source().document(),
+        requirement_version = requirement.source().version(),
+        requirement_locator = requirement.source().locator(),
+        requirement_artifact = scalar.provenance().digest(),
+        factor = requirement.safety_factor().value(),
+        factor_kind = requirement.safety_factor_source().kind().slug(),
+        factor_document = requirement.safety_factor_source().document(),
+        factor_version = requirement.safety_factor_source().version(),
+        factor_locator = requirement.safety_factor_source().locator(),
+        factor_artifact = requirement.safety_factor().policy().digest(),
+        context_id = context.artifact().id(),
+        context_hash = context.artifact().hash(),
+    )
+}
+
 /// Render one already-validated decision assessment as deterministic Markdown.
 ///
 /// The headline keeps the tri-state verdict, effective sourced requirement,
@@ -334,13 +391,21 @@ fn render_decision_authorities<Q>(assessment: &DecisionAssessment<Q>, output: &m
     );
     let _ = writeln!(
         output,
-        "- **Requirement authority:** `{}` at `{}`",
+        "- **Requirement authority:** `{}` document `{}` version `{}` locator `{}`; artifact `{}` at `{}`",
+        requirement.source().kind().slug(),
+        requirement.source().document(),
+        requirement.source().version(),
+        requirement.source().locator(),
         scalar.provenance().role(),
         scalar.provenance().digest()
     );
     let _ = writeln!(
         output,
-        "- **Safety-factor policy:** `{}` at `{}`",
+        "- **Safety-factor policy:** `{}` document `{}` version `{}` locator `{}`; artifact `{}` at `{}`",
+        requirement.safety_factor_source().kind().slug(),
+        requirement.safety_factor_source().document(),
+        requirement.safety_factor_source().version(),
+        requirement.safety_factor_source().locator(),
         requirement.safety_factor().policy().role(),
         requirement.safety_factor().policy().digest()
     );

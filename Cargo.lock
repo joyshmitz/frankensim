@@ -1732,10 +1732,13 @@ dependencies = [
  "fs-io",
  "fs-ir",
  "fs-matdb",
+ "fs-package",
  "fs-qty",
  "fs-regime",
  "fs-rep-mesh",
  "fs-scenario",
+ "fs-session",
+ "fs-voi",
 ]
 
 [[package]]
@@ -1911,6 +1914,8 @@ dependencies = [
  "fs-evidence",
  "fs-obs",
  "fs-package",
+ "fs-project",
+ "fs-qty",
  "fs-regime",
  "fs-session",
  "fs-voi",

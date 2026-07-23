@@ -22,12 +22,101 @@ use fs_package::VerifiedPackage;
 use fs_voi::{RecommendedEvidence, UnknownResolutionRecommendation};
 
 /// Semantic identity version of an L6 decision assessment.
-pub const DECISION_ASSESSMENT_IDENTITY_VERSION: u32 = 1;
+pub const DECISION_ASSESSMENT_IDENTITY_VERSION: u32 = 2;
 /// Domain-separated identity namespace of an L6 decision assessment.
 pub const DECISION_ASSESSMENT_IDENTITY_DOMAIN: &str =
-    "org.frankensim.fs-session.decision-assessment.v1";
+    "org.frankensim.fs-session.decision-assessment.v2";
 
 const MAX_DECISION_ID_BYTES: usize = 128;
+const MAX_AUTHORITY_FIELD_BYTES: usize = 512;
+
+/// Closed requirement-authority families understood by the L6 decision schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequirementAuthorityKind {
+    /// Published standard or code clause.
+    Standard,
+    /// Manufacturer datasheet or product specification.
+    Datasheet,
+    /// Versioned internal engineering policy.
+    InternalPolicy,
+    /// Explicit user declaration without external-document authority.
+    UserDeclaration,
+}
+
+impl RequirementAuthorityKind {
+    const fn wire_tag(self) -> u8 {
+        match self {
+            Self::Standard => 1,
+            Self::Datasheet => 2,
+            Self::InternalPolicy => 3,
+            Self::UserDeclaration => 4,
+        }
+    }
+
+    /// Stable reviewer-facing authority-family slug.
+    #[must_use]
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Datasheet => "datasheet",
+            Self::InternalPolicy => "internal-policy",
+            Self::UserDeclaration => "user-declaration",
+        }
+    }
+}
+
+/// Human-auditable lineage retained alongside one content-bound authority.
+///
+/// The fields identify what the caller declared; they do not authenticate the
+/// document or establish that its clause applies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequirementAuthority {
+    kind: RequirementAuthorityKind,
+    document: String,
+    version: String,
+    locator: String,
+}
+
+impl RequirementAuthority {
+    /// Admit trim-canonical, control-free lineage with bounded retained bytes.
+    pub fn try_new(
+        kind: RequirementAuthorityKind,
+        document: impl Into<String>,
+        version: impl Into<String>,
+        locator: impl Into<String>,
+    ) -> Result<Self, DecisionAssessmentError> {
+        Ok(Self {
+            kind,
+            document: admit_authority_field("requirement.source.document", document.into())?,
+            version: admit_authority_field("requirement.source.version", version.into())?,
+            locator: admit_authority_field("requirement.source.locator", locator.into())?,
+        })
+    }
+
+    /// Authority family.
+    #[must_use]
+    pub const fn kind(&self) -> RequirementAuthorityKind {
+        self.kind
+    }
+
+    /// Stable source document or declaration identity.
+    #[must_use]
+    pub fn document(&self) -> &str {
+        &self.document
+    }
+
+    /// Exact edition, revision, or semantic version.
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// Clause, table, section, or declaration locator.
+    #[must_use]
+    pub fn locator(&self) -> &str {
+        &self.locator
+    }
+}
 
 /// Typed, content-bound reference to the quantity evidence consumed by a
 /// decision assessment.
@@ -131,19 +220,26 @@ impl AppliedSafetyFactor {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecisionRequirement {
     scalar: ScalarRequirement,
+    source: RequirementAuthority,
     safety_factor: AppliedSafetyFactor,
+    safety_factor_source: RequirementAuthority,
 }
 
 impl DecisionRequirement {
-    /// Pair an already-effective scalar requirement with its factor policy.
+    /// Pair an already-effective scalar requirement with complete source and
+    /// factor-policy lineage.
     pub fn try_new(
         scalar: ScalarRequirement,
+        source: RequirementAuthority,
         safety_factor: AppliedSafetyFactor,
+        safety_factor_source: RequirementAuthority,
     ) -> Result<Self, DecisionAssessmentError> {
         require_nonzero_hash("requirement.provenance", scalar.provenance().digest())?;
         Ok(Self {
             scalar,
+            source,
             safety_factor,
+            safety_factor_source,
         })
     }
 
@@ -153,10 +249,22 @@ impl DecisionRequirement {
         &self.scalar
     }
 
+    /// Exact declared source lineage for the effective requirement.
+    #[must_use]
+    pub const fn source(&self) -> &RequirementAuthority {
+        &self.source
+    }
+
     /// Declared factor and policy authority.
     #[must_use]
     pub const fn safety_factor(&self) -> &AppliedSafetyFactor {
         &self.safety_factor
+    }
+
+    /// Exact declared source lineage for the factor application policy.
+    #[must_use]
+    pub const fn safety_factor_source(&self) -> &RequirementAuthority {
+        &self.safety_factor_source
     }
 }
 
@@ -303,7 +411,7 @@ impl<Q> DecisionAssessment<Q> {
     pub fn render_explain(&self) -> String {
         let scalar = self.requirement.scalar();
         let mut output = format!(
-            "decision-assessment-v{} identity={}\nquantity={} unit={} schema={} artifact={}\nrequirement={} effective-limit={} safety-factor={} requirement-source={}@{} safety-factor-policy={}@{}\ncontext={} hash={}\nreplay-package={}\n",
+            "decision-assessment-v{} identity={}\nquantity={} unit={} schema={} artifact={}\nrequirement={} effective-limit={} requirement-source-kind={} requirement-document={} requirement-version={} requirement-locator={} requirement-artifact={}@{}\nsafety-factor={} safety-factor-source-kind={} safety-factor-document={} safety-factor-version={} safety-factor-locator={} safety-factor-artifact={}@{}\ncontext={} hash={}\nreplay-package={}\n",
             DECISION_ASSESSMENT_IDENTITY_VERSION,
             self.content_hash,
             self.quantity.qoi(),
@@ -312,9 +420,17 @@ impl<Q> DecisionAssessment<Q> {
             self.quantity.artifact(),
             scalar.id(),
             scalar.limit(),
-            self.requirement.safety_factor().value(),
+            self.requirement.source().kind().slug(),
+            self.requirement.source().document(),
+            self.requirement.source().version(),
+            self.requirement.source().locator(),
             scalar.provenance().role(),
             scalar.provenance().digest(),
+            self.requirement.safety_factor().value(),
+            self.requirement.safety_factor_source().kind().slug(),
+            self.requirement.safety_factor_source().document(),
+            self.requirement.safety_factor_source().version(),
+            self.requirement.safety_factor_source().locator(),
             self.requirement.safety_factor().policy().role(),
             self.requirement.safety_factor().policy().digest(),
             self.context.id(),
@@ -486,9 +602,18 @@ fn encode_requirement(encoder: &mut Encoder, requirement: &DecisionRequirement) 
     encoder.u64(scalar.limit().to_bits());
     encoder.string(scalar.provenance().role());
     encoder.hash(scalar.provenance().digest());
+    encode_authority(encoder, requirement.source());
     encoder.u64(requirement.safety_factor().value().to_bits());
     encoder.string(requirement.safety_factor().policy().role());
     encoder.hash(requirement.safety_factor().policy().digest());
+    encode_authority(encoder, requirement.safety_factor_source());
+}
+
+fn encode_authority(encoder: &mut Encoder, authority: &RequirementAuthority) {
+    encoder.u8(authority.kind().wire_tag());
+    encoder.string(authority.document());
+    encoder.string(authority.version());
+    encoder.string(authority.locator());
 }
 
 fn encode_action(encoder: &mut Encoder, action: &UnknownResolutionRecommendation) {
@@ -535,6 +660,20 @@ fn action_kind_slug(kind: ActionKind) -> Result<&'static str, DecisionAssessment
 
 fn admit_id(field: &'static str, value: String) -> Result<String, DecisionAssessmentError> {
     validate_id(field, &value)?;
+    Ok(value)
+}
+
+fn admit_authority_field(
+    field: &'static str,
+    value: String,
+) -> Result<String, DecisionAssessmentError> {
+    if value.is_empty()
+        || value.len() > MAX_AUTHORITY_FIELD_BYTES
+        || value.trim() != value
+        || value.chars().any(char::is_control)
+    {
+        return Err(DecisionAssessmentError::InvalidField { field });
+    }
     Ok(value)
 }
 

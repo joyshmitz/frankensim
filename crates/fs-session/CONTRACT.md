@@ -22,8 +22,10 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
 ## Public types and semantics
 
 - `DecisionAssessment<Q>` — a pure L6 projection over an already-admitted
-  typed `EvidenceRef<Q>`, an effective sourced `ScalarRequirement`, an applied
-  safety factor and its policy artifact, an exact `ContextOfUse` reference, the
+  typed `EvidenceRef<Q>`, an effective sourced `ScalarRequirement`, complete
+  typed requirement document/version/locator lineage, an applied safety factor
+  with its own complete policy lineage and content-bound artifact, an exact
+  `ContextOfUse` reference, the
   eight-term `EngineeringUncertaintyBudget`, its tri-state
   `ComplianceVerdict`, paired budget/decision `UncertaintyAttribution`,
   `fs-voi` next-action recommendations, and the Merkle root of a still-valid
@@ -31,9 +33,11 @@ Consumers: the P2 marquee demo, the HELM e2e suite (gp3.11).
   mismatched QoI or units, wrong context families, cross-bound requirements or
   budgets, attribution from another compliance replay, actions not in
   one-to-one correspondence with verdict-flipping unknowns, and a replay
-  package whose retained report no longer validates. Its v1 BLAKE3 identity
+  package whose retained report no longer validates. Its v2 BLAKE3 identity
   binds all of those inputs in canonical field order; rebuilding offline from
-  the same exact artifacts therefore yields the same identity. The safety
+  the same exact artifacts therefore yields the same identity. V2 replaces the
+  initial v1 encoding because source family/document/version/locator fields are
+  now mandatory identity material rather than report-only decoration. The safety
   factor is declarative metadata already reflected in the effective scalar
   limit: this layer records its value and policy authority but does not invent
   a domain-independent multiplication or division rule. `render_explain()` is
@@ -851,8 +855,9 @@ armed and runs when an x86 host picks it up.
 - **A `DecisionAssessment<Q>` is a projection, not a god type or new
   certifier**: it checks consistency among retained artifacts and binds their
   exact decision view. It does not resolve a content hash from storage,
-  authenticate the author of a context or requirement, establish that a safety
-  factor is appropriate, derive its application rule, recompute a quantity,
+  authenticate the author or contents of a context, requirement document, or
+  factor policy, establish that a safety factor is appropriate, derive its
+  application rule, recompute a quantity,
   upgrade a compliance verdict, prove an attribution causal, or execute a
   recommended action. `VerifiedPackage::validate_binding` preserves package
   and policy-receipt integrity but does not make every nested scientific claim

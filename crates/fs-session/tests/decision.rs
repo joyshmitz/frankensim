@@ -12,7 +12,7 @@ use fs_evidence::{
 use fs_package::{EvidencePackage, Provenance, VerifiedPackage};
 use fs_session::{
     AppliedSafetyFactor, DecisionAssessment, DecisionAssessmentError, DecisionRequirement,
-    EvidenceRef,
+    EvidenceRef, RequirementAuthority, RequirementAuthorityKind,
 };
 use fs_voi::{
     ActionValue, RecommendedEvidence, UnknownResolutionCandidate, recommend_unknown_resolutions,
@@ -66,7 +66,21 @@ fn scalar_requirement(limit: f64) -> ScalarRequirement {
 fn decision_requirement(policy: &str) -> DecisionRequirement {
     DecisionRequirement::try_new(
         scalar_requirement(100.0),
+        RequirementAuthority::try_new(
+            RequirementAuthorityKind::Datasheet,
+            "cpu-thermal-specification",
+            "rev-7",
+            "table-5:tj-max",
+        )
+        .expect("valid requirement authority"),
         AppliedSafetyFactor::try_new(1.25, artifact(policy)).expect("valid safety factor"),
+        RequirementAuthority::try_new(
+            RequirementAuthorityKind::InternalPolicy,
+            "thermal-derating-policy",
+            "2026.1",
+            "section-4.2",
+        )
+        .expect("valid factor authority"),
     )
     .expect("sourced decision requirement")
 }
@@ -367,4 +381,58 @@ fn fs_voi_priced_zero_cost_action_preserves_infinite_ratio() {
         } if value_per_cost.is_infinite()
     ));
     assert!(assessment.render_explain().contains("value-per-cost=inf"));
+}
+
+#[test]
+fn authority_lineage_is_identity_bearing_and_trim_canonical() {
+    let package = replay_package("decision-test-lineage");
+    let first = assemble(
+        digest("quantity"),
+        context("thermal-context", digest("context")),
+        decision_requirement("safety-factor-policy"),
+        &package,
+    )
+    .expect("complete decision projection");
+    let changed = DecisionRequirement::try_new(
+        scalar_requirement(100.0),
+        RequirementAuthority::try_new(
+            RequirementAuthorityKind::Datasheet,
+            "cpu-thermal-specification",
+            "rev-8",
+            "table-5:tj-max",
+        )
+        .expect("changed source version"),
+        AppliedSafetyFactor::try_new(1.25, artifact("safety-factor-policy"))
+            .expect("valid safety factor"),
+        RequirementAuthority::try_new(
+            RequirementAuthorityKind::InternalPolicy,
+            "thermal-derating-policy",
+            "2026.1",
+            "section-4.2",
+        )
+        .expect("valid factor authority"),
+    )
+    .expect("changed sourced requirement");
+    let second = assemble(
+        digest("quantity"),
+        context("thermal-context", digest("context")),
+        changed,
+        &package,
+    )
+    .expect("complete changed projection");
+
+    assert_ne!(first.content_hash(), second.content_hash());
+    assert_eq!(first.requirement().source().version(), "rev-7");
+    assert!(first.render_explain().contains("requirement-version=rev-7"));
+    assert_eq!(
+        RequirementAuthority::try_new(
+            RequirementAuthorityKind::Standard,
+            " standard ",
+            "2026",
+            "4.2",
+        ),
+        Err(DecisionAssessmentError::InvalidField {
+            field: "requirement.source.document",
+        })
+    );
 }

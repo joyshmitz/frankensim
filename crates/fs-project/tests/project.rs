@@ -6,6 +6,12 @@
 //! broken-project corpus doubles as documentation of the error-message
 //! quality bar: every row logs its violation and fix.
 
+use fs_blake3::{ContentHash, hash_domain};
+use fs_evidence::uncertainty::{
+    EngineeringUncertaintyBudget, EngineeringUncertaintyKind, EngineeringUncertaintyTerm,
+    TermValue, UncertaintyArtifactRef,
+};
+use fs_package::{EvidencePackage, Provenance, VerifiedPackage};
 use fs_project::{
     Budgets, ConsequenceClass, Cooling, DecisionGate, EntityDecl, Envelope, FSIM_VERSION, Fan,
     GeometryArtifact, GeometryAssignment, HalfSpaceSide, InterfaceCardBinding, MaterialBinding,
@@ -13,10 +19,82 @@ use fs_project::{
     RequirementSeverity, RequirementSource, RequirementSourceKind, SafetyFactorPolicy, Seeds,
     SolverSettings, ThermalLimit, UnitsDoctrine, Vent, Versions, canonical_hash, migrate_envelope,
     parse_json, parse_sexpr, parse_sexpr_lenient, print_json, print_sexpr,
-    requirement_source_reviews,
+    project_decision_authorities, project_decision_authority, requirement_source_reviews,
 };
 use fs_qty::QtyAny;
 use fs_scenario::EntityDeclaration;
+use fs_session::{DecisionAssessment, EvidenceRef};
+use fs_voi::recommend_unknown_resolutions;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct JunctionTemperature;
+
+fn decision_digest(label: &str) -> ContentHash {
+    hash_domain(
+        "org.frankensim.fs-project.test.decision.v1",
+        label.as_bytes(),
+    )
+}
+
+fn decision_artifact(label: &str) -> UncertaintyArtifactRef {
+    UncertaintyArtifactRef::new(label, decision_digest(label)).expect("valid decision artifact")
+}
+
+fn decision_budget(with_unknown: bool) -> EngineeringUncertaintyBudget {
+    let terms = EngineeringUncertaintyKind::ALL
+        .into_iter()
+        .map(|kind| {
+            let value = if with_unknown && kind == EngineeringUncertaintyKind::BoundaryConditions {
+                TermValue::unknown("fan tolerance lacks a retained population authority")
+                    .expect("named unknown")
+            } else {
+                TermValue::negligible(format!("{} is exact in this fixture", kind.name()))
+                    .expect("named negligible term")
+            };
+            EngineeringUncertaintyTerm::try_new(kind, value, decision_artifact(kind.name()))
+                .expect("valid term")
+        })
+        .collect();
+    EngineeringUncertaintyBudget::try_new("t-junction-max", "kelvin", terms)
+        .expect("complete budget")
+}
+
+fn decision_package() -> VerifiedPackage {
+    EvidencePackage::new(Provenance::new(
+        "fs-project-decision-test",
+        "Cargo.lock:test",
+    ))
+    .into_verified()
+    .expect("empty deny-all package is structurally valid")
+}
+
+fn assemble_reference_decision(
+    authority: &fs_project::ProjectDecisionAuthority,
+    with_unknown: bool,
+) -> Result<DecisionAssessment<JunctionTemperature>, fs_project::ProjectDecisionError> {
+    let budget = decision_budget(with_unknown);
+    let compliance = budget
+        .assess_requirement(370.0, authority.requirement().scalar(), &[])
+        .expect("valid compliance replay");
+    let attribution = budget
+        .attribute_requirement(370.0, authority.requirement().scalar(), &[])
+        .expect("valid attribution replay");
+    let actions = recommend_unknown_resolutions(&compliance, &[]);
+    authority.try_assemble(
+        EvidenceRef::try_new(
+            "t-junction-max",
+            "kelvin",
+            "fs-evidence:certified-f64:v1",
+            decision_digest("t-junction-max"),
+        )
+        .expect("quantity evidence"),
+        compliance,
+        budget,
+        attribution,
+        actions,
+        &decision_package(),
+    )
+}
 
 fn kelvin(value: f64) -> QtyAny {
     QtyAny::new(value, fs_project::spec::dims::TEMPERATURE)
@@ -213,6 +291,11 @@ fn requirement_authority_and_context_gate_are_mandatory_decision_inputs() {
     metadata.decision_gate = DecisionGate::ScopingEstimate;
     metadata.consequence = ConsequenceClass::Advisory;
     assert!(metadata.permits_indeterminate());
+    metadata.consequence = ConsequenceClass::Reliability;
+    assert!(
+        metadata.permits_indeterminate(),
+        "reliability scoping remains explicitly non-sign-off"
+    );
     metadata.consequence = ConsequenceClass::SafetyCritical;
     assert!(
         !metadata.permits_indeterminate(),
@@ -240,6 +323,82 @@ fn requirement_authority_and_context_gate_are_mandatory_decision_inputs() {
             .validate()
             .iter()
             .any(|finding| finding.code == "project-requirement-safety-factor")
+    );
+}
+
+#[test]
+fn every_reference_requirement_assembles_with_full_lineage_and_stable_identity() {
+    let project = reference_project();
+    let authorities = project_decision_authorities(&project).expect("admitted project authorities");
+    assert_eq!(
+        authorities.len(),
+        project.requirements.as_ref().expect("requirements").len()
+    );
+    let authority = &authorities[0];
+    assert_eq!(authority.requirement().scalar().qoi(), "t-junction-max");
+    assert_eq!(authority.requirement().source().kind().slug(), "datasheet");
+    assert_eq!(
+        authority.requirement().source().document(),
+        "cpu-thermal-specification"
+    );
+    assert_eq!(authority.requirement().source().version(), "rev-7");
+    assert_eq!(authority.requirement().source().locator(), "table-5:tj-max");
+    assert_eq!(
+        authority.requirement().safety_factor_source().document(),
+        "thermal-derating-policy"
+    );
+
+    let first =
+        assemble_reference_decision(authority, false).expect("reference requirement assembles");
+    let selected =
+        project_decision_authority(&project, "t-junction-max").expect("exact QoI authority exists");
+    let replayed = assemble_reference_decision(&selected, false).expect("offline replay assembles");
+    assert_eq!(first, replayed);
+    assert_eq!(first.content_hash(), replayed.content_hash());
+    assert!(first.validate_content_hash());
+    assert!(first.render_explain().contains("requirement-version=rev-7"));
+
+    let mut changed = project;
+    changed.requirements.as_mut().expect("requirements")[0]
+        .source
+        .version = "rev-8".to_string();
+    let changed = project_decision_authority(&changed, "t-junction-max")
+        .expect("changed authority remains admissible");
+    let changed =
+        assemble_reference_decision(&changed, false).expect("changed authority assembles");
+    assert_ne!(first.content_hash(), changed.content_hash());
+}
+
+#[test]
+fn identical_indeterminate_physics_is_admitted_for_scoping_and_refused_for_signoff() {
+    let mut scoping = reference_project();
+    let metadata = scoping.metadata.as_mut().expect("metadata");
+    metadata.decision_gate = DecisionGate::ScopingEstimate;
+    metadata.consequence = ConsequenceClass::Advisory;
+    let scoping =
+        project_decision_authority(&scoping, "t-junction-max").expect("scoping authority");
+    let admitted = assemble_reference_decision(&scoping, true)
+        .expect("advisory scoping retains explicit indeterminacy");
+    assert!(matches!(
+        admitted.compliance(),
+        fs_evidence::uncertainty::ComplianceVerdict::Indeterminate { .. }
+    ));
+
+    let mut signoff = reference_project();
+    let metadata = signoff.metadata.as_mut().expect("metadata");
+    metadata.decision_gate = DecisionGate::ComplianceSignoff;
+    metadata.consequence = ConsequenceClass::Reliability;
+    let signoff =
+        project_decision_authority(&signoff, "t-junction-max").expect("signoff authority");
+    let error = assemble_reference_decision(&signoff, true)
+        .expect_err("sign-off cannot use an indeterminate result");
+    assert_eq!(
+        error,
+        fs_project::ProjectDecisionError::IndeterminateRefused {
+            qoi: "t-junction-max".to_string(),
+            decision_gate: DecisionGate::ComplianceSignoff,
+            consequence: ConsequenceClass::Reliability,
+        }
     );
 }
 

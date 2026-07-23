@@ -21,7 +21,9 @@ indeterminate decision is usable only in an advisory scoping context.
 Layer L6 (HELM). Depends on `fs-ir` (AST + both concrete syntaxes),
 `fs-scenario` (entity identities, `Violation`), `fs-matdb` (cards, receipted
 queries), `fs-io` (deterministic mesh assignments), `fs-rep-mesh` (promoted
-finite meshes), `fs-exec` (cancellation context), `fs-qty`, and `fs-blake3`.
+finite meshes), `fs-exec` (cancellation context), `fs-qty`, `fs-blake3`,
+`fs-evidence`/`fs-package`/`fs-voi` (retained decision inputs), and
+`fs-session` (the generic L6 `DecisionAssessment` projection).
 This crate persists project intent and resolves its card and geometry
 bindings; it runs no solves and admits no scenarios itself.
 
@@ -48,9 +50,9 @@ bindings; it runs no solves and admits no scenarios itself.
   are `Option`s so
   recognition stays lenient and validation can name every omission at once.
 - `Metadata::permits_indeterminate()` is the context gate consumed by the
-  decision layer: only `ScopingEstimate` plus `Advisory` returns true.
-  Design-selection/compliance-signoff and every safety-critical consequence
-  require a determinate assessment.
+  decision layer: only `ScopingEstimate` with a non-safety-critical consequence
+  returns true. Design-selection/compliance-signoff and every safety-critical
+  consequence require a determinate assessment.
 - `RequirementSource` identifies an exact standard, datasheet, internal
   policy, or user declaration by document, version, and locator.
   `requirement_source_reviews(previous, current)` deterministically reports a
@@ -61,6 +63,18 @@ bindings; it runs no solves and admits no scenarios itself.
   owns how it was applied; `ThermalLimit::limit` is the effective value already
   consumed by compliance evaluation. L6 never invents a generic
   multiply/divide rule for temperature or other quantities.
+- `project_decision_authorities(project)` first requires full ordinary
+  `ProjectSpec` admission, refuses duplicate requirement QoIs, then returns one
+  deterministic `ProjectDecisionAuthority` per requirement-bearing QoI sorted
+  by QoI. The authority hashes the complete thermal requirement declaration
+  (class, region, direction, effective limit, margin, both sources, factor, and
+  severity), retains both human-auditable source lineages in
+  `DecisionRequirement`, and derives an exact `ContextOfUse` artifact from the
+  complete metadata decision frame. `ProjectDecisionAuthority::try_assemble`
+  delegates all cross-artifact checks to `fs-session` before applying the
+  project gate: only non-safety-critical scoping may return an explicit
+  indeterminate assessment; design selection, compliance sign-off, and
+  safety-critical contexts return typed `IndeterminateRefused`.
 - `ProjectSpec::validate() -> Vec<Violation>` (the fs-scenario
   code/what/fix triple): empty output is the definition of admissible. Every
   mandatory section omission has a stable `project-*-missing` code; empty
@@ -244,6 +258,10 @@ The f85xj.17.6 battery additionally proves sourced requirement and factor
 lineage round-trip in both spellings, sourceless/invalid-factor refusal,
 advisory-scoping versus design/sign-off/safety context gating, and exact
 version-bump review for both the requirement and safety-factor authorities.
+It also assembles every reference-project requirement into an offline-stable
+DecisionAssessment identity, proves source-version drift changes that identity,
+and runs identical indeterminate physics through the scoping-admit and
+sign-off-refuse paths.
 
 `tests/assignment.rs` (f85xj.6.3): a promoted cube resolves named groups to
 the exact persistent region/interface identities; retained fs-io JSON and its
@@ -321,3 +339,9 @@ explicit face index.
   application rule is not recomputed here, the schema does not independently
   prove that the effective limit was derived correctly; that cross-check
   belongs to the future standards/policy registry integration.
+- The decision adapter content-addresses the caller-declared project fields and
+  checks consistency with lower artifacts. It does not retrieve or authenticate
+  the named source documents, prove that a clause applies, validate the
+  safety-factor derivation, recompute compliance, or upgrade the lower-layer
+  evidence color. A scoping admission preserves `Indeterminate`; it is not
+  compliance-signoff authority.

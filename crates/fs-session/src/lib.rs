@@ -26,6 +26,7 @@ pub mod token;
 pub use decision::{
     AppliedSafetyFactor, DECISION_ASSESSMENT_IDENTITY_DOMAIN, DECISION_ASSESSMENT_IDENTITY_VERSION,
     DecisionAssessment, DecisionAssessmentError, DecisionRequirement, EvidenceRef,
+    RequirementAuthority, RequirementAuthorityKind,
 };
 
 pub use estimate::{

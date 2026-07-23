@@ -20,9 +20,15 @@ lower-layer evidence; notebook identities use `fs-obs::IdentityBuilder`.
   `describe()`; `semantic_diff(before, after)` — a per-feature geometric
   attribution ranked by significance.
 - `decision_headline_markdown(assessment)` — compact tri-state decision
-  headline with the effective requirement, declared safety factor and policy,
+  headline with the effective requirement, complete requirement and
+  safety-factor document/version/locator lineage,
   exact evidence/context/replay identities, flip conditions, paired
   attribution headlines, and the complete indented audit projection.
+- `project_decision_gate_markdown(authority, compliance)` — deterministic
+  project-intent walkthrough retaining the context, intended decision, gate,
+  consequence, both full source lineages, content identities, lower-layer
+  tri-state verdict, and explicit `admitted` versus
+  `refused: this context requires a determinate assessment` outcome.
 - `no_useful_bound_markdown(refusal)` — a distinct `NoUsefulBound` visual
   class showing achieved enclosure/width, failed caller threshold, unit,
   decision context, closed cause, exact E09 suggested reformulation, and an
@@ -48,6 +54,9 @@ lower-layer evidence; notebook identities use `fs-obs::IdentityBuilder`.
   by `|relative change|` (largest first), with the feature name as tiebreak.
 - A decision headline never maps `indeterminate` to either binary verdict and
   always retains the exact `DecisionAssessment` and replay-package identities.
+- Project gate rendering never changes the supplied verdict. Only
+  non-safety-critical scoping displays indeterminate as admitted;
+  design/sign-off and safety-critical contexts display it as refused.
 - A `NoUsefulBound` headline never uses compliant, non-compliant, verified, or
   certificate status. Its cause and reformulation remain visible.
 - Safety factors are reported as already applied to the effective sourced
@@ -92,8 +101,9 @@ no-claim section; the coupled projection proves every demoted receipt appears
 in both artifacts and that in-domain projection is an exact no-op.
 
 `tests/decision.rs` covers deterministic indeterminate and binary decision
-headlines, units and authority identities, explicit flip actions, and the
-projection-only no-claim boundary.
+headlines, units and full authority lineages, explicit flip actions, the
+projection-only no-claim boundary, and the same indeterminate physics rendered
+as admitted for advisory scoping versus refused for compliance sign-off.
 `tests/useful_bound.rs` covers the distinct refusal visual class, cause,
 suggested E09 reformulation, and explicit no-certificate boundary.
 
@@ -108,6 +118,11 @@ suggested E09 reformulation, and explicit no-certificate boundary.
   `fs-session::DecisionAssessment`; it does not resolve content hashes,
   authenticate requirement or policy sources, recompute compliance or
   attribution, price evidence actions, or certify scientific evidence.
+- The project-gate block presents declared project intent beside a supplied
+  lower-layer verdict. It does not itself enforce the gate (the
+  `fs-project::ProjectDecisionAuthority` adapter does), and its scoping
+  `admitted` label does not authenticate requirement sources or authorize
+  design release/compliance sign-off.
 - The `NoUsefulBound` block projects a lower-layer refusal. It does not prove
   that the achieved enclosure is rigorous, select the threshold, or establish
   that the suggested reformulation will yield useful evidence.

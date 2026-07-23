@@ -14,11 +14,13 @@ layer = "L6"
 fs-evidence = { path = "../fs-evidence" }
 fs-obs = { path = "../fs-obs" }
 fs-package = { path = "../fs-package" }
+fs-project = { path = "../fs-project" }
 fs-regime = { path = "../fs-regime" }
 fs-session = { path = "../fs-session" }
 
 [dev-dependencies]
 fs-blake3 = { path = "../fs-blake3" }
+fs-qty = { path = "../fs-qty" }
 fs-voi = { path = "../fs-voi" }
 
 [lints]

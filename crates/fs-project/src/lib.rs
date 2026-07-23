@@ -14,6 +14,7 @@
 
 pub mod assignment;
 pub mod bind;
+pub mod decision;
 pub mod migration;
 pub mod spec;
 pub mod wire;
@@ -32,6 +33,11 @@ pub use bind::{
     CONTACT_RESISTANCE_PROPERTY, CardLibrary, MaterialResolution, RequiredProperty,
     ResolvedBinding, ResolvedProperty, RetainedReceipt, TEMPERATURE_AXIS,
     THERMAL_CONDUCTIVITY_DIMS, THERMAL_CONDUCTIVITY_PROPERTY, resolve_bindings,
+};
+pub use decision::{
+    PROJECT_DECISION_CONTEXT_IDENTITY_DOMAIN, PROJECT_REQUIREMENT_IDENTITY_DOMAIN,
+    PROJECT_SAFETY_FACTOR_IDENTITY_DOMAIN, ProjectDecisionAuthority, ProjectDecisionContext,
+    ProjectDecisionError, project_decision_authorities, project_decision_authority,
 };
 pub use fs_io::{HalfSpaceSide, MeshSelector};
 pub use migration::{MigratedProject, MigrationRule, ProjectMigrationReceipt, migrate_envelope};

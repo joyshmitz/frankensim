@@ -73,6 +73,18 @@ pub enum DecisionGate {
     ComplianceSignoff,
 }
 
+impl DecisionGate {
+    /// Stable schema/report slug.
+    #[must_use]
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::ScopingEstimate => "scoping-estimate",
+            Self::DesignSelection => "design-selection",
+            Self::ComplianceSignoff => "compliance-signoff",
+        }
+    }
+}
+
 /// Consequence framing for the intended decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ConsequenceClass {
@@ -82,6 +94,18 @@ pub enum ConsequenceClass {
     Reliability,
     /// Damage, personnel, or regulatory safety consequence.
     SafetyCritical,
+}
+
+impl ConsequenceClass {
+    /// Stable schema/report slug.
+    #[must_use]
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::Advisory => "advisory",
+            Self::Reliability => "reliability",
+            Self::SafetyCritical => "safety-critical",
+        }
+    }
 }
 
 /// The versions pillar of the Five Explicits.
@@ -337,6 +361,19 @@ pub enum RequirementSourceKind {
     InternalPolicy,
     /// Explicit user declaration with no external-document authority.
     UserDeclaration,
+}
+
+impl RequirementSourceKind {
+    /// Stable schema/report slug.
+    #[must_use]
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Datasheet => "datasheet",
+            Self::InternalPolicy => "internal-policy",
+            Self::UserDeclaration => "user-declaration",
+        }
+    }
 }
 
 /// Versioned document and exact locator supporting a requirement or policy.
