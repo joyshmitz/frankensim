@@ -40,7 +40,18 @@ lattice-scaling assistant, FLUX conformance, conformal hardening buckets.
   Euler-Bernoulli, Timoshenko) with validity boxes in group space;
   `admit(registry, groups, model) -> Admission { allowed, reasons,
   alternatives }` with alternatives ranked by log-decade distance to
-  their validity boxes; `distance_to_validity` is the ranking metric.
+  their validity boxes; `distance_to_validity` is the ranking metric and
+  `axis_distance_to_validity` exposes its per-axis severity law.
+- `output_audit`: `audit_product_output` checks every user-facing QoI at
+  every named operating point against every consumed model card. Its typed
+  receipt preserves exact in-domain/out-of-domain partitions, card/version,
+  axis, observed value, bounds, log-distance severity, original/effective
+  colors, per-partition colors, and any explicit override acknowledgement.
+  One or more violations force the effective color to
+  `Estimated { dispersion: infinity }`; an acknowledgement permits downstream
+  policy to proceed but never restores color. Canonical JSON and deterministic
+  no-claim Markdown are report/ledger handoff projections, not authority by
+  themselves.
 - `report`: `assess(&[RoleInput]) -> Evidence<RegimeReport>` — groups,
   Pi rank/count, dominant balance, valid/invalid models, recommended
   scaling, conditioning risk (decade spread of input scale factors), and
@@ -66,6 +77,12 @@ lattice-scaling assistant, FLUX conformance, conformal hardening buckets.
    bounds by name and value plus a full ranked alternative list.
 6. **Reports are reproducible**: same inputs → identical report and
    identical provenance hash.
+7. **Final-envelope demotion is monotone**: shrinking a card validity domain
+   cannot move an operating point from the out-of-domain partition to the
+   in-domain partition. Partial sweeps expose both exact partitions and are
+   never averaged into a single coverage fraction.
+8. **Overrides cannot launder color**: override acknowledgements are retained
+   in the receipt but do not participate in effective-color computation.
 
 ## Error model
 
@@ -123,6 +140,10 @@ recovery, mol-free basis invariance, mass isolation, nonzero-mol rank and
 residual cancellation, degenerate refusals), all six scaling axes, and the
 condition probe against known diagonals.
 
+`tests/output_audit.rs` covers per-card checking, named distance-scored
+violations, partial sweep partitioning, monotone domain shrinkage,
+deterministic receipts, and the non-restoring override law.
+
 ## No-claim boundaries
 
 - **The registry is a v0 seed**, not a complete FLUX catalog: solvers
@@ -139,3 +160,7 @@ condition probe against known diagonals.
   that a proof-pending or ignored release lane has passed.
 - **PDE-level nondimensionalization** (rewriting operators) lives with
   the solvers; this crate recommends and applies SCALES to quantities.
+- **This core audit does not prove product-wide wiring.** fs-report must place
+  its Markdown projection in the final no-claim section, fs-package must retain
+  the receipt, and CLI/project orchestration must supply the complete consumed
+  card set and final operating envelope before `f85xj.8.3` can close.

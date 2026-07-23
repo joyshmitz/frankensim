@@ -10,12 +10,18 @@
 
 pub mod cards;
 pub mod groups;
+pub mod output_audit;
 pub mod pi;
 pub mod report;
 pub mod scaling;
 
-pub use cards::{Admission, flux_model_cards};
+pub use cards::{Admission, axis_distance_to_validity, flux_model_cards};
 pub use groups::{NamedGroup, Role, RoleInput, standard_groups};
+pub use output_audit::{
+    AxisViolationKind, ConsumedModelCard, EnvelopeCoverage, OperatingPoint, OutputAuditError,
+    OutputClaimReceipt, OverrideAcknowledgement, ProductOutputAudit, QoiClaim, RegimeViolation,
+    audit_product_output,
+};
 pub use pi::{Input, PiBasis, PiGroup, pi_groups};
 pub use report::{BenchmarkMatch, RegimeReport, assess};
 pub use scaling::{ScalingMap, condition_number};

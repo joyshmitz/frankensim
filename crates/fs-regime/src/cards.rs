@@ -135,6 +135,36 @@ pub struct Admission {
     pub provenance: ProvenanceHash,
 }
 
+/// Log-space distance from one observed value to an inclusive validity bound.
+///
+/// This is the per-axis law summed by [`distance_to_validity`]. Missing,
+/// non-finite, and non-logarithmic violations receive the same conservative
+/// unit penalty used by admission ranking.
+#[must_use]
+pub fn axis_distance_to_validity(value: Option<f64>, lo: f64, hi: f64) -> f64 {
+    let Some(value) = value else {
+        return 1.0;
+    };
+    if !value.is_finite() || !lo.is_finite() || !hi.is_finite() || lo > hi {
+        return 1.0;
+    }
+    if value < lo {
+        if lo > 0.0 && value > 0.0 {
+            log10(lo / value).abs()
+        } else {
+            1.0
+        }
+    } else if value > hi {
+        if hi > 0.0 && value > 0.0 {
+            log10(value / hi).abs()
+        } else {
+            1.0
+        }
+    } else {
+        0.0
+    }
+}
+
 /// Log-space distance from a group point to a card's validity box: 0
 /// inside; the sum over violated bounds of `|log10(value/bound)|`;
 /// a unit penalty per constrained-but-unavailable group.
@@ -145,19 +175,7 @@ pub fn distance_to_validity(card: &ModelCard, groups: &BTreeMap<String, f64>) ->
         let Some((lo, hi)) = card.validity.bound(&param) else {
             continue;
         };
-        match groups.get(&param) {
-            None => d += 1.0,
-            Some(&v) => {
-                if v < lo && lo > 0.0 && v > 0.0 {
-                    d += log10(lo / v).abs();
-                } else if v < lo {
-                    d += 1.0;
-                }
-                if v > hi && hi.is_finite() && hi > 0.0 && v > 0.0 {
-                    d += log10(v / hi).abs();
-                }
-            }
-        }
+        d += axis_distance_to_validity(groups.get(&param).copied(), lo, hi);
     }
     d
 }
