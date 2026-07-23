@@ -33,6 +33,9 @@ use std::sync::LazyLock;
 
 mod seed;
 
+/// Adversarial thermal validation cases and honesty-first assessment.
+pub mod adversarial;
+
 /// Versioned, evidence-bearing validation datasets with fail-closed partition
 /// and context-of-use queries.
 pub mod corpus;

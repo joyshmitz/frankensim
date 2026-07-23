@@ -183,6 +183,19 @@ body.
   a source and group both distinct from the controlled experiment. Portfolio
   and admission identities use versioned, domain-separated canonical
   encodings; the opaque admission proves only that this structural rule ran.
+- `adversarial::{AdversarialRegistry,AdversarialCase,AdversarialOutcome,
+  AdversarialAssessment}` — the schema-v1 honesty registry for thermal
+  challenge regimes. Eight cases attack attached-flow, known-contact,
+  convection-dominance, stable-fan, known-leakage, fixed-property,
+  lumped-temperature, and forced-convection assumptions. Each names one
+  dominant uncertainty and distinguishes an exact retained corpus binding
+  from planned evidence with a reason and tracking Bead. An accepted
+  prediction passes only inside its inclusive challenge envelope; an
+  out-of-envelope accepted prediction is counted as a false acceptance.
+  Refusal or demotion passes only when it attributes the registered dominant
+  uncertainty. `render_regime_limitations` emits every case in canonical order
+  for the future public scorecard and renders missing execution or unretained
+  planned evidence as `NO-DATA`, never zero.
 - `thermal_level_a::thermal_level_a_cases` — 19 frozen Level-A thermal
   definitions backed by one retained TSV manifest: 12 analytic values across
   planar/2-D/axisymmetric/spherical conduction, fin efficiency, a
@@ -277,6 +290,14 @@ body.
   and a claimed independent reproduction must use a different source and
   declared independence group. Corpus audit rows aggregate each axis
   separately.
+- ADVERSARIAL HONESTY IS NOT ACCURACY AUTHORITY: case declarations are
+  immutable, bounded, identity-sensitive challenge specifications. Retained
+  dataset ids must resolve in the authoritative corpus and their A-E
+  coordinate must match the declared evidence basis; planned cross-code or rig
+  evidence remains visibly unretained. A prediction outside its envelope
+  cannot pass, while refusals and demotions cannot pass by naming an unrelated
+  uncertainty. Duplicate/foreign assessment rows refuse scorecard assembly,
+  and absent rows remain `NO-DATA`.
 - CORPUS AUTHORITY SEPARATION: caller-built registries can validate, serialize,
   hash, and audit rows but cannot return evidence-bearing query results. The
   workspace seed behind `corpus()` is the only query authority. It includes 19
@@ -595,6 +616,14 @@ and targets, not thermal-kernel convergence.
   `PortfolioAdmission` does not mint `Color`, `AdmittedColor`, a corpus access
   receipt, or runtime authority. Durable authentication and exact-instance
   policy remain `fs-package`/`fs-checker`/`fs-ledger` scope.
+- `AdversarialAssessment` is a sealed diagnostic honesty receipt, not a solver
+  result, evidence color, validation claim, or ledger authority. Registration
+  does not execute a challenge. The retained analytic cases are reference
+  definitions, the retained fin case has the corpus row's existing metrology
+  gaps, and planned fan, vent, material-lot, and cross-code cases have no
+  acquired result. The deterministic regime-limitation Markdown is an input
+  surface for the downstream scorecard; it is not the DSR artifact lane or the
+  public scorecard itself.
 - The seed CHT row is synthetic Level B and therefore physically `Estimated`.
   Its CSV is an authored tabulation of a hard-coded query, not raw sensor data;
   the stored `1.0 K` value is an acceptance tolerance, not measurement
