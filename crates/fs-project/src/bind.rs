@@ -216,6 +216,10 @@ pub struct ResolvedBinding {
     /// Source channel declared in the project file (recorded, not
     /// authenticated by this resolver).
     pub declared_source: String,
+    /// Class-specific interface state, when the target is an interface.
+    /// Material rows have no value here because their manufactured state is
+    /// already the card identity.
+    pub declared_interface_state: Option<String>,
     /// Low endpoint (K) of the range the properties were resolved over.
     pub range_lo: f64,
     /// High endpoint (K) of the range the properties were resolved over.
@@ -303,11 +307,12 @@ impl MaterialResolution {
                 let pin = binding.pinned_claim.as_deref().unwrap_or("-");
                 let _ = writeln!(
                     out,
-                    "{} | card {} ({}) | source {} | range [{}, {}] K | pin {} | {} = [{}, {}] {} | uncertainty {} | claim {} from {} ({}) | regime-card {}@{} | receipts {},{}",
+                    "{} | card {} ({}) | source {} | interface-state {} | range [{}, {}] K | pin {} | {} = [{}, {}] {} | uncertainty {} | claim {} from {} ({}) | regime-card {}@{} | receipts {},{}",
                     binding.target.describe(),
                     binding.card,
                     binding.card_identity,
                     binding.declared_source,
+                    binding.declared_interface_state.as_deref().unwrap_or("-"),
                     binding.range_lo,
                     binding.range_hi,
                     pin,
@@ -536,6 +541,7 @@ fn resolve_material_bindings(
             card_identity,
             binding.card.clone(),
             binding.source.clone(),
+            None,
             &range,
             pin,
             &requirements.temperature_axis,
@@ -670,6 +676,7 @@ fn resolve_interface_bindings(
             card_identity,
             binding.card.clone(),
             binding.source.clone(),
+            Some(binding.state.render()),
             &range,
             pin,
             &requirements.temperature_axis,
@@ -719,6 +726,7 @@ fn resolve_card_properties(
     card_identity: String,
     card_hex: String,
     declared_source: String,
+    declared_interface_state: Option<String>,
     range: &RequiredRange,
     pin: Option<ClaimId>,
     axis: &str,
@@ -751,6 +759,7 @@ fn resolve_card_properties(
             card: card_hex,
             card_identity,
             declared_source,
+            declared_interface_state,
             range_lo: range.lo,
             range_hi: range.hi,
             pinned_claim: pin.map(|claim| claim.0.to_hex()),

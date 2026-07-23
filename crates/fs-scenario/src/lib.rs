@@ -48,11 +48,13 @@ pub use scenario::{
     Scenario, ValidationBudget, ValidationError, ValidationPlan, Violation,
 };
 pub use sensor::{
-    CompiledSensorOperator, MAX_SENSOR_STATE_DIMENSION, MAX_SENSOR_SUPPORT_TERMS,
-    MAX_SENSOR_TEXT_BYTES, ObservationSupport, ObservationTerm, PlacementUncertainty,
-    SENSOR_IDENTITY_DOMAIN, SENSOR_SCHEMA_VERSION, ScenarioSensor, SensorCalibration,
-    SensorComparison, SensorDynamics, SensorError, SensorKind, SensorLocation, SensorMount,
-    SensorObservationParts, SensorQuantity,
+    CompiledSensorBinding, CompiledSensorOperator, CompiledSensorSet, DEFAULT_SENSOR_SET_BUDGET,
+    MAX_SENSOR_STATE_DIMENSION, MAX_SENSOR_SUPPORT_TERMS, MAX_SENSOR_TEXT_BYTES,
+    ObservationSupport, ObservationTerm, PlacementUncertainty, SENSOR_IDENTITY_DOMAIN,
+    SENSOR_SCHEMA_VERSION, SENSOR_SET_IDENTITY_DOMAIN, SENSOR_SET_SCHEMA_VERSION, ScenarioSensor,
+    SensorCalibration, SensorComparison, SensorDynamics, SensorError, SensorKind, SensorLocation,
+    SensorMount, SensorObservationParts, SensorQuantity, SensorSetBudget, SensorSetError,
+    SensorSetPlan, compile_sensor_set, compile_sensor_set_with_budget, plan_sensor_set,
 };
 pub use signal::{ChebProfile, Interp, TimeSignal};
 

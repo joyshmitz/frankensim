@@ -15,6 +15,12 @@ Bead f85xj.17.2 makes the material side of that schema fail closed: every
 binding carries an exact manufactured state, admitted temperature range, and
 visible source channel, while uncertainty remains owned by the selected
 sourced matdb claim rather than an override on the binding.
+Bead f85xj.17.3 begins the interface side of the same boundary: every
+card-backed interface carries one typed manufactured-state class
+(bolted-with-pattern, adhesive, TIM, dry contact, or fluid-filled gap), with
+explicit uncertainty half-widths on continuous state parameters. The state is
+validated, canonical, identity-bearing through the project bytes, and visible
+in the deterministic resolution table.
 Bead f85xj.17.6 extends the same canonical project identity with mandatory
 requirement authority and typed context-of-use gating: requirement/policy
 sources carry exact document versions and locators, and an explicitly
@@ -45,7 +51,11 @@ bindings; it runs no solves and admits no scenarios itself.
   overlap policy),
   `MaterialBinding` matdb card refs (state, admitted temperature range,
   source, optional `claim` pin), `InterfaceCardBinding` TIM/contact card refs
-  (optional `claim` pin), `PowerDissipation`
+  (optional `claim` pin) plus a typed `InterfaceState`: bolted joints declare
+  exact bolt count/pattern and torque with half-width; adhesive and TIM rows
+  declare thickness with half-width; dry contact declares pressure with
+  half-width and finish; fluid gaps declare separation with half-width and
+  fluid identity. `PowerDissipation`
   rows, `Cooling` (fans/vents/leakage; declared-empty lists are facts,
   omission is a violation), `Envelope`, sourced `ThermalLimit` requirements
   with explicit QoI, direction, effective limit, guard margin, severity,
@@ -346,6 +356,12 @@ explicit face index.
   machinery exists so the freeze can be honest when it lands.
 - Validation is structural and dimensional; it makes no physics claim (a
   well-formed project can still describe an unsolvable or nonsensical study).
+- The f85xj.17.3 state slice does not yet discover undeclared geometric
+  proximity, construct `fs-conduction::InterfaceFacePair`s, or admit an
+  explicit perfect-contact declaration. Exact coincident-face refusal remains
+  in `fs-conduction`; the scenario-to-mesh coverage/lowering seam is still
+  required before the bead can close. Mechanical preload and stiffness are
+  staged schema consumers, not claims of this thermal state record.
 - A versioned requirement source proves which bytes/edition/locator the caller
   declared, not that the clause was transcribed correctly, applies to this
   product, or is legally authoritative. `UserDeclaration` is intentionally the

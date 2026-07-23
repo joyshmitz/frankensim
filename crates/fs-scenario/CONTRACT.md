@@ -180,6 +180,14 @@ flagships.
   test-only: it constructs that checked observation and runs the real
   `fs_assimilate::assimilate` Joseph update, so no L3 production dependency
   points upward into L4.
+  `compile_sensor_set` is the explicit all-or-nothing catalog boundary for an
+  ordered collection. It preflights an exact `SensorSetPlan`, proves exact-name
+  uniqueness, resolves every authored `EntityRef`, retains requested/current
+  IDs, supersession hops, and the weakest `EvidenceTier`, and makes each
+  operator name the resolved current entity. Its domain-separated identity
+  binds the exact catalog receipt root plus every ordered operator binding.
+  Caller order is semantic. The complete catalog root is conservatively
+  semantic too: an unrelated receipt changes the set identity.
 - `ir::write_ir`/`ir::parse_ir` — canonical byte-stable, explicitly versioned
   s-expression encoding. v2 writes six-base `[m, kg, s, K, A, mol]` vectors;
   explicit v1 and historical unversioned five-vector forms decode by appending
@@ -369,6 +377,9 @@ flagships.
     row and offset. Placement variance is the declared diagonal first-order
     sum `Σ(sensitivity_i * standard_uncertainty_i)^2`; finite-input overflow
     refuses. Virtual probes never acquire physical noise authority implicitly.
+    A compiled set has unique exact names, resolves every entity through one
+    exact catalog snapshot, retains resolution evidence without laundering it,
+    and publishes no partial prefix after any refusal.
 
 ## Error model
 
@@ -396,6 +407,9 @@ hop budget). Every variant exposes a stable `code()`, a ranked `fix()`, and
 the rest of the crate rather than a second one. `ResolutionFault`
 (`Dangling`, `Retired`, `DepthExceeded`, `KindMismatch`) is the resolution-time
 subset and carries the same `code`/`fix` pair.
+`SensorSetError` separates count/work/allocation refusal, exact-name
+duplication, catalog resolution, resolved sensor-family kind mismatch,
+operator compilation, and cancellation with phase/completed/planned work.
 
 ## Determinism class
 
@@ -481,6 +495,16 @@ still checks finite time, table shape, lookup bounds, and finite results. The
 work plan charges each table provider by its binary-search height, each
 Chebyshev provider by coefficient count, and each materialization/deduplication
 and set-scan pass explicitly.
+
+Catalog-checked sensor-set compilation polls before preflight, after planning,
+after every sensor identity, after each exact-name comparison, at each
+resolution boundary, after each operator compilation, after each receipt row,
+and immediately before publication. Its exact work count is
+`2 + 4*sensors + sensors*(sensors-1)/2`; count and work are admitted before
+allocation. Entity resolution and one dense operator compilation remain
+individually bounded but do not poll internally in sensor-set schema v1. A
+request observed at a set checkpoint drops private scratch and returns no
+partial set.
 
 ## Unsafe boundary
 
@@ -640,7 +664,10 @@ None.
   placement-candidate flags; refusal to launder a virtual probe into a physical
   observation; malformed support, expectation, uncertainty, mount, dynamics,
   date, variance, shape, and finite-state inputs; identity sensitivity across
-  every declaration family; and a JSONL instrumented-temperature handoff row.
+  every declaration family; deterministic ordered catalog-set compilation;
+  exact receipt-root sensitivity; direct and content-matched supersession
+  evidence; exact count/work admission; duplicate, dangling, and
+  pre-cancellation refusal; and a JSONL instrumented-temperature handoff row.
 
 ## No-claim boundaries
 
@@ -734,10 +761,14 @@ None.
 - **Sensor root/IR integration is not claimed**: `ScenarioSensor` is a checked
   scenario-layer declaration type, but the current `Scenario` root and
   canonical v2 IR do not yet enumerate or serialize sensor collections.
-  Consequently this slice does not prove referenced-entity existence through
-  an `EntityCatalog`, does not make `ReferenceSite::Sensor` existence-checked,
-  and does not provide whole-scenario sensor replay. Those are required before
-  this API can be described as canonical scenario persistence.
+  `compile_sensor_set` proves existence and retains resolution evidence only
+  when a caller explicitly supplies a catalog; it is not invoked by
+  `Scenario::validate`, does not make `ReferenceSite::Sensor`
+  existence-checked, and does not provide whole-scenario sensor replay. A set
+  receipt binds the catalog's internal chain root but cannot detect tail
+  truncation unless that root is pinned externally. A schema migration,
+  canonical root/IR integration, and ledger-pinned catalog authority are
+  required before this API can be described as canonical scenario persistence.
 - **Datums, tolerances, and placements are declarations, not evaluations**:
   this crate checks structure, dimensions, datum-frame arity, and source
   presence. It does not construct a datum reference frame geometrically,

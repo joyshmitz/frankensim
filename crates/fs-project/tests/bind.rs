@@ -18,10 +18,10 @@ use fs_matdb::{
 };
 use fs_project::{
     BindingRequirements, CONTACT_RESISTANCE_DIMS, CONTACT_RESISTANCE_PROPERTY, CardLibrary,
-    EntityDecl, Envelope, InterfaceCardBinding, MaterialBinding, MaterialResolution, ProjectSpec,
-    RequirementDirection, RequirementSeverity, RequirementSource, RequirementSourceKind,
-    SafetyFactorPolicy, TEMPERATURE_AXIS, THERMAL_CONDUCTIVITY_DIMS, THERMAL_CONDUCTIVITY_PROPERTY,
-    ThermalLimit, resolve_bindings,
+    EntityDecl, Envelope, InterfaceCardBinding, InterfaceState, MaterialBinding,
+    MaterialResolution, ProjectSpec, RequirementDirection, RequirementSeverity, RequirementSource,
+    RequirementSourceKind, SafetyFactorPolicy, TEMPERATURE_AXIS, THERMAL_CONDUCTIVITY_DIMS,
+    THERMAL_CONDUCTIVITY_PROPERTY, ThermalLimit, resolve_bindings,
 };
 use fs_qty::QtyAny;
 use fs_regime::{
@@ -273,6 +273,10 @@ fn reference_spec(board_card: &str, spreader_card: &str, tim_card: &str) -> Proj
             card: tim_card.to_string(),
             claim: None,
             source: "seed-v1".to_string(),
+            state: InterfaceState::Tim {
+                thickness: QtyAny::new(100e-6, fs_project::spec::dims::LENGTH),
+                thickness_half_width: QtyAny::new(10e-6, fs_project::spec::dims::LENGTH),
+            },
         }]),
         ..ProjectSpec::default()
     }
@@ -363,6 +367,7 @@ fn the_reference_project_binds_fully_with_replayable_receipts() {
         "region `board`",
         "region `spreader`",
         "interface `tim`",
+        "interface-state tim(thickness=0.0001±0.00001 m)",
         THERMAL_CONDUCTIVITY_PROPERTY,
         CONTACT_RESISTANCE_PROPERTY,
         "FR4/laminate/cured rev 0",

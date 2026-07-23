@@ -26,6 +26,10 @@ pub mod dims {
     pub const POWER: Dims = Dims([2, 1, -3, 0, 0, 0]);
     /// Pascal.
     pub const PRESSURE: Dims = Dims([-1, 1, -2, 0, 0, 0]);
+    /// Torque.
+    pub const TORQUE: Dims = Dims([2, 1, -2, 0, 0, 0]);
+    /// Metre.
+    pub const LENGTH: Dims = Dims([1, 0, 0, 0, 0, 0]);
     /// Second.
     pub const TIME: Dims = Dims([0, 0, 1, 0, 0, 0]);
     /// Cubic metre per second.
@@ -282,9 +286,130 @@ pub struct MaterialBinding {
     pub source: String,
 }
 
-/// One interface-card binding: a TIM/contact system card from matdb bound to
-/// a declared interface entity.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Class-specific manufactured state of a thermal interface.
+///
+/// Continuous parameters carry explicit symmetric half-widths. Categorical
+/// parameters and the discrete bolt count are exact declarations rather than
+/// silently inferred solver inputs.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InterfaceState {
+    /// Bolted joint with an explicit fastener pattern and torque class.
+    BoltedWithPattern {
+        /// Number of fasteners participating in the declared pattern.
+        bolt_count: u32,
+        /// Nominal tightening torque.
+        torque: QtyAny,
+        /// Symmetric torque half-width.
+        torque_half_width: QtyAny,
+        /// Project-local pattern identity.
+        pattern: String,
+    },
+    /// Adhesive bondline with manufactured thickness.
+    Adhesive {
+        /// Nominal cured thickness.
+        thickness: QtyAny,
+        /// Symmetric thickness half-width.
+        thickness_half_width: QtyAny,
+    },
+    /// Thermal-interface-material bondline with manufactured thickness.
+    Tim {
+        /// Nominal installed thickness.
+        thickness: QtyAny,
+        /// Symmetric thickness half-width.
+        thickness_half_width: QtyAny,
+    },
+    /// Dry contact governed by clamping pressure and surface finish.
+    DryContact {
+        /// Nominal contact pressure.
+        pressure: QtyAny,
+        /// Symmetric pressure half-width.
+        pressure_half_width: QtyAny,
+        /// Exact surface-finish class used by the card.
+        finish: String,
+    },
+    /// Fluid-filled gap with manufactured separation.
+    GapWithFluid {
+        /// Nominal gap.
+        gap: QtyAny,
+        /// Symmetric gap half-width.
+        gap_half_width: QtyAny,
+        /// Exact fluid identity used by the card.
+        fluid: String,
+    },
+}
+
+impl InterfaceState {
+    /// Stable wire spelling of the interface class.
+    #[must_use]
+    pub const fn class_name(&self) -> &'static str {
+        match self {
+            Self::BoltedWithPattern { .. } => "bolted-with-pattern",
+            Self::Adhesive { .. } => "adhesive",
+            Self::Tim { .. } => "tim",
+            Self::DryContact { .. } => "dry-contact",
+            Self::GapWithFluid { .. } => "gap-with-fluid",
+        }
+    }
+
+    /// Deterministic human rendering retained in binding tables.
+    #[must_use]
+    pub fn render(&self) -> String {
+        match self {
+            Self::BoltedWithPattern {
+                bolt_count,
+                torque,
+                torque_half_width,
+                pattern,
+            } => format!(
+                "{}(count={bolt_count}, torque={}±{} {}, pattern={pattern})",
+                self.class_name(),
+                torque.value,
+                torque_half_width.value,
+                torque.dims.unit_string()
+            ),
+            Self::Adhesive {
+                thickness,
+                thickness_half_width,
+            }
+            | Self::Tim {
+                thickness,
+                thickness_half_width,
+            } => format!(
+                "{}(thickness={}±{} {})",
+                self.class_name(),
+                thickness.value,
+                thickness_half_width.value,
+                thickness.dims.unit_string()
+            ),
+            Self::DryContact {
+                pressure,
+                pressure_half_width,
+                finish,
+            } => format!(
+                "{}(pressure={}±{} {}, finish={finish})",
+                self.class_name(),
+                pressure.value,
+                pressure_half_width.value,
+                pressure.dims.unit_string()
+            ),
+            Self::GapWithFluid {
+                gap,
+                gap_half_width,
+                fluid,
+            } => format!(
+                "{}(gap={}±{} {}, fluid={fluid})",
+                self.class_name(),
+                gap.value,
+                gap_half_width.value,
+                gap.dims.unit_string()
+            ),
+        }
+    }
+}
+
+/// One interface-card binding: a TIM/contact system card plus its explicit
+/// manufactured joint state, bound to a declared interface entity.
+#[derive(Debug, Clone, PartialEq)]
 pub struct InterfaceCardBinding {
     /// Interface declared name the card is bound to.
     pub interface: String,
@@ -296,6 +421,8 @@ pub struct InterfaceCardBinding {
     pub claim: Option<String>,
     /// Source channel the card came from.
     pub source: String,
+    /// Class-specific manufactured state selecting how the card applies.
+    pub state: InterfaceState,
 }
 
 /// One power dissipation row of the power map.
@@ -674,6 +801,149 @@ fn check_dims(
             ),
             format!("spell {context} as a quantity with dimensions {expected:?}"),
         ));
+    }
+}
+
+fn check_positive_band(
+    out: &mut Vec<Violation>,
+    context: &str,
+    nominal: QtyAny,
+    half_width: QtyAny,
+    expected: Dims,
+) {
+    check_dims(
+        out,
+        "project-interface-state-dims",
+        &format!("{context} nominal"),
+        nominal,
+        expected,
+    );
+    check_dims(
+        out,
+        "project-interface-state-dims",
+        &format!("{context} half-width"),
+        half_width,
+        expected,
+    );
+    if nominal.dims == expected
+        && half_width.dims == expected
+        && !(nominal.value.is_finite()
+            && half_width.value.is_finite()
+            && nominal.value > 0.0
+            && half_width.value >= 0.0
+            && half_width.value < nominal.value)
+    {
+        out.push(violation(
+            "project-interface-state-range",
+            format!(
+                "{context} has nominal {} and half-width {}",
+                nominal.value, half_width.value
+            ),
+            "state a finite positive nominal and a finite nonnegative half-width smaller than the nominal",
+        ));
+    }
+}
+
+fn check_interface_state(binding: &InterfaceCardBinding, out: &mut Vec<Violation>) {
+    match &binding.state {
+        InterfaceState::BoltedWithPattern {
+            bolt_count,
+            torque,
+            torque_half_width,
+            pattern,
+        } => {
+            if *bolt_count == 0 {
+                out.push(violation(
+                    "project-interface-bolt-count",
+                    format!(
+                        "bolted interface `{}` declares zero fasteners",
+                        binding.interface
+                    ),
+                    "state the positive number of fasteners participating in the declared pattern",
+                ));
+            }
+            check_positive_band(
+                out,
+                &format!("bolted interface `{}` torque", binding.interface),
+                *torque,
+                *torque_half_width,
+                dims::TORQUE,
+            );
+            if !is_canonical_binding_text(pattern) {
+                out.push(violation(
+                    "project-interface-state-label",
+                    format!(
+                        "bolted interface `{}` has an empty or noncanonical pattern identity",
+                        binding.interface
+                    ),
+                    "state a nonempty, trim-canonical, control-free fastener-pattern identity",
+                ));
+            }
+        }
+        InterfaceState::Adhesive {
+            thickness,
+            thickness_half_width,
+        }
+        | InterfaceState::Tim {
+            thickness,
+            thickness_half_width,
+        } => check_positive_band(
+            out,
+            &format!(
+                "{} interface `{}` thickness",
+                binding.state.class_name(),
+                binding.interface
+            ),
+            *thickness,
+            *thickness_half_width,
+            dims::LENGTH,
+        ),
+        InterfaceState::DryContact {
+            pressure,
+            pressure_half_width,
+            finish,
+        } => {
+            check_positive_band(
+                out,
+                &format!("dry-contact interface `{}` pressure", binding.interface),
+                *pressure,
+                *pressure_half_width,
+                dims::PRESSURE,
+            );
+            if !is_canonical_binding_text(finish) {
+                out.push(violation(
+                    "project-interface-state-label",
+                    format!(
+                        "dry-contact interface `{}` has an empty or noncanonical finish identity",
+                        binding.interface
+                    ),
+                    "state a nonempty, trim-canonical, control-free surface-finish identity",
+                ));
+            }
+        }
+        InterfaceState::GapWithFluid {
+            gap,
+            gap_half_width,
+            fluid,
+        } => {
+            check_positive_band(
+                out,
+                &format!("gap interface `{}` separation", binding.interface),
+                *gap,
+                *gap_half_width,
+                dims::LENGTH,
+            );
+            if !is_canonical_binding_text(fluid) {
+                out.push(violation(
+                    "project-interface-state-label",
+                    format!(
+                        "gap interface `{}` has an empty or noncanonical fluid identity",
+                        binding.interface
+                    ),
+                    "state a nonempty, trim-canonical, control-free fluid identity",
+                ));
+            }
+        }
     }
 }
 
@@ -1180,6 +1450,7 @@ impl ProjectSpec {
         }
         if let Some(interface_cards) = &self.interface_cards {
             for binding in interface_cards {
+                check_interface_state(binding, out);
                 if !is_canonical_binding_text(&binding.source) {
                     out.push(violation(
                         "project-interface-source-invalid",

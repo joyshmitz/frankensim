@@ -6,9 +6,12 @@ use std::collections::BTreeSet;
 use fs_assimilate::{Belief, Observation, assimilate};
 use fs_exec::{Budget, CancelGate, Cx, ExecMode, StreamKey, VirtualClock};
 use fs_scenario::{
-    EntityDeclaration, EntityKind, EntityRef, KindExpectation, ObservationSupport, ObservationTerm,
-    PlacementUncertainty, ScenarioSensor, SensorCalibration, SensorDynamics, SensorError,
-    SensorKind, SensorLocation, SensorMount, SensorQuantity,
+    Correspondence, EntityCatalog, EntityDeclaration, EntityKind, EntityRef, EvidenceTier,
+    GeometryFingerprint, ImportRevision, ImportScope, ImportedEntity, KindExpectation,
+    ObservationSupport, ObservationTerm, PlacementUncertainty, RebindEvent, ScenarioSensor,
+    SensorCalibration, SensorDynamics, SensorError, SensorKind, SensorLocation, SensorMount,
+    SensorQuantity, SensorSetBudget, SensorSetError, compile_sensor_set,
+    compile_sensor_set_with_budget, plan_sensor_set,
 };
 
 const TEST_STREAM: StreamKey = StreamKey {
@@ -30,6 +33,41 @@ fn entities() -> FixtureEntities {
     let region = EntityDeclaration::region(part, "bulk").identity();
     let surface = EntityDeclaration::surface(part, "top-face").identity();
     FixtureEntities { region, surface }
+}
+
+fn entity_catalog() -> (EntityCatalog, FixtureEntities) {
+    let mut catalog = EntityCatalog::new();
+    let assembly = catalog
+        .declare(EntityDeclaration::assembly("instrumented-rig"))
+        .expect("assembly");
+    let part = catalog
+        .declare(EntityDeclaration::part(assembly, "heated-block"))
+        .expect("part");
+    let region = catalog
+        .declare(EntityDeclaration::region(part, "bulk"))
+        .expect("region");
+    let surface = catalog
+        .declare(EntityDeclaration::surface(part, "top-face"))
+        .expect("surface");
+    (catalog, FixtureEntities { region, surface })
+}
+
+fn with_sensor_cx<R>(cancelled: bool, f: impl FnOnce(&Cx<'_>) -> R) -> R {
+    let gate = CancelGate::new();
+    if cancelled {
+        gate.request();
+    }
+    let pool = fs_alloc::ArenaPool::new(fs_alloc::ArenaConfig::default());
+    pool.scope(|arena| {
+        let cx = Cx::new(
+            &gate,
+            arena,
+            TEST_STREAM,
+            Budget::INFINITE,
+            ExecMode::Deterministic,
+        );
+        f(&cx)
+    })
 }
 
 fn physical_sensor(
@@ -489,4 +527,237 @@ fn retained_first_order_dynamics_are_explicit_but_not_silently_applied() {
         sensor.compile().expect("compile").predict(&[350.0]),
         Ok(350.0)
     );
+}
+
+#[test]
+fn catalog_checked_sensor_set_is_deterministic_and_ordered() {
+    let (catalog, e) = entity_catalog();
+    let sensors = vec![
+        physical_sensor(
+            "tc-volume",
+            SensorKind::Thermocouple,
+            e.region,
+            KindExpectation::Domain,
+            ObservationSupport::point(3, 0).expect("point"),
+            SensorMount::declared_ideal("embedded").expect("mount"),
+            PlacementUncertainty::declared_exact("survey").expect("placement"),
+            false,
+        ),
+        physical_sensor(
+            "ir-surface",
+            SensorKind::IrCameraRegion,
+            e.surface,
+            KindExpectation::Boundary,
+            ObservationSupport::point(3, 2).expect("point"),
+            SensorMount::declared_ideal("registered-image").expect("mount"),
+            PlacementUncertainty::declared_exact("registration").expect("placement"),
+            true,
+        ),
+    ];
+    let plan = plan_sensor_set(&sensors, SensorSetBudget::default()).expect("plan");
+    assert_eq!(plan.sensors, 2);
+    assert_eq!(plan.duplicate_comparisons, 1);
+    assert_eq!(plan.planned_work, 11);
+
+    let compiled = with_sensor_cx(false, |cx| compile_sensor_set(&sensors, &catalog, cx))
+        .expect("compile set");
+    let repeated =
+        with_sensor_cx(false, |cx| compile_sensor_set(&sensors, &catalog, cx)).expect("repeat");
+    assert_eq!(compiled, repeated);
+    assert_eq!(compiled.catalog_receipt_root(), catalog.receipt_root());
+    assert_eq!(compiled.bindings().len(), 2);
+    for (row, binding) in compiled.bindings().iter().enumerate() {
+        assert_eq!(binding.row(), row);
+        assert_eq!(binding.requested_entity(), binding.current_entity());
+        assert_eq!(binding.operator().entity(), binding.current_entity());
+        assert_eq!(binding.supersession_hops(), 0);
+        assert_eq!(binding.evidence_tier(), EvidenceTier::Identical);
+        assert_eq!(
+            binding.operator().sensor_identity(),
+            sensors[row].identity()
+        );
+    }
+
+    let reversed = sensors.iter().rev().cloned().collect::<Vec<_>>();
+    let reversed =
+        with_sensor_cx(false, |cx| compile_sensor_set(&reversed, &catalog, cx)).expect("reversed");
+    assert_ne!(compiled.identity(), reversed.identity());
+}
+
+#[test]
+fn sensor_set_identity_binds_the_exact_catalog_receipt_root() {
+    let (mut catalog, e) = entity_catalog();
+    let sensor = physical_sensor(
+        "pressure-port",
+        SensorKind::PressureTap,
+        e.surface,
+        KindExpectation::Boundary,
+        ObservationSupport::point(2, 1).expect("point"),
+        SensorMount::declared_ideal("flush-port").expect("mount"),
+        PlacementUncertainty::declared_exact("machined-location").expect("placement"),
+        false,
+    );
+    let sensors = [sensor];
+    let before =
+        with_sensor_cx(false, |cx| compile_sensor_set(&sensors, &catalog, cx)).expect("before");
+    catalog
+        .rename(e.surface, "Top Face (surveyed)")
+        .expect("receipt-bearing display rename");
+    let after =
+        with_sensor_cx(false, |cx| compile_sensor_set(&sensors, &catalog, cx)).expect("after");
+
+    assert_ne!(before.catalog_receipt_root(), after.catalog_receipt_root());
+    assert_ne!(before.identity(), after.identity());
+    assert_eq!(
+        before.bindings()[0].operator().sensor_identity(),
+        after.bindings()[0].operator().sensor_identity(),
+        "the authored sensor is stable while the conservative catalog snapshot moves"
+    );
+}
+
+#[test]
+fn sensor_set_refuses_duplicate_names_and_dangling_entities() {
+    let (catalog, e) = entity_catalog();
+    let duplicate = |target| {
+        physical_sensor(
+            "duplicate-name",
+            SensorKind::Thermocouple,
+            target,
+            KindExpectation::Boundary,
+            ObservationSupport::point(1, 0).expect("point"),
+            SensorMount::declared_ideal("mount").expect("mount"),
+            PlacementUncertainty::declared_exact("placement").expect("placement"),
+            false,
+        )
+    };
+    let duplicates = [duplicate(e.surface), duplicate(e.surface)];
+    assert_eq!(
+        with_sensor_cx(false, |cx| compile_sensor_set(&duplicates, &catalog, cx)),
+        Err(SensorSetError::DuplicateName {
+            first: 0,
+            second: 1
+        })
+    );
+
+    let dangling_catalog = EntityCatalog::new();
+    assert!(matches!(
+        with_sensor_cx(false, |cx| compile_sensor_set(
+            &duplicates[..1],
+            &dangling_catalog,
+            cx
+        )),
+        Err(SensorSetError::Resolution {
+            row: 0,
+            fault: fs_scenario::ResolutionFault::Dangling { .. }
+        })
+    ));
+}
+
+#[test]
+fn sensor_set_budget_is_exact_and_precancellation_is_fail_closed() {
+    let (catalog, e) = entity_catalog();
+    let build = |name: &str| {
+        physical_sensor(
+            name,
+            SensorKind::Thermocouple,
+            e.surface,
+            KindExpectation::Boundary,
+            ObservationSupport::point(1, 0).expect("point"),
+            SensorMount::declared_ideal("mount").expect("mount"),
+            PlacementUncertainty::declared_exact("placement").expect("placement"),
+            false,
+        )
+    };
+    let sensors = [build("a"), build("b")];
+    let exact = SensorSetBudget {
+        max_sensors: 2,
+        max_work: 11,
+    };
+    assert!(
+        with_sensor_cx(false, |cx| compile_sensor_set_with_budget(
+            &sensors, &catalog, exact, cx
+        ))
+        .is_ok()
+    );
+    assert_eq!(
+        plan_sensor_set(
+            &sensors,
+            SensorSetBudget {
+                max_work: 10,
+                ..exact
+            }
+        ),
+        Err(SensorSetError::WorkExceeded {
+            requested: 11,
+            limit: 10
+        })
+    );
+    assert_eq!(
+        plan_sensor_set(
+            &sensors,
+            SensorSetBudget {
+                max_sensors: 1,
+                ..exact
+            }
+        ),
+        Err(SensorSetError::LimitExceeded {
+            resource: "sensor declarations",
+            requested: 2,
+            limit: 1
+        })
+    );
+    assert_eq!(
+        with_sensor_cx(true, |cx| compile_sensor_set(&sensors, &catalog, cx)),
+        Err(SensorSetError::Cancelled {
+            phase: "initial",
+            completed: 0,
+            planned: 0
+        })
+    );
+}
+
+#[test]
+fn sensor_set_retains_supersession_evidence_and_uses_the_current_entity() {
+    let mut catalog = EntityCatalog::new();
+    let assembly = catalog
+        .declare(EntityDeclaration::assembly("instrumented-rig"))
+        .expect("assembly");
+    let part = catalog
+        .declare(EntityDeclaration::part(assembly, "heated-block"))
+        .expect("part");
+    let fingerprint = GeometryFingerprint::of_bytes(b"same-physical-patch");
+    let requested = catalog
+        .declare(EntityDeclaration::surface(part, "top-face-v1").with_fingerprint(fingerprint))
+        .expect("original surface");
+    let replacement = EntityDeclaration::surface(part, "top-face-v2").with_fingerprint(fingerprint);
+    let current = replacement.identity();
+    catalog
+        .apply_import(&ImportRevision {
+            label: "mesh-revision-2".to_string(),
+            event: RebindEvent::Remesh,
+            scope: ImportScope::Partial,
+            entities: vec![ImportedEntity {
+                declaration: replacement,
+                correspondence: Correspondence::Auto,
+            }],
+        })
+        .expect("content-matched revision");
+    let sensor = physical_sensor(
+        "tc-remeshed",
+        SensorKind::Thermocouple,
+        requested,
+        KindExpectation::Boundary,
+        ObservationSupport::point(1, 0).expect("point"),
+        SensorMount::declared_ideal("mount").expect("mount"),
+        PlacementUncertainty::declared_exact("placement").expect("placement"),
+        false,
+    );
+    let compiled = with_sensor_cx(false, |cx| compile_sensor_set(&[sensor], &catalog, cx))
+        .expect("resolved set");
+    let binding = &compiled.bindings()[0];
+    assert_eq!(binding.requested_entity(), requested);
+    assert_eq!(binding.current_entity(), current);
+    assert_eq!(binding.operator().entity(), current);
+    assert_eq!(binding.supersession_hops(), 1);
+    assert_eq!(binding.evidence_tier(), EvidenceTier::ContentMatched);
 }

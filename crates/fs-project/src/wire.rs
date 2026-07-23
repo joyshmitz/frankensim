@@ -22,10 +22,10 @@ use fs_scenario::Violation;
 use crate::FSIM_VERSION;
 use crate::spec::{
     Budgets, ConsequenceClass, Cooling, DecisionGate, DefaultReceipt, EntityDecl, Envelope, Fan,
-    GeometryArtifact, GeometryAssignment, InterfaceCardBinding, MaterialBinding, Metadata,
-    OutputRequest, PowerDissipation, ProjectSpec, RequirementDirection, RequirementSeverity,
-    RequirementSource, RequirementSourceKind, SafetyFactorPolicy, Seeds, SolverSettings,
-    ThermalLimit, UnitsDoctrine, Vent, Versions,
+    GeometryArtifact, GeometryAssignment, InterfaceCardBinding, InterfaceState, MaterialBinding,
+    Metadata, OutputRequest, PowerDissipation, ProjectSpec, RequirementDirection,
+    RequirementSeverity, RequirementSource, RequirementSourceKind, SafetyFactorPolicy, Seeds,
+    SolverSettings, ThermalLimit, UnitsDoctrine, Vent, Versions,
 };
 
 /// Domain for canonical `.fsim` byte hashing.
@@ -367,7 +367,66 @@ fn lower_structure(spec: &ProjectSpec, sections: &mut Vec<Node>) -> Result<(), P
                 row.push(kw("claim"));
                 row.push(text(claim));
             }
-            row.extend([kw("source"), text(&binding.source)]);
+            row.extend([
+                kw("source"),
+                text(&binding.source),
+                kw("class"),
+                text(binding.state.class_name()),
+            ]);
+            match &binding.state {
+                InterfaceState::BoltedWithPattern {
+                    bolt_count,
+                    torque,
+                    torque_half_width,
+                    pattern,
+                } => row.extend([
+                    kw("bolt-count"),
+                    int(i64::from(*bolt_count)),
+                    kw("torque"),
+                    qty(*torque)?,
+                    kw("torque-half-width"),
+                    qty(*torque_half_width)?,
+                    kw("pattern"),
+                    text(pattern),
+                ]),
+                InterfaceState::Adhesive {
+                    thickness,
+                    thickness_half_width,
+                }
+                | InterfaceState::Tim {
+                    thickness,
+                    thickness_half_width,
+                } => row.extend([
+                    kw("thickness"),
+                    qty(*thickness)?,
+                    kw("thickness-half-width"),
+                    qty(*thickness_half_width)?,
+                ]),
+                InterfaceState::DryContact {
+                    pressure,
+                    pressure_half_width,
+                    finish,
+                } => row.extend([
+                    kw("pressure"),
+                    qty(*pressure)?,
+                    kw("pressure-half-width"),
+                    qty(*pressure_half_width)?,
+                    kw("finish"),
+                    text(finish),
+                ]),
+                InterfaceState::GapWithFluid {
+                    gap,
+                    gap_half_width,
+                    fluid,
+                } => row.extend([
+                    kw("gap"),
+                    qty(*gap)?,
+                    kw("gap-half-width"),
+                    qty(*gap_half_width)?,
+                    kw("fluid"),
+                    text(fluid),
+                ]),
+            }
             items.push(list(row));
         }
         sections.push(list(items));
@@ -1652,14 +1711,142 @@ fn read_interface_cards(body: &[Node], out: &mut Vec<Violation>) -> Vec<Interfac
         let pairs = read_pairs(
             inner,
             "card",
-            &["interface", "card", "claim", "source"],
+            &[
+                "interface",
+                "card",
+                "claim",
+                "source",
+                "class",
+                "bolt-count",
+                "torque",
+                "torque-half-width",
+                "pattern",
+                "thickness",
+                "thickness-half-width",
+                "pressure",
+                "pressure-half-width",
+                "finish",
+                "gap",
+                "gap-half-width",
+                "fluid",
+            ],
             out,
         );
+        let class = expect_str(field(&pairs, "class"), "card.class", out);
+        let state = match class.as_str() {
+            "bolted-with-pattern" => {
+                let bolt_count = match field(&pairs, "bolt-count") {
+                    Some(Node {
+                        kind: NodeKind::Int(value),
+                        ..
+                    }) => u32::try_from(*value).unwrap_or_else(|_| {
+                        out.push(Violation {
+                            code: "project-malformed-clause",
+                            what: "`card.bolt-count` must fit a nonnegative u32".to_string(),
+                            fix: "state the exact positive fastener count".to_string(),
+                        });
+                        0
+                    }),
+                    _ => {
+                        out.push(Violation {
+                            code: "project-malformed-clause",
+                            what: "`card.bolt-count` expected an integer".to_string(),
+                            fix: "state the exact positive fastener count".to_string(),
+                        });
+                        0
+                    }
+                };
+                InterfaceState::BoltedWithPattern {
+                    bolt_count,
+                    torque: expect_qty(field(&pairs, "torque"), "card.torque", out),
+                    torque_half_width: expect_qty(
+                        field(&pairs, "torque-half-width"),
+                        "card.torque-half-width",
+                        out,
+                    ),
+                    pattern: expect_str(field(&pairs, "pattern"), "card.pattern", out),
+                }
+            }
+            "adhesive" | "tim" => {
+                let thickness = expect_qty(field(&pairs, "thickness"), "card.thickness", out);
+                let thickness_half_width = expect_qty(
+                    field(&pairs, "thickness-half-width"),
+                    "card.thickness-half-width",
+                    out,
+                );
+                if class == "adhesive" {
+                    InterfaceState::Adhesive {
+                        thickness,
+                        thickness_half_width,
+                    }
+                } else {
+                    InterfaceState::Tim {
+                        thickness,
+                        thickness_half_width,
+                    }
+                }
+            }
+            "dry-contact" => InterfaceState::DryContact {
+                pressure: expect_qty(field(&pairs, "pressure"), "card.pressure", out),
+                pressure_half_width: expect_qty(
+                    field(&pairs, "pressure-half-width"),
+                    "card.pressure-half-width",
+                    out,
+                ),
+                finish: expect_str(field(&pairs, "finish"), "card.finish", out),
+            },
+            "gap-with-fluid" => InterfaceState::GapWithFluid {
+                gap: expect_qty(field(&pairs, "gap"), "card.gap", out),
+                gap_half_width: expect_qty(
+                    field(&pairs, "gap-half-width"),
+                    "card.gap-half-width",
+                    out,
+                ),
+                fluid: expect_str(field(&pairs, "fluid"), "card.fluid", out),
+            },
+            _ => {
+                out.push(Violation {
+                    code: "project-interface-class",
+                    what: format!("interface card declares unknown class `{class}`"),
+                    fix: "use bolted-with-pattern, adhesive, tim, dry-contact, or gap-with-fluid"
+                        .to_string(),
+                });
+                InterfaceState::Tim {
+                    thickness: expect_qty(field(&pairs, "thickness"), "card.thickness", out),
+                    thickness_half_width: expect_qty(
+                        field(&pairs, "thickness-half-width"),
+                        "card.thickness-half-width",
+                        out,
+                    ),
+                }
+            }
+        };
+        let class_fields: &[&str] = match class.as_str() {
+            "bolted-with-pattern" => &["bolt-count", "torque", "torque-half-width", "pattern"],
+            "adhesive" | "tim" => &["thickness", "thickness-half-width"],
+            "dry-contact" => &["pressure", "pressure-half-width", "finish"],
+            "gap-with-fluid" => &["gap", "gap-half-width", "fluid"],
+            _ => &[],
+        };
+        for (key, _) in &pairs {
+            if !matches!(*key, "interface" | "card" | "claim" | "source" | "class")
+                && !class_fields.contains(key)
+            {
+                out.push(Violation {
+                    code: "project-interface-state-field",
+                    what: format!("interface class `{class}` does not admit state field `:{key}`"),
+                    fix: format!(
+                        "remove `:{key}` or select the interface class that owns that parameter"
+                    ),
+                });
+            }
+        }
         bindings.push(InterfaceCardBinding {
             interface: expect_str(field(&pairs, "interface"), "card.interface", out),
             card: expect_str(field(&pairs, "card"), "card.card", out),
             claim: field(&pairs, "claim").map(|node| expect_str(Some(node), "card.claim", out)),
             source: expect_str(field(&pairs, "source"), "card.source", out),
+            state,
         });
     }
     bindings

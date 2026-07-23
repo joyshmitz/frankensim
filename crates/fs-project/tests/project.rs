@@ -14,12 +14,13 @@ use fs_evidence::uncertainty::{
 use fs_package::{EvidencePackage, Provenance, VerifiedPackage};
 use fs_project::{
     Budgets, ConsequenceClass, Cooling, DecisionGate, EntityDecl, Envelope, FSIM_VERSION, Fan,
-    GeometryArtifact, GeometryAssignment, HalfSpaceSide, InterfaceCardBinding, MaterialBinding,
-    MeshSelector, Metadata, OutputRequest, PowerDissipation, ProjectSpec, RequirementDirection,
-    RequirementSeverity, RequirementSource, RequirementSourceKind, SafetyFactorPolicy, Seeds,
-    SolverSettings, ThermalLimit, UnitsDoctrine, Vent, Versions, canonical_hash, migrate_envelope,
-    parse_json, parse_sexpr, parse_sexpr_lenient, print_json, print_sexpr,
-    project_decision_authorities, project_decision_authority, requirement_source_reviews,
+    GeometryArtifact, GeometryAssignment, HalfSpaceSide, InterfaceCardBinding, InterfaceState,
+    MaterialBinding, MeshSelector, Metadata, OutputRequest, PowerDissipation, ProjectSpec,
+    RequirementDirection, RequirementSeverity, RequirementSource, RequirementSourceKind,
+    SafetyFactorPolicy, Seeds, SolverSettings, ThermalLimit, UnitsDoctrine, Vent, Versions,
+    canonical_hash, migrate_envelope, parse_json, parse_sexpr, parse_sexpr_lenient, print_json,
+    print_sexpr, project_decision_authorities, project_decision_authority,
+    requirement_source_reviews,
 };
 use fs_qty::QtyAny;
 use fs_scenario::EntityDeclaration;
@@ -222,6 +223,10 @@ fn reference_project() -> ProjectSpec {
             card: "cd".repeat(32),
             claim: None,
             source: "matdb".to_string(),
+            state: InterfaceState::Tim {
+                thickness: QtyAny::new(100e-6, fs_project::spec::dims::LENGTH),
+                thickness_half_width: QtyAny::new(10e-6, fs_project::spec::dims::LENGTH),
+            },
         }]),
         power: Some(vec![PowerDissipation {
             region: "cpu".to_string(),
@@ -995,6 +1000,88 @@ fn material_state_source_and_uncertainty_authority_are_fail_closed() {
                 && finding.what.contains("uncertainty-half-width")
         }),
         "binding-side uncertainty narrowing must not be silently accepted: {:?}",
+        decoded.recognition
+    );
+}
+
+#[test]
+fn interface_classes_round_trip_with_typed_manufactured_state() {
+    let states = [
+        InterfaceState::BoltedWithPattern {
+            bolt_count: 4,
+            torque: QtyAny::new(2.5, fs_project::spec::dims::TORQUE),
+            torque_half_width: QtyAny::new(0.2, fs_project::spec::dims::TORQUE),
+            pattern: "four-corner-m3".to_string(),
+        },
+        InterfaceState::Adhesive {
+            thickness: QtyAny::new(75e-6, fs_project::spec::dims::LENGTH),
+            thickness_half_width: QtyAny::new(15e-6, fs_project::spec::dims::LENGTH),
+        },
+        InterfaceState::Tim {
+            thickness: QtyAny::new(100e-6, fs_project::spec::dims::LENGTH),
+            thickness_half_width: QtyAny::new(10e-6, fs_project::spec::dims::LENGTH),
+        },
+        InterfaceState::DryContact {
+            pressure: QtyAny::new(1.5e6, fs_project::spec::dims::PRESSURE),
+            pressure_half_width: QtyAny::new(0.25e6, fs_project::spec::dims::PRESSURE),
+            finish: "machined-ra-1.6um".to_string(),
+        },
+        InterfaceState::GapWithFluid {
+            gap: QtyAny::new(0.5e-3, fs_project::spec::dims::LENGTH),
+            gap_half_width: QtyAny::new(0.05e-3, fs_project::spec::dims::LENGTH),
+            fluid: "dry-air".to_string(),
+        },
+    ];
+
+    for state in states {
+        let mut spec = reference_project();
+        spec.interface_cards.as_mut().expect("interface cards")[0].state = state.clone();
+        assert!(
+            spec.validate().is_empty(),
+            "{} state must be structurally admissible: {:?}",
+            state.class_name(),
+            spec.validate()
+        );
+        let encoded = print_sexpr(&spec).expect("state renders");
+        let decoded = parse_sexpr(&encoded).expect("state parses canonically");
+        assert_eq!(
+            decoded.spec.interface_cards.expect("interface cards")[0].state,
+            state
+        );
+    }
+}
+
+#[test]
+fn interface_state_refuses_vacuous_bands_and_cross_class_fields() {
+    let mut invalid = reference_project();
+    invalid.interface_cards.as_mut().expect("interface cards")[0].state =
+        InterfaceState::BoltedWithPattern {
+            bolt_count: 0,
+            torque: QtyAny::new(1.0, fs_project::spec::dims::TORQUE),
+            torque_half_width: QtyAny::new(1.0, fs_project::spec::dims::TORQUE),
+            pattern: String::new(),
+        };
+    let findings = invalid.validate();
+    for code in [
+        "project-interface-bolt-count",
+        "project-interface-state-range",
+        "project-interface-state-label",
+    ] {
+        assert!(
+            findings.iter().any(|finding| finding.code == code),
+            "missing `{code}` in {findings:?}"
+        );
+    }
+
+    let canonical = print_sexpr(&reference_project()).expect("project renders");
+    let cross_class = canonical.replacen(":class \"tim\"", ":class \"tim\" :fluid \"dry-air\"", 1);
+    let decoded = parse_sexpr_lenient(&cross_class).expect("document remains recognizable");
+    assert!(
+        decoded
+            .recognition
+            .iter()
+            .any(|finding| finding.code == "project-interface-state-field"),
+        "class-foreign parameters must never be silently discarded: {:?}",
         decoded.recognition
     );
 }

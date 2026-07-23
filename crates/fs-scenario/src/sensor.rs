@@ -15,14 +15,23 @@
 use core::fmt;
 
 use fs_blake3::{ContentHash, DomainHasher};
+use fs_exec::Cx;
 
-use crate::entity::{EntityId, EntityKind, EntityRef, KindExpectation};
+use crate::entity::{
+    EntityCatalog, EntityId, EntityKind, EntityRef, EvidenceTier, KindExpectation, ResolutionFault,
+};
 
 /// Schema version bound into every scenario-sensor identity.
 pub const SENSOR_SCHEMA_VERSION: u32 = 1;
 
 /// Domain-separated identity namespace for scenario sensors.
 pub const SENSOR_IDENTITY_DOMAIN: &str = "org.frankensim.scenario.sensor.v1";
+
+/// Schema version bound into every compiled sensor-set identity.
+pub const SENSOR_SET_SCHEMA_VERSION: u32 = 1;
+
+/// Domain-separated identity namespace for catalog-checked sensor sets.
+pub const SENSOR_SET_IDENTITY_DOMAIN: &str = "org.frankensim.scenario.sensor-set.v1";
 
 /// Maximum dense state dimension accepted by the v1 operator compiler.
 pub const MAX_SENSOR_STATE_DIMENSION: usize = 65_536;
@@ -32,6 +41,12 @@ pub const MAX_SENSOR_SUPPORT_TERMS: usize = 4_096;
 
 /// Maximum bytes in one retained sensor identity or authority string.
 pub const MAX_SENSOR_TEXT_BYTES: usize = 4_096;
+
+/// Conservative default admission limits for one catalog-checked sensor set.
+pub const DEFAULT_SENSOR_SET_BUDGET: SensorSetBudget = SensorSetBudget {
+    max_sensors: 4_096,
+    max_work: 16_777_216,
+};
 
 const PATCH_WEIGHT_TOLERANCE: f64 = 64.0 * f64::EPSILON;
 
@@ -961,6 +976,272 @@ impl ScenarioSensor {
     }
 }
 
+/// Explicit limits for one catalog-checked sensor-set compilation.
+///
+/// `max_work` counts machine-independent checkpoints: pre-publication
+/// boundaries, sensor identity derivations, exact-name comparisons, catalog
+/// resolution/compilation boundaries, and ordered receipt rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SensorSetBudget {
+    /// Maximum number of sensor declarations.
+    pub max_sensors: usize,
+    /// Maximum deterministic logical work units.
+    pub max_work: u128,
+}
+
+impl Default for SensorSetBudget {
+    fn default() -> Self {
+        DEFAULT_SENSOR_SET_BUDGET
+    }
+}
+
+/// Exact preflight shape for one catalog-checked sensor set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SensorSetPlan {
+    /// Sensor declarations in caller order.
+    pub sensors: usize,
+    /// Exact pairwise name comparisons needed to prove uniqueness.
+    pub duplicate_comparisons: u128,
+    /// Deterministic logical work units.
+    pub planned_work: u128,
+}
+
+/// Preflight one sensor set without allocating or consulting the catalog.
+///
+/// # Errors
+///
+/// Refuses a sensor-count limit, checked work arithmetic overflow, or a work
+/// plan larger than `budget.max_work`.
+pub fn plan_sensor_set(
+    sensors: &[ScenarioSensor],
+    budget: SensorSetBudget,
+) -> Result<SensorSetPlan, SensorSetError> {
+    if sensors.len() > budget.max_sensors {
+        return Err(SensorSetError::LimitExceeded {
+            resource: "sensor declarations",
+            requested: sensors.len(),
+            limit: budget.max_sensors,
+        });
+    }
+    let count = sensors.len() as u128;
+    let duplicate_comparisons = count
+        .checked_mul(count.saturating_sub(1))
+        .and_then(|value| value.checked_div(2))
+        .ok_or(SensorSetError::WorkPlanOverflow {
+            phase: "duplicate-name comparisons",
+        })?;
+    let sensor_work = count
+        .checked_mul(4)
+        .ok_or(SensorSetError::WorkPlanOverflow {
+            phase: "per-sensor work",
+        })?;
+    let planned_work = 2u128
+        .checked_add(sensor_work)
+        .and_then(|value| value.checked_add(duplicate_comparisons))
+        .ok_or(SensorSetError::WorkPlanOverflow {
+            phase: "total sensor-set work",
+        })?;
+    if planned_work > budget.max_work {
+        return Err(SensorSetError::WorkExceeded {
+            requested: planned_work,
+            limit: budget.max_work,
+        });
+    }
+    Ok(SensorSetPlan {
+        sensors: sensors.len(),
+        duplicate_comparisons,
+        planned_work,
+    })
+}
+
+/// One catalog resolution and compiled operator in stable caller row order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledSensorBinding {
+    row: usize,
+    requested_entity: EntityId,
+    current_entity: EntityId,
+    supersession_hops: usize,
+    evidence_tier: EvidenceTier,
+    operator: CompiledSensorOperator,
+}
+
+impl CompiledSensorBinding {
+    /// Zero-based caller row retained by the set receipt.
+    #[must_use]
+    pub const fn row(&self) -> usize {
+        self.row
+    }
+
+    /// Entity identity authored by the sensor declaration.
+    #[must_use]
+    pub const fn requested_entity(&self) -> EntityId {
+        self.requested_entity
+    }
+
+    /// Current entity identity selected through the catalog.
+    #[must_use]
+    pub const fn current_entity(&self) -> EntityId {
+        self.current_entity
+    }
+
+    /// Number of catalog supersession hops followed.
+    #[must_use]
+    pub const fn supersession_hops(&self) -> usize {
+        self.supersession_hops
+    }
+
+    /// Weakest evidence tier on the catalog resolution path.
+    #[must_use]
+    pub const fn evidence_tier(&self) -> EvidenceTier {
+        self.evidence_tier
+    }
+
+    /// Operator whose entity accessor names the resolved current entity.
+    #[must_use]
+    pub const fn operator(&self) -> &CompiledSensorOperator {
+        &self.operator
+    }
+}
+
+/// All-or-nothing catalog-checked compilation of an ordered sensor set.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledSensorSet {
+    identity: ContentHash,
+    catalog_receipt_root: ContentHash,
+    bindings: Vec<CompiledSensorBinding>,
+}
+
+impl CompiledSensorSet {
+    /// Domain-separated identity of the exact catalog snapshot and ordered
+    /// compiled bindings.
+    #[must_use]
+    pub const fn identity(&self) -> ContentHash {
+        self.identity
+    }
+
+    /// Exact catalog receipt root bound into [`Self::identity`].
+    #[must_use]
+    pub const fn catalog_receipt_root(&self) -> ContentHash {
+        self.catalog_receipt_root
+    }
+
+    /// Compiled bindings in caller row order.
+    #[must_use]
+    pub fn bindings(&self) -> &[CompiledSensorBinding] {
+        &self.bindings
+    }
+}
+
+/// Compile an ordered sensor set under [`DEFAULT_SENSOR_SET_BUDGET`].
+///
+/// # Errors
+///
+/// Returns a typed resource, cancellation, duplicate-name, catalog-resolution,
+/// resolved-kind, or operator-compilation refusal. No partial set is returned.
+pub fn compile_sensor_set(
+    sensors: &[ScenarioSensor],
+    catalog: &EntityCatalog,
+    cx: &Cx<'_>,
+) -> Result<CompiledSensorSet, SensorSetError> {
+    compile_sensor_set_with_budget(sensors, catalog, SensorSetBudget::default(), cx)
+}
+
+/// Compile an ordered sensor set under an explicit budget.
+///
+/// The exact catalog receipt root is conservatively semantic: even an
+/// unrelated catalog receipt changes the set identity. The root must be
+/// externally pinned if the caller needs tail-truncation detection.
+///
+/// Cancellation is checked before preflight and at every planned set boundary.
+/// Individual bounded entity-resolution walks and dense operator compilation
+/// are not internally interruptible in schema v1.
+///
+/// # Errors
+///
+/// Returns a typed resource, cancellation, duplicate-name, catalog-resolution,
+/// resolved-kind, or operator-compilation refusal. No partial set is returned.
+pub fn compile_sensor_set_with_budget(
+    sensors: &[ScenarioSensor],
+    catalog: &EntityCatalog,
+    budget: SensorSetBudget,
+    cx: &Cx<'_>,
+) -> Result<CompiledSensorSet, SensorSetError> {
+    cx.checkpoint().map_err(|_| SensorSetError::Cancelled {
+        phase: "initial",
+        completed: 0,
+        planned: 0,
+    })?;
+    let plan = plan_sensor_set(sensors, budget)?;
+    let mut completed = 0u128;
+    sensor_set_checkpoint(cx, "post-preflight", &mut completed, plan.planned_work)?;
+
+    let identities = sensor_identities(sensors, cx, &mut completed, plan.planned_work)?;
+    check_unique_sensor_names(sensors, cx, &mut completed, plan.planned_work)?;
+
+    let mut bindings = Vec::new();
+    bindings
+        .try_reserve_exact(plan.sensors)
+        .map_err(|_| SensorSetError::AllocationRefused {
+            resource: "compiled sensor bindings",
+            requested: plan.sensors,
+        })?;
+    for (row, (sensor, sensor_identity)) in sensors.iter().zip(identities).enumerate() {
+        sensor_set_checkpoint(
+            cx,
+            "entity-resolution boundary",
+            &mut completed,
+            plan.planned_work,
+        )?;
+        let resolution = catalog
+            .resolve(sensor.location().entity())
+            .map_err(|fault| SensorSetError::Resolution { row, fault })?;
+        let actual = resolution.current().kind();
+        if !sensor.kind().admits_entity(actual) {
+            return Err(SensorSetError::ResolvedEntityKind {
+                row,
+                current: resolution.current(),
+                actual,
+                sensor_kind: sensor.kind(),
+            });
+        }
+        let mut operator = sensor
+            .compile()
+            .map_err(|source| SensorSetError::Compilation { row, source })?;
+        operator.entity = resolution.current();
+        debug_assert_eq!(operator.sensor_identity(), sensor_identity);
+        sensor_set_checkpoint(
+            cx,
+            "operator compilation",
+            &mut completed,
+            plan.planned_work,
+        )?;
+        bindings.push(CompiledSensorBinding {
+            row,
+            requested_entity: resolution.requested(),
+            current_entity: resolution.current(),
+            supersession_hops: resolution.hops(),
+            evidence_tier: resolution.tier(),
+            operator,
+        });
+    }
+
+    let catalog_receipt_root = catalog.receipt_root();
+    let identity = sensor_set_identity(
+        catalog_receipt_root,
+        &bindings,
+        cx,
+        &mut completed,
+        plan.planned_work,
+    )?;
+    sensor_set_checkpoint(cx, "pre-publication", &mut completed, plan.planned_work)?;
+    debug_assert_eq!(completed, plan.planned_work);
+    Ok(CompiledSensorSet {
+        identity,
+        catalog_receipt_root,
+        bindings,
+    })
+}
+
 /// Dense, owner-neutral observation operator compiled from a scenario sensor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledSensorOperator {
@@ -1338,6 +1619,143 @@ pub enum SensorError {
     },
 }
 
+/// Typed refusal from catalog-checked sensor-set compilation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SensorSetError {
+    /// The sensor collection exceeds its explicit cap.
+    LimitExceeded {
+        /// Stable resource name.
+        resource: &'static str,
+        /// Requested elements.
+        requested: usize,
+        /// Admitted elements.
+        limit: usize,
+    },
+    /// Checked work-plan arithmetic overflowed.
+    WorkPlanOverflow {
+        /// Phase whose arithmetic overflowed.
+        phase: &'static str,
+    },
+    /// The exact work plan exceeds its explicit cap.
+    WorkExceeded {
+        /// Requested logical units.
+        requested: u128,
+        /// Admitted logical units.
+        limit: u128,
+    },
+    /// A preflighted allocation was refused.
+    AllocationRefused {
+        /// Stable resource name.
+        resource: &'static str,
+        /// Requested elements.
+        requested: usize,
+    },
+    /// Two caller rows use the same exact sensor name.
+    DuplicateName {
+        /// First row carrying the name.
+        first: usize,
+        /// Later row carrying the same name.
+        second: usize,
+    },
+    /// The authored entity reference did not resolve.
+    Resolution {
+        /// Sensor row.
+        row: usize,
+        /// Structured catalog refusal.
+        fault: ResolutionFault,
+    },
+    /// A resolved entity is not admitted by the sensor family.
+    ResolvedEntityKind {
+        /// Sensor row.
+        row: usize,
+        /// Resolved current identity.
+        current: EntityId,
+        /// Resolved current kind.
+        actual: EntityKind,
+        /// Sensor family imposing the narrower contract.
+        sensor_kind: SensorKind,
+    },
+    /// One admitted declaration did not compile.
+    Compilation {
+        /// Sensor row.
+        row: usize,
+        /// Operator refusal.
+        source: SensorError,
+    },
+    /// Cancellation was observed before publication.
+    Cancelled {
+        /// Stable checkpoint phase.
+        phase: &'static str,
+        /// Fully completed logical work units.
+        completed: u128,
+        /// Exact preflighted units, or zero before preflight.
+        planned: u128,
+    },
+}
+
+impl fmt::Display for SensorSetError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LimitExceeded {
+                resource,
+                requested,
+                limit,
+            } => write!(
+                formatter,
+                "sensor-set {resource} request {requested} exceeds limit {limit}"
+            ),
+            Self::WorkPlanOverflow { phase } => {
+                write!(formatter, "sensor-set work plan overflowed during {phase}")
+            }
+            Self::WorkExceeded { requested, limit } => write!(
+                formatter,
+                "sensor-set work request {requested} exceeds limit {limit}"
+            ),
+            Self::AllocationRefused {
+                resource,
+                requested,
+            } => write!(
+                formatter,
+                "sensor-set allocation for {requested} {resource} elements was refused"
+            ),
+            Self::DuplicateName { first, second } => write!(
+                formatter,
+                "sensor rows {first} and {second} repeat the same exact name"
+            ),
+            Self::Resolution { row, fault } => {
+                write!(
+                    formatter,
+                    "sensor row {row} entity resolution refused with {}: {fault}",
+                    fault.code()
+                )
+            }
+            Self::ResolvedEntityKind {
+                row,
+                current,
+                actual,
+                sensor_kind,
+            } => write!(
+                formatter,
+                "sensor row {row} resolves to {current} ({actual}), which is not admitted by {}",
+                sensor_kind.label()
+            ),
+            Self::Compilation { row, source } => {
+                write!(formatter, "sensor row {row} did not compile: {source}")
+            }
+            Self::Cancelled {
+                phase,
+                completed,
+                planned,
+            } => write!(
+                formatter,
+                "sensor-set compilation cancelled during {phase} after {completed}/{planned} work units"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for SensorSetError {}
+
 impl fmt::Display for SensorError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1413,6 +1831,86 @@ impl fmt::Display for SensorError {
 }
 
 impl core::error::Error for SensorError {}
+
+fn sensor_identities(
+    sensors: &[ScenarioSensor],
+    cx: &Cx<'_>,
+    completed: &mut u128,
+    planned: u128,
+) -> Result<Vec<ContentHash>, SensorSetError> {
+    let mut identities = Vec::new();
+    identities
+        .try_reserve_exact(sensors.len())
+        .map_err(|_| SensorSetError::AllocationRefused {
+            resource: "sensor identities",
+            requested: sensors.len(),
+        })?;
+    for sensor in sensors {
+        identities.push(sensor.identity());
+        sensor_set_checkpoint(cx, "sensor identity", completed, planned)?;
+    }
+    Ok(identities)
+}
+
+fn check_unique_sensor_names(
+    sensors: &[ScenarioSensor],
+    cx: &Cx<'_>,
+    completed: &mut u128,
+    planned: u128,
+) -> Result<(), SensorSetError> {
+    for second in 1..sensors.len() {
+        for first in 0..second {
+            let duplicate = sensors[first].name() == sensors[second].name();
+            sensor_set_checkpoint(cx, "duplicate-name comparison", completed, planned)?;
+            if duplicate {
+                return Err(SensorSetError::DuplicateName { first, second });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn sensor_set_identity(
+    catalog_receipt_root: ContentHash,
+    bindings: &[CompiledSensorBinding],
+    cx: &Cx<'_>,
+    completed: &mut u128,
+    planned: u128,
+) -> Result<ContentHash, SensorSetError> {
+    let mut hasher = DomainHasher::new(SENSOR_SET_IDENTITY_DOMAIN);
+    absorb_u64(&mut hasher, u64::from(SENSOR_SET_SCHEMA_VERSION));
+    hasher.update(catalog_receipt_root.as_bytes());
+    absorb_u64(&mut hasher, bindings.len() as u64);
+    for binding in bindings {
+        absorb_u64(&mut hasher, binding.row as u64);
+        hasher.update(binding.operator.sensor_identity().as_bytes());
+        absorb_entity_id(&mut hasher, binding.requested_entity);
+        absorb_entity_id(&mut hasher, binding.current_entity);
+        absorb_u64(&mut hasher, binding.supersession_hops as u64);
+        absorb_bytes(&mut hasher, binding.evidence_tier.label().as_bytes());
+        sensor_set_checkpoint(cx, "sensor-set identity row", completed, planned)?;
+    }
+    Ok(hasher.finalize())
+}
+
+fn sensor_set_checkpoint(
+    cx: &Cx<'_>,
+    phase: &'static str,
+    completed: &mut u128,
+    planned: u128,
+) -> Result<(), SensorSetError> {
+    cx.checkpoint().map_err(|_| SensorSetError::Cancelled {
+        phase,
+        completed: *completed,
+        planned,
+    })?;
+    *completed = completed
+        .checked_add(1)
+        .ok_or(SensorSetError::WorkPlanOverflow {
+            phase: "completed-work accounting",
+        })?;
+    Ok(())
+}
 
 fn validate_text(field: &'static str, value: &str) -> Result<(), SensorError> {
     if value.is_empty() {
@@ -1500,15 +1998,13 @@ fn absorb_f64s(hasher: &mut DomainHasher, values: &[f64]) {
     }
 }
 
+fn absorb_entity_id(hasher: &mut DomainHasher, entity: EntityId) {
+    hasher.update(&[entity_kind_tag(entity.kind())]);
+    hasher.update(entity.digest().as_bytes());
+}
+
 fn absorb_entity_ref(hasher: &mut DomainHasher, entity: EntityRef) {
-    hasher.update(&[match entity.target().kind() {
-        EntityKind::Assembly => 1,
-        EntityKind::Part => 2,
-        EntityKind::Region => 3,
-        EntityKind::Surface => 4,
-        EntityKind::Interface => 5,
-    }]);
-    hasher.update(entity.target().digest().as_bytes());
+    absorb_entity_id(hasher, entity.target());
     hasher.update(&[match entity.expect() {
         KindExpectation::Exact(EntityKind::Assembly) => 1,
         KindExpectation::Exact(EntityKind::Part) => 2,
@@ -1519,6 +2015,16 @@ fn absorb_entity_ref(hasher: &mut DomainHasher, entity: EntityRef) {
         KindExpectation::Boundary => 7,
         KindExpectation::Any => 8,
     }]);
+}
+
+const fn entity_kind_tag(kind: EntityKind) -> u8 {
+    match kind {
+        EntityKind::Assembly => 1,
+        EntityKind::Part => 2,
+        EntityKind::Region => 3,
+        EntityKind::Surface => 4,
+        EntityKind::Interface => 5,
+    }
 }
 
 fn absorb_placement(hasher: &mut DomainHasher, placement: &PlacementUncertainty) {
