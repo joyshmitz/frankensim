@@ -5,6 +5,9 @@
 //! Commands:
 //! - `check-layers`   — enforce the L0..L6 layer dependency direction (plan §4, AGENTS.md).
 //! - `check-deps`     — enforce the Franken-only runtime dependency policy (Decalogue P1).
+//!                      Official out-of-process quarantined adapter binaries live OUTSIDE this
+//!                      graph per ruling ADPT-2026-07 (fs-govern::adapter_policy); the ruling
+//!                      legalizes a distribution channel, never a dependency edge.
 //! - `check-contracts`— every workspace `fs-*` crate ships a CONTRACT.md with required sections.
 //! - `check-unsafe`   — unsafe code only in registered capsules (<300 lines, SAFETY.md).
 //! - `check-powi`     — no build-mode-dependent `f64::powi` in deterministic paths (bead 4xnt).
@@ -396,7 +399,9 @@ fn check_deps(manifests: &[Manifest]) -> Vec<Violation> {
                     crate_name: m.name.clone(),
                     detail: format!(
                         "{} depends on {dep:?}, which is neither a workspace fs-* crate nor a \
-                         Franken-constellation library (Decalogue P1: std + constellation only)",
+                         Franken-constellation library (Decalogue P1: std + constellation only; \
+                         foreign tooling ships only as out-of-process quarantined adapters per \
+                         ruling ADPT-2026-07, never as a dependency edge)",
                         m.name
                     ),
                 });

@@ -172,6 +172,27 @@ shortcuts in production paths.
 Development-only references and comparison oracles are acceptable only when they
 are isolated, documented, and not in the production dependency graph.
 
+### External-Adapter Ruling (ADPT-2026-07)
+
+Decision record: `fs-govern::adapter_policy` (bead f85xj.11.1, ratified under
+explicit owner delegation on 2026-07-23). The tension between the Franken-only
+production graph and real-world CAD/CAE adoption is resolved as OFFICIAL
+QUARANTINED ADAPTERS:
+
+- FrankenSim MAY ship optional official adapter binaries wrapping foreign
+  tools (OpenCASCADE/gmsh-class kernels) as separate out-of-process
+  executables with separate distribution.
+- Adapters are never build-time or link-time dependencies of any workspace
+  crate. The production runtime dependency graph stays Franken-only and
+  `check-deps` enforcement is unchanged.
+- Adapter output enters the workspace only through the fs-io quarantine
+  boundary: evidence-bearing receipts, Estimate-only authority, and the
+  adapter identity and version recorded in the receipt. An adapter can never
+  mint authority by itself.
+- In-process foreign kernels (FFI plugins) remain forbidden in production
+  paths. Re-opening that option requires a full backend trust-contract
+  design through a new decision record, not ad-hoc FFI.
+
 ### Unsafe Code
 
 Unsafe is a last resort and must be treated as an auditable boundary:
