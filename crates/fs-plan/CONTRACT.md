@@ -11,9 +11,10 @@ Plan §11.4 (Bet 12), Decalogue P4: every operator publishes an error model
 and a cost model; composition composes the models, so "how accurate is
 this number and where did the error come from" — and "where did the
 seconds go" — are queries over attribution trees. Layer: L6 (HELM).
-Runtime deps: `std`, fs-blake3, fs-geom, fs-ledger; feature-gated VoI uses
-asupersync for cancellation-aware decision-oracle evaluation and fs-eproc for
-the anytime-valid audit threshold used by authenticated authority.
+Runtime deps: `std`, fs-blake3, fs-evidence, fs-geom, fs-ladder, fs-ledger;
+feature-gated VoI uses asupersync for cancellation-aware decision-oracle
+evaluation and fs-eproc for the anytime-valid audit threshold used by
+authenticated authority.
 
 ## Public types and semantics
 
@@ -28,6 +29,36 @@ the anytime-valid audit threshold used by authenticated authority.
   unchanged. `calibration()` audits held-out band coverage;
   `median_rel_error()` is the improvement metric. Empty probe sets refuse
   rather than returning vacuous perfect scores.
+- `fidelity_campaign::{CampaignRun, EdgeProbeCampaign, CampaignAuthority,
+  fit_fidelity_campaign, FittedCampaign, record_fidelity_campaign}` (bead
+  f85xj.10.2) — L6 population of `fs-ladder` evidence edges from exact
+  adjacent-fidelity paired executions. Every run binds an exact execution
+  receipt root, stable corpus case, predeclared fit/held-out partition,
+  complete finite parameter point, QoIs, optional independent reference,
+  problem-size feature, and measured source/target wall seconds. One edge fit
+  requires at least `MIN_OBS` fit pairs plus one held-out pair, enforces one
+  exact parameter schema through `fs-evidence::DiscrepancyModel`, and checks
+  every run against one explicit QoI/regime bin. It emits canonical schema-v1
+  discrepancy and two-endpoint cost artifacts whose raw content hashes become
+  the graph's `DiscrepancyModelRef` and `CostModelRef`. The artifacts bind the
+  corpus manifest/version, machine fingerprint, model build roots, exact run
+  set and partition, QoI/unit, regime bin, observed discrepancy statistics,
+  held-out coverage, cost predictions/calibration, and source/target model
+  identities. A target informativeness predicate is derived only when EVERY
+  held-out run has an independent reference, the target is no worse than the
+  source on every reference, and strictly better on at least one. Otherwise
+  the populated edge carries `Informativeness::unknown`; measured disagreement
+  never silently becomes epistemic ordering.
+  `CampaignGap` keeps unexecuted candidate comparisons and their actionable
+  acquisition reasons in the same canonical campaign artifact.
+  `record_fidelity_campaign` owns one transaction and publishes the
+  graph-before artifact as input, every discrepancy/cost artifact plus the
+  graph-after and campaign-diff artifacts as outputs, then finishes one
+  deterministic Five-Explicits ledger operation before commit. A caller-owned
+  transaction refuses. Primary and rollback failures remain distinguishable.
+  `assess_freshness` is an exact pure comparison: changed corpus identity or
+  generation, machine fingerprint, missing model build, or changed build
+  stales the campaign with every reason retained.
 - `ErrorLedger` — attribution tree over the plan's canonical sources
   (geometry, discretization, algebraic, surrogate, statistical,
   model-form), each entry carrying a non-blank operator identity and its
@@ -269,6 +300,19 @@ the anytime-valid audit threshold used by authenticated authority.
 6. Tune evidence is scoped and transactional: no sample from a different
    machine, shape key, producer schema, operation, build, or artifact lineage
    can influence a returned model, and any failed validation returns no model.
+7. Fidelity-campaign fit and held-out partitions are disjoint by construction:
+   one run identity occurs once, roles are fixed before fitting, and held-out
+   observations never enter either discrepancy or cost fit. Run arrival order
+   is nonsemantic; exact receipt roots determine canonical order.
+8. A populated fidelity edge does not imply target ordering. Positive
+   informativeness is held-out-reference-derived under the exact edge regime;
+   absent, incomplete, tied, or contradictory references produce explicit
+   `UNKNOWN`.
+9. Fidelity campaign publication is atomic: graph-before, every fit,
+   graph-after, campaign diff, operation lineage, and terminal outcome commit
+   together or are rolled back together. The campaign artifact identifies
+   semantic graph before/after roots separately from ledger raw-byte artifact
+   identities.
 
 ## Error model
 
@@ -278,7 +322,9 @@ nonfinite arithmetic, empty evaluation), `PlanOracleError`, `TuneModelError`,
 stage or aggregate), `PlanInputError`/`AllocationError`, and feature-gated
 `VoiError` are structured and teaching; none panic across the boundary.
 `TuneModelError` preserves ledger I/O errors and distinguishes absence, schema
-failure, scope mismatch, and numerical refusal.
+failure, scope mismatch, and numerical refusal. `CampaignError` preserves
+bounded admission, discrepancy, cost, graph, ledger, and primary-plus-rollback
+cleanup failures without turning a failed fit into an empty or unknown edge.
 
 ## Determinism class
 
@@ -303,6 +349,13 @@ reproducible only on one ISA/libm build. Promote by routing through
 `fs_math::det` and registering in `check-libm` if cross-ISA cost replay is
 ever claimed.
 
+Fidelity-campaign canonical encodings are tagged, versioned, length framed,
+and sorted by exact run/edge/model identities. They bind `f64::to_bits()` with
+negative zero canonicalized to positive zero. Their raw artifact hashes are
+ISA-independent for identical supplied observations, but wall-time samples
+are intentionally machine/run-specific and cost-fit `ln`/`exp` inherits the
+same SAME-ISA numerical boundary above.
+
 ## Cancellation behavior
 
 Library-owned work is bounded pure computation or bounded ledger reads. Cost-model
@@ -322,6 +375,15 @@ implementations must also checkpoint long-running internal work and refuse an
 insufficient charge. `LiveDecision` remains invocation-bounded only: it cannot
 preempt or enforce a time or memory limit on an arbitrary synchronous closure.
 
+Fidelity campaigns admit at most 256 edges, 4,096 paired runs per edge, 1,024
+explicit gaps, bounded names/machine fingerprints, and the lower-layer graph,
+discrepancy, and cost caps before publication. Fitting and one ledger
+transaction are synchronous and do not accept a `Cx`; campaign execution and
+measurement happen before this API and remain responsible for their own
+cancellation/drain semantics. No cancellation-safe partial publication is
+claimed: the recorder either commits its short bounded transaction or
+attempts rollback and reports both failures.
+
 ## No-claim boundaries
 
 - A structurally and cryptographically linked roofline row proves provenance
@@ -335,6 +397,26 @@ preempt or enforce a time or memory limit on an arbitrary synchronous closure.
 - `PlanCostOracle` costs are predictive empirical estimates, not worst-case
   wall-time certificates. Its observed error maximum is retrospective; the Rep
   Router therefore uses it only to enlarge an uncertified declaration.
+- Fidelity campaign run roots, corpus roots, machine fingerprints, model-build
+  roots, measured seconds, and optional independent references are
+  caller-supplied exact bytes/data. Canonical retention proves equality and
+  lineage, not that an external runner, instrument, corpus authority, clock,
+  or build system reported them truthfully. A physical or cryptographically
+  authenticated receipt verifier remains an orchestration policy above this
+  module.
+- `DiscrepancyModel` v1 supplies observed sample statistics, not an enclosure
+  between probes. Held-out discrepancy coverage is retrospective. A populated
+  edge is therefore Estimated evidence; it cannot mint Verified/Validated
+  scientific color or certify a cheap model adequate at an unvisited point.
+- Held-out reference dominance establishes only the sampled target ordering in
+  the exact recorded regime bin. It is not a universal theorem, statistical
+  significance claim, physical-validation claim, or permission to extrapolate.
+  Missing references deliberately leave informativeness `UNKNOWN`.
+- Cost artifacts retain both endpoint observations and deterministic refits,
+  but remain empirical machine-specific estimates. They are not
+  `SealedCostModel::ExactRooflineReceipt`, do not impersonate roofline
+  authority, and stale immediately when the caller-supplied current machine,
+  corpus, or model-build authority differs.
 - The sealed carrier proves WHO minted a model and from WHAT validated
   row; it does not re-verify the ledger at prediction time (staleness
   is assessed only when a consumer supplies its current time, machine,
@@ -382,6 +464,20 @@ dependency-receipt ceiling; the paired retained cap+1 case returns
 refusals, stable degenerate fits, band ordering, extrapolation, transactional
 invalid observations, exact caps plus limit+1, empty evaluation, hostile
 duplicate-key receipts, and producer-statistic rederivation.
+
+`tests/fidelity_campaign.rs` is the f85xj.10.2 G0/G3 battery. It executes three
+cooling comparisons (linearized/full-T4 surface radiation, fully-developed/
+Hausen duct correlations, and Dittus-Boelter/Gnielinski duct correlations),
+retains their exact paired run sets and cost/discrepancy fits, proves only the
+independent-reference radiation edge gains informativeness, preserves two
+explicit unavailable-RANS/resolved-PCB gaps, and also refuses to mislabel the
+current Churchill-Chu vertical-plate correlation and periodic horizontal
+Rayleigh-Benard thermal LBM as a shared-validity pair. It records one complete
+atomic ledger campaign, verifies artifact kinds and output lineage, and checks
+a clean ledger. A separate synthetic truth fixture recovers the planted
+discrepancy and cost calibration, proves input-order-invariant identities, and
+exercises partition/regime refusals. Freshness tests independently move corpus
+identity, corpus generation, machine fingerprint, and target build identity.
 
 `tests/alloc_battery.rs` covers budget-safe allocation, typed input/work
 refusals, online re-planning, oracle bounds, evaluator safety, and tropical

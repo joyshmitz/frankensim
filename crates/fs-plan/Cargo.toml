@@ -14,15 +14,19 @@ layer = "L6"
 asupersync = { path = "../../../asupersync", optional = true }
 fs-dfo = { path = "../fs-dfo", optional = true }
 fs-blake3 = { path = "../fs-blake3" }
+fs-evidence = { path = "../fs-evidence" }
 fs-eproc = { path = "../fs-eproc", optional = true }
 fs-geom = { path = "../fs-geom" }
+fs-ladder = { path = "../fs-ladder" }
 fs-ledger = { path = "../fs-ledger" }
 
 [dev-dependencies]
 asupersync = { path = "../../../asupersync", features = ["test-internals"] }
 fs-alloc = { path = "../fs-alloc" }
-fs-evidence = { path = "../fs-evidence" }
+fs-conduction = { path = "../fs-conduction" }
+fs-convection = { path = "../fs-convection" }
 fs-exec = { path = "../fs-exec" }
+fs-matdb = { path = "../fs-matdb" }
 
 [features]
 # [F]-gated per the Ambition-Tag rule (bead knh1.6, Proposal C).
@@ -39,6 +43,9 @@ name = "alloc_battery"
 [[test]]
 name = "moonshot_battery"
 required-features = ["moonshot-planner"]
+
+[[test]]
+name = "fidelity_campaign"
 
 [lints]
 workspace = true

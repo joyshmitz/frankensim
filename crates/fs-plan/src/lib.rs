@@ -19,6 +19,7 @@
 
 pub mod alloc;
 pub mod cost;
+pub mod fidelity_campaign;
 pub mod ledgers;
 #[cfg(feature = "moonshot-planner")]
 pub mod moonshot;
@@ -35,6 +36,13 @@ pub use alloc::{
 pub use cost::{
     CostModel, CostObservation, CostPrediction, CostRefusal, MAX_COST_EVALUATION_OBSERVATIONS,
     MAX_COST_OBSERVATIONS, MIN_OBS,
+};
+pub use fidelity_campaign::{
+    CAMPAIGN_ARTIFACT_KIND, CAMPAIGN_SCHEMA_VERSION, CampaignAuthority, CampaignError,
+    CampaignFreshness, CampaignGap, CampaignLedgerReceipt, CampaignRun, EdgeProbeCampaign,
+    FIDELITY_COST_ARTIFACT_KIND, FIDELITY_DISCREPANCY_ARTIFACT_KIND, FIDELITY_GRAPH_ARTIFACT_KIND,
+    FittedCampaign, FittedCampaignEdge, FreshnessReason, RunPartition, fit_fidelity_campaign,
+    record_fidelity_campaign,
 };
 pub use ledgers::{
     Contribution, ErrorLedger, ErrorSource, LedgerDefect, Rigor, TimeLedger, TimeLedgerDefect,

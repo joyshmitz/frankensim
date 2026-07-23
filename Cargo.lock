@@ -1694,12 +1694,16 @@ dependencies = [
  "asupersync",
  "fs-alloc",
  "fs-blake3",
+ "fs-conduction",
+ "fs-convection",
  "fs-dfo",
  "fs-eproc",
  "fs-evidence",
  "fs-exec",
  "fs-geom",
+ "fs-ladder",
  "fs-ledger",
+ "fs-matdb",
 ]
 
 [[package]]
