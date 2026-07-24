@@ -743,7 +743,11 @@ fn digitization_subsamples_stay_within_declared_half_widths() {
 fn audit_is_deterministic_and_warns_for_seed_gaps() {
     let audit = corpus().audit();
     assert!(audit.is_clean());
-    assert_eq!(audit.rows().len(), 5 + thermal_level_a_cases().len());
+    assert_eq!(
+        audit.rows().len(),
+        5 + thermal_level_a_cases().len()
+            + fs_vvreg::thermal_level_b::thermal_level_b_cases().len()
+    );
     for row in audit.rows() {
         assert_eq!(row.mandatory_present(), 15);
         assert_eq!(row.mandatory_total(), 15);
@@ -756,6 +760,9 @@ fn audit_is_deterministic_and_warns_for_seed_gaps() {
             "fs-benchmark-cht-query-v1 | 15/15 | 0/2 | validation | B | cross-code-agreement | estimated | WARN"
         )
     );
+    assert!(rendered.contains(
+        "thermal-b-orthotropic-rotated-v1 | 15/15 | 0/2 | validation | B | cross-code-agreement | estimated | WARN"
+    ));
     assert!(rendered.contains(
         "martin-moyce-1952-square-column | 15/15 | 0/2 | validation | C | controlled-experimental-validation | estimated | WARN"
     ));

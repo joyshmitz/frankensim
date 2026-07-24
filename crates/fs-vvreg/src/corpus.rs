@@ -22,6 +22,10 @@ use crate::portfolio::{EvidenceAxis, axes_for_level};
 use crate::thermal_level_a::{
     THERMAL_LEVEL_A_MANIFEST, ThermalLevelAAcceptance, ThermalLevelACase, thermal_level_a_cases,
 };
+use crate::thermal_level_b::{
+    THERMAL_LEVEL_B_MANIFEST, THERMAL_LEVEL_B_MANIFEST_LOCATOR, ThermalLevelBCase,
+    ThermalLevelBReference, thermal_level_b_cases, thermal_level_b_reference,
+};
 
 /// Current canonical corpus wire and identity schema.
 ///
@@ -1072,6 +1076,19 @@ static CORPUS: LazyLock<CorpusRegistry> = LazyLock::new(|| {
             .iter()
             .map(seed_thermal_level_a_dataset),
     );
+    datasets.extend(thermal_level_b_cases().iter().map(|case| {
+        // Fail closed and loud: a corrupted committed manifest must never
+        // seed a silently smaller or unbound registry.
+        let reference = thermal_level_b_reference(case.id)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "committed Level-B manifest {THERMAL_LEVEL_B_MANIFEST_LOCATOR} failed \
+                     fail-closed verification: {error}"
+                )
+            })
+            .expect("verification guarantees every catalog case has a manifest block");
+        seed_thermal_level_b_dataset(case, reference)
+    }));
     datasets.sort_by(|a, b| a.id.cmp(&b.id));
     CorpusRegistry {
         datasets,
@@ -1080,9 +1097,12 @@ static CORPUS: LazyLock<CorpusRegistry> = LazyLock::new(|| {
 });
 
 /// Seeded workspace corpus: reference-only Level-A thermal rows, one explicitly
-/// synthetic Level-B CHT fixture, Martin-Moyce, and three published
-/// electronics-cooling Level-C records. Every query remains non-certifying;
-/// source, metrology, and acceptance-authority gaps remain explicit.
+/// synthetic Level-B CHT fixture, four external cross-code Level-B thermal
+/// references (fail-closed against their retained manifest; a corrupted
+/// manifest panics here rather than seeding a smaller registry), Martin-Moyce,
+/// and three published electronics-cooling Level-C records. Every query
+/// remains non-certifying; source, metrology, and acceptance-authority gaps
+/// remain explicit.
 #[must_use]
 pub fn corpus() -> &'static CorpusRegistry {
     &CORPUS
@@ -1269,6 +1289,99 @@ fn seed_cht_dataset() -> CorpusDataset {
                 lo: QtyAny::dimensionless(250.0),
                 hi: QtyAny::dimensionless(250.0),
             }],
+        }],
+        evidence_level: EvidenceLevel::CrossCode,
+    }
+}
+
+fn seed_thermal_level_b_dataset(
+    case: &ThermalLevelBCase,
+    reference: &ThermalLevelBReference,
+) -> CorpusDataset {
+    let retained = hash_bytes(THERMAL_LEVEL_B_MANIFEST);
+    let temperature = Dims([0, 0, 0, 1, 0, 0]);
+    let tets = 6 * case.mesh_counts[0] * case.mesh_counts[1] * case.mesh_counts[2];
+    let context = vec![ContextRange {
+        name: "same-discretization-tet-count".to_string(),
+        lo: QtyAny::dimensionless(tets as f64),
+        hi: QtyAny::dimensionless(tets as f64),
+    }];
+    CorpusDataset {
+        id: case.id.to_string(),
+        title: case.title.to_string(),
+        raw_payload: PayloadRetention::DerivedOnly {
+            retained: CorpusArtifact {
+                digest: retained,
+                byte_len: THERMAL_LEVEL_B_MANIFEST.len() as u64,
+                media_type: "text/tab-separated-values".to_string(),
+                locator: THERMAL_LEVEL_B_MANIFEST_LOCATOR.to_string(),
+            },
+            reason:
+                "the retained manifest tabulates an external solver's frozen output; no sensor \
+                 acquisition occurred"
+                    .to_string(),
+        },
+        sensors: vec![SensorRecord {
+            id: "cross-code-probe-temperatures".to_string(),
+            instrument_id: unavailable("an external FEM solve has no physical instrument"),
+            raw_channel: "probe-temperature-k".to_string(),
+            quantity_dims: temperature,
+            calibration: unavailable(
+                "a cross-code reference has a pinned software environment, not a calibration \
+                 certificate",
+            ),
+            placement: unavailable(
+                "probes are mesh vertex grid indices, not physical sensor placements",
+            ),
+            uncertainty: MeasurementUncertainty::Unstated,
+        }],
+        geometry: unavailable(
+            "the case geometry is an idealized declared box in the committed deck; no as-built \
+             artifact is bound",
+        ),
+        environment: unavailable(
+            "a numerical cross-code solve has no physical acquisition environment",
+        ),
+        partition: DatasetPartition::Validation,
+        preprocessing: PreprocessingLineage::Complete(vec![PreprocessingStep {
+            ordinal: 0,
+            operation: "vvref-skfem-deck-solve-freeze".to_string(),
+            version: "1".to_string(),
+            input: retained,
+            output: retained,
+        }]),
+        final_artifact: retained,
+        context_of_use: context.clone(),
+        license: Availability::Available(CorpusLicense {
+            identifier: "MIT".to_string(),
+            terms: "Repository-authored deck and pinned-environment external-solver output; \
+                    redistribution allowed"
+                .to_string(),
+            redistribution: RedistributionPolicy::Allowed,
+        }),
+        provenance: AcquisitionProvenance {
+            measured_by: format!("{} / {}", reference.external_code, reference.linear_solver),
+            organization: "FrankenSim".to_string(),
+            measured_on: unavailable(
+                "the manifest records a pinned environment and deck identity, not a physical \
+                 acquisition date",
+            ),
+            source_record: format!("{THERMAL_LEVEL_B_MANIFEST_LOCATOR}:{}", case.id),
+        },
+        retention: RetentionPolicy {
+            class: RetentionClass::Permanent,
+            preserve_raw: true,
+            preserve_calibration: true,
+            policy_id: "frankensim-vv-corpus-permanent-v1".to_string(),
+        },
+        acceptance_envelopes: vec![AcceptanceRecord {
+            metric: "probe-temperature-k".to_string(),
+            dims: temperature,
+            envelope: CorpusEnvelope::Tolerance {
+                atol: case.acceptance_atol_k,
+                rtol: 0.0,
+            },
+            regime: context,
         }],
         evidence_level: EvidenceLevel::CrossCode,
     }

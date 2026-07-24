@@ -213,6 +213,20 @@ body.
   targets spanning P1/P2 primal and adjoint order, mixed Neumann/Robin
   boundaries, and anisotropic nonlinear conductivity. Each case declares
   dimensions, formula semantics, context, and an acceptance rule.
+- `thermal_level_b::thermal_level_b_cases` — 4 typed cross-code case
+  definitions (convective block with a bilinear source, declared rotated-frame
+  tensor, element-mean `k(T)` slab, 3-D film fin) bound to one retained
+  external-reference TSV manifest frozen by the pinned `tools/vvref`
+  scikit-fem deck runner. `parse_thermal_level_b_manifest` is fail-closed;
+  `verify_spec_echo` requires every load-bearing echoed spec number to be
+  BIT-IDENTICAL to the catalog constants; `verify_probe_grid` recomputes
+  probe positions with the fixture arithmetic `index * (extent / count)` and
+  requires bit-identity, witnessing cross-language Kuhn-mesh parity without
+  running the external stack; `thermal_level_b_deck_bytes` exposes committed
+  deck bytes whose BLAKE3 must match the manifest's recorded deck hash. The
+  external run's own known-answer self-check must have recorded `pass` or
+  parsing refuses. Declared per-case probe-temperature envelopes are
+  investigation triggers, never silently widened.
 
 ## Invariants
 
@@ -311,7 +325,10 @@ body.
   hash, and audit rows but cannot return evidence-bearing query results. The
   workspace seed behind `corpus()` is the only query authority. It includes 19
   Level-A thermal reference/target definitions, an explicitly synthetic
-  Level-B migration of `fs-benchmark` CHT query `cht-q3`, the retained
+  Level-B migration of `fs-benchmark` CHT query `cht-q3`, four external
+  cross-code Level-B thermal references (seeded only after their retained
+  manifest passes fail-closed verification; a corrupted manifest panics the
+  seed rather than shrinking the registry), the retained
   Martin-Moyce 1952 digitized square-column curve, and three published
   electronics-cooling Level-C records: Pires-Fonseca flat/strip fins, Nunes
   HFE-7100 micro-pin fins, and Markal-Kul fin distributions. The new records
@@ -529,6 +546,18 @@ target coverage for two element degrees, Neumann/Robin boundaries, nonlinear
 anisotropy, and primal/adjoint order. These tests verify reference definitions
 and targets, not thermal-kernel convergence.
 
+`tests/thermal_level_b.rs`: G0 catalog well-formedness (unique ids, positive
+extents/counts, symmetric-PD tensor via leading minors, increasing positive
+`k(T)` knots, picard-iff-nonlinear, in-grid probes); fail-closed verification
+of the committed manifest; BLAKE3 deck-byte binding; typed parser refusals for
+unknown kinds, wrong column counts, non-finite/unparsable numbers, duplicate
+keys, non-dense probe indices, missing mandatory metadata, and a recorded
+external self-check other than `pass`; ULP-scale spec-echo and probe-position
+tampers refused bit-exactly; nonlinear-case iteration-count sanity; and corpus
+registration with `CrossCode` level, `Estimated` physical cap, retained-locator
+identity, and pinned per-case envelopes. The executing cross-code comparison
+itself lives in `fs-conduction/tests/level_b_crosscode.rs`.
+
 ## No-claim boundaries
 
 - Admission proves the ENTRY is fully pinned; it does not prove any solver
@@ -662,3 +691,15 @@ and targets, not thermal-kernel convergence.
   therefore not a G1 pass, not solution verification, and not evidence that a
   thermal kernel exists; a consuming crate must retain its own comparison or
   `fs-mms::OrderVerdict` receipt before making that claim.
+- The four cross-code Level-B rows are SAME-DISCRETIZATION parity references:
+  by construction the external code assembles the identical discrete system
+  (bit-identical Kuhn mesh, P1, element-mean `k(T)`, consistent source/Robin
+  mass), so within-envelope agreement checks independent assembly/boundary/
+  solver implementations and says NOTHING about discretization error, mesh
+  convergence, or physical validity. Two codes agreeing is not truth: every
+  row stays `Estimated` with a numerical no-claim, and the external code
+  (scikit-fem/scipy) is a development-only oracle that never enters the
+  runtime dependency graph. This corpus does not yet contain any
+  CalculiX/Elmer-class independent-discretization reference; a case solved on
+  a DIFFERENT mesh or element family would need new case ids, new envelopes,
+  and its own corpus version bump.

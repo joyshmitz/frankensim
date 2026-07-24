@@ -50,6 +50,10 @@ pub mod portfolio;
 /// Reference-only Level-A thermal analytic values and G1 order targets.
 pub mod thermal_level_a;
 
+/// Level-B thermal cross-code frozen references with fail-closed
+/// spec-echo and mesh-parity binding.
+pub mod thermal_level_b;
+
 /// Versioned standards-edition, source-lineage, and derived-rule manifest.
 pub mod standards;
 

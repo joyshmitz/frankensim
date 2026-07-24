@@ -332,6 +332,17 @@ None. Everything here is `[S]` solid work on the default path.
   difference from an isotropic-FR4 placeholder; material receipts remain on
   the nominal solve report. This is model integration evidence, not physical
   validation.
+- `tests/level_b_crosscode.rs` — the executing Level-B cross-code lane
+  (bead f85xj.4.3): all four `fs_vvreg::thermal_level_b` cases are rebuilt
+  from their typed catalog definitions, solved with this crate, and compared
+  probe-by-probe against frozen scikit-fem/SuperLU references within the
+  declared envelopes; the canonical BLAKE3 mesh-identity hash must match the
+  external run's record (bit-identical Kuhn mesh across languages); an
+  interpolation utility is proven exact on a synthetic affine field and
+  consistent with nodal extraction; the nonlinear case must take more than
+  one Picard step; each solve's energy closure must stay citable. Agreement
+  is same-discretization independent-implementation evidence with Estimated
+  colour — not discretization error, not physical validation.
 
 Stable evidence locator (historical wording): `Every test prints a JSON-lines verdict`.
 The precise current scope is narrower: every analytic comparison and MMS gate
