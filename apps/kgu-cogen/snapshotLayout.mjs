@@ -283,6 +283,10 @@ export const LIMIT_FIELDS = Object.freeze([
   "METER_HIGH_VOLTAGE_CAPACITY",
   "METER_LOSS_OF_VOLTAGE_CAPACITY",
   "METER_OVERFLOW_OVERWRITES_OLDEST", // 1: a full journal displaces its oldest record; 0: it keeps it
+  // Static friction that holds the stopped shaft, and the speed below which it stops an
+  // undriven shaft within one sub-step. At rest SPEED_RPM is exactly 0.
+  "SHAFT_STATIC_FRICTION_NM",
+  "SHAFT_REST_SPEED_RPM",
 ]);
 
 /** Index of every entry of `limits()` by name. */

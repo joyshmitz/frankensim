@@ -357,6 +357,39 @@ impl FrictionCard {
     }
 }
 
+/// Static friction of the shaft line: what holds a stopped shaft.
+///
+/// Origin: **assumed** equal to the speed-independent part of the engine's
+/// friction ([`FrictionCard`]), about 585 N m with the fitted total. No
+/// breakaway measurement stands behind it.
+///
+/// The regularised friction law alone never brings the shaft to rest: below
+/// its speed scale it is viscous and the speed only decays. With this torque
+/// the shaft stops: when nothing is commanded to drive it and it is slower
+/// than this torque would stop it within one step, the step ends at rest.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StandstillCard {
+    /// Static friction torque [N m].
+    pub static_friction_torque_nm: f64,
+}
+
+impl StandstillCard {
+    /// Static friction equal to the constant part of `friction`.
+    #[must_use]
+    pub fn from_friction(friction: &FrictionCard) -> Self {
+        Self {
+            static_friction_torque_nm: friction.rated_torque_nm * friction.constant_share,
+        }
+    }
+
+    /// The speed below which static friction stops an undriven inertia
+    /// within a step of `dt_s` [rad/s].
+    #[must_use]
+    pub fn rest_speed_rad_s(&self, inertia_kg_m2: f64, dt_s: f64) -> f64 {
+        self.static_friction_torque_nm * dt_s / inertia_kg_m2
+    }
+}
+
 /// Indicated power of the engine against the fuel power it burns.
 ///
 /// Origin: **fitted** to the passport's electrical efficiency. For an

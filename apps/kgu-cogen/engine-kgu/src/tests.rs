@@ -20,7 +20,7 @@ use crate::heat::{
 };
 use crate::components::{
     GasControlValveComponent, GasEngineComponent, GasEngineState, GasValveState, GeneratorState,
-    StarterMotorComponent, StarterState, SynchronousGeneratorComponent,
+    ShaftComponent, StarterMotorComponent, StarterState, SynchronousGeneratorComponent,
 };
 use crate::controller::{
     ControllerState, GensetControllerComponent, OperatorSignals, Sequence, alarm, refusal,
@@ -202,6 +202,89 @@ fn starter_conforms_engaged_released_and_overrun() {
         })
         .expect("starter conformance");
     }
+}
+
+#[test]
+fn shaft_conforms_turning_stopping_and_at_rest_and_stops_at_exactly_zero() {
+    use crate::cards::{SHAFT_INERTIA_KG_M2, StandstillCard};
+    use fs_ports::component::Component;
+    use fs_system::elements::Motion;
+
+    let card = StandstillCard::from_friction(&fitted_work_card().friction());
+    let shaft = ShaftComponent::new(SHAFT_INERTIA_KG_M2, card);
+    let dt = 0.01;
+    // About 585 N m of static friction stop 60 kg m2 from 0.097 rad/s within 10 ms.
+    let rest_speed = card.rest_speed_rad_s(SHAFT_INERTIA_KG_M2, dt);
+    assert!(rest_speed > 0.05 && rest_speed < 0.2, "rest speed {rest_speed} rad/s");
+    let at = |velocity_m_s: f64| Motion {
+        position_m: 3.0,
+        velocity_m_s,
+    };
+    let stale = at(1.0);
+
+    // Inputs: net torque, room temperature, starter engaged, ignition on.
+    for (velocity, torque, starter, ignition) in [
+        (RATED_OMEGA_RAD_S, -900.0, 0.0, 0.0),
+        (RATED_OMEGA_RAD_S, 300.0, 0.0, 1.0),
+        (1.0, -400.0, 0.0, 0.0),
+        (0.5 * rest_speed, -20.0, 0.0, 0.0),
+        (-0.5 * rest_speed, 20.0, 0.0, 0.0),
+        (0.5 * rest_speed, 2_000.0, 1.0, 0.0),
+        (0.5 * rest_speed, 40.0, 0.0, 1.0),
+        (0.0, 0.0, 0.0, 0.0),
+        (0.0, 2_500.0, 1.0, 0.0),
+        (1.0e-300, 0.0, 0.0, 0.0),
+    ] {
+        let inputs = [torque, 303.15, starter, ignition];
+        with_clock_free_cx(|cx| {
+            check_component(
+                &shaft,
+                &Case {
+                    state: &at(velocity),
+                    stale: &stale,
+                    dt_s: dt,
+                    inputs: &inputs,
+                },
+                cx,
+            )
+        })
+        .expect("shaft conformance");
+    }
+
+    let step = |velocity: f64, torque: f64, starter: f64| {
+        let inputs = [torque, 303.15, starter, 0.0];
+        let mut next = stale;
+        let mut outputs = [0.0; 2];
+        with_clock_free_cx(|cx| shaft.propose(&at(velocity), dt, &inputs, &mut next, &mut outputs, cx))
+            .expect("shaft step");
+        (next, outputs)
+    };
+
+    // Undriven and slower than static friction stops in a step: at rest, exactly. The mean
+    // speed was half of what it had; what it had as kinetic energy, with the work done on
+    // it in the step, leaves as heat.
+    let slow = 0.6 * rest_speed;
+    let (stopped, out) = step(slow, -20.0, 0.0);
+    assert_eq!(stopped.velocity_m_s, 0.0);
+    assert_eq!(out[0], 0.5 * slow);
+    assert!((stopped.position_m - (3.0 + dt * 0.5 * slow)).abs() < 1.0e-15);
+    let kinetic = 0.5 * SHAFT_INERTIA_KG_M2 * slow * slow;
+    let work = dt * -20.0 * 0.5 * slow;
+    assert!((-out[1] * dt - (kinetic + work)).abs() < 1.0e-12 * kinetic, "heat {} J", -out[1] * dt);
+    // The speed that could no longer be differenced is stopped like any other.
+    assert_eq!(step(1.0e-300, 0.0, 0.0).0.velocity_m_s, 0.0);
+    // At rest it stays at rest and releases nothing, whatever small torque is on it.
+    let (resting, out) = step(0.0, 5.0, 0.0);
+    assert_eq!((resting.velocity_m_s, out[0], out[1]), (0.0, 0.0, 0.0));
+    assert_eq!(resting.position_m, 3.0);
+
+    // Just faster than that, or with the starter commanded, it is the kernel's inertia.
+    let (turning, out) = step(1.5 * rest_speed, -20.0, 0.0);
+    assert_eq!(turning.velocity_m_s, 1.5 * rest_speed + dt * -20.0 / SHAFT_INERTIA_KG_M2);
+    assert_eq!(out[1], 0.0);
+    let (cranked, out) = step(0.0, 2_500.0, 1.0);
+    assert_eq!(cranked.velocity_m_s, dt * 2_500.0 / SHAFT_INERTIA_KG_M2);
+    assert_eq!(out[0], 0.5 * cranked.velocity_m_s);
 }
 
 #[test]
@@ -2386,4 +2469,184 @@ fn a_start_without_automatic_synchronisation_waits_for_the_command_or_the_close_
     advance(&mut sim, 0.02);
     assert_eq!(sim.snapshot()[snap::BREAKER_CLOSED], 1.0);
     assert!(events_of(&sim, event_kind::SYNCHRONISE_COMMAND).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Standstill: the shaft comes to rest and the unit stands, for hours
+// ---------------------------------------------------------------------------
+
+/// Stand for `seconds`, checking in every minute that the shaft is at exactly
+/// zero speed and the model still steps.
+fn stand(sim: &mut KguSim, seconds: f64) {
+    let minutes = (seconds / 60.0).ceil() as usize;
+    for _ in 0..minutes {
+        advance(sim, seconds / minutes as f64);
+        let s = sim.snapshot();
+        assert_eq!(s[snap::SPEED_RPM].to_bits(), 0.0_f64.to_bits(), "at t {} s", s[snap::TIME_S]);
+        assert_eq!(s[snap::KINETIC_ENERGY_KJ], 0.0);
+    }
+}
+
+/// Start, wait for the breaker and for the load; returns the time to the bus.
+fn start_and_load(sim: &mut KguSim, load_pct: f64) -> f64 {
+    sim.set_load_ramp_pct_per_min(300.0);
+    sim.set_load_setpoint_pct(load_pct);
+    sim.cmd_start();
+    let to_bus = advance_until(sim, 200.0, "breaker closed", |s| s[snap::BREAKER_CLOSED] == 1.0);
+    advance_until(sim, 120.0, "load reference", |s| {
+        (s[snap::LOAD_REFERENCE_PCT] - load_pct).abs() < 1.0e-9
+    });
+    advance(sim, 30.0);
+    let s = sim.snapshot();
+    assert!((s[snap::ELECTRIC_POWER_KW] - 10.0 * load_pct).abs() < 0.5, "{}", grid_side_summary(&s));
+    assert!(ledger_relative_residual(&s) < 1.0e-9);
+    to_bus
+}
+
+#[test]
+fn after_a_normal_stop_the_shaft_is_at_rest_for_two_hours_and_the_unit_starts_again() {
+    let mut sim = KguSim::new();
+    let first_to_bus = start_and_load(&mut sim, 60.0);
+    sim.cmd_stop();
+    advance_until(&mut sim, 500.0, "coasting", |s| {
+        s[snap::SEQUENCE_STEP] == f64::from(Sequence::CoastDown.index())
+    });
+    // Not inputs: how long the shaft takes to the controller's standstill level and to
+    // rest, and that rest is exactly zero speed, not a small number.
+    let to_ready = advance_until(&mut sim, 60.0, "ready", |s| s[snap::STATE_CODE] == 0.0);
+    let to_rest = to_ready
+        + advance_until(&mut sim, 5.0, "rest", |s| s[snap::SPEED_RPM] == 0.0);
+    assert!(to_ready > 11.0 && to_ready < 12.5, "ready {to_ready} s after the gas was shut");
+    assert!(to_rest - to_ready < 0.5, "at rest {to_rest} s after the gas was shut");
+    // The stop released what was left of the kinetic energy as heat: less than the
+    // kinetic energy at the rest speed, and more than nothing.
+    let released = sim.plant.sink_heat_j(crate::plant::sink::STANDSTILL);
+    assert!(released > 0.0 && released < 0.3, "static friction released {released} J");
+    assert!(ledger_relative_residual(&sim.snapshot()) < 1.0e-9);
+
+    stand(&mut sim, 7_200.0);
+    let rested = sim.snapshot();
+    assert_eq!(rested[snap::STATE_CODE], 0.0);
+    assert!(ledger_relative_residual(&rested) < 1.0e-9);
+    assert_eq!(sim.plant.sink_heat_j(crate::plant::sink::STANDSTILL), released, "nothing more");
+    // The coolant has cooled towards the room in two hours; nothing else moved.
+    assert!(rested[snap::COOLANT_SUPPLY_C] < 80.0 && rested[snap::COOLANT_SUPPLY_C] > 30.0);
+
+    let second_to_bus = start_and_load(&mut sim, 60.0);
+    assert!(
+        (second_to_bus - first_to_bus).abs() < 25.0,
+        "to the bus in {second_to_bus} s after standing, {first_to_bus} s the first time"
+    );
+    assert_eq!(sim.snapshot()[snap::START_COUNT], 2.0);
+}
+
+#[test]
+fn after_an_emergency_stop_and_two_hours_the_unit_is_acknowledged_and_starts() {
+    let mut sim = KguSim::new();
+    start_and_load(&mut sim, 60.0);
+    sim.cmd_emergency_stop();
+    let to_rest = advance_until(&mut sim, 60.0, "rest", |s| s[snap::SPEED_RPM] == 0.0);
+    assert!(to_rest > 11.0 && to_rest < 13.0, "at rest {to_rest} s after the emergency stop");
+    stand(&mut sim, 7_200.0);
+    let s = sim.snapshot();
+    assert_eq!(s[snap::STATE_CODE], 5.0, "still latched");
+    assert!(ledger_relative_residual(&s) < 1.0e-9);
+    sim.cmd_ack();
+    advance(&mut sim, 0.05);
+    assert_eq!(sim.snapshot()[snap::STATE_CODE], 0.0);
+    start_and_load(&mut sim, 60.0);
+}
+
+#[test]
+fn interrupted_and_failed_starts_leave_a_unit_that_stands_and_starts() {
+    let set = ControllerSetpoints::DEFAULT;
+    // A start interrupted while pre-lubricating: the shaft never turned.
+    let mut sim = KguSim::new();
+    sim.cmd_start();
+    advance(&mut sim, 10.0);
+    assert_eq!(sim.snapshot()[snap::SEQUENCE_STEP], f64::from(Sequence::PreLubrication.index()));
+    sim.cmd_stop();
+    advance(&mut sim, 1.0);
+    assert_eq!(sim.snapshot()[snap::STATE_CODE], 0.0);
+    stand(&mut sim, 600.0);
+
+    // A start interrupted while cranking: the starter had the shaft turning.
+    sim.cmd_start();
+    advance(&mut sim, set.pre_lubrication_time_s + 3.0);
+    let cranking = sim.snapshot();
+    assert_eq!(cranking[snap::SEQUENCE_STEP], f64::from(Sequence::Cranking.index()));
+    assert!(cranking[snap::SPEED_RPM] > 50.0, "{} rpm", cranking[snap::SPEED_RPM]);
+    sim.cmd_stop();
+    advance_until(&mut sim, 30.0, "rest", |s| s[snap::SPEED_RPM] == 0.0);
+    advance_until(&mut sim, 5.0, "ready", |s| s[snap::STATE_CODE] == 0.0);
+    stand(&mut sim, 600.0);
+
+    // A start that fails for want of gas: cranked, tripped, coasted down.
+    sim.set_gas_gauge_kpa(0.0);
+    sim.cmd_start();
+    advance_until(&mut sim, 120.0, "failed start", |s| s[snap::STATE_CODE] == 5.0);
+    assert_eq!(sim.snapshot()[snap::ALARM_BITS] as u32 & alarm::FAILED_START, alarm::FAILED_START);
+    advance_until(&mut sim, 30.0, "rest", |s| s[snap::SPEED_RPM] == 0.0);
+    stand(&mut sim, 600.0);
+    assert_eq!(sim.snapshot()[snap::GAS_STD_M3], 0.0);
+    assert!(ledger_relative_residual_or_empty(&sim.snapshot()));
+
+    // Gas back, acknowledged: it starts and takes load.
+    sim.set_gas_gauge_kpa(crate::cards::GasValveCard::SIZING_GAUGE_PA * 1.0e-3);
+    sim.cmd_ack();
+    advance(&mut sim, 0.05);
+    start_and_load(&mut sim, 50.0);
+}
+
+/// The ledger closes, also where no fuel has entered yet and there is nothing
+/// to relate the residual to.
+fn ledger_relative_residual_or_empty(s: &[f64]) -> bool {
+    if s[snap::LEDGER_BOUNDARY_ENERGY_MJ] > 0.0 {
+        ledger_relative_residual(s) < 1.0e-9
+    } else {
+        s[snap::LEDGER_RESIDUAL_J].abs() < 1.0e-6
+    }
+}
+
+#[test]
+fn a_refused_step_leaves_the_last_accepted_state_and_the_next_step_goes_on() {
+    // No setter of the package can make a component refuse (they all clamp), so the
+    // refusal is provoked on the plant: a gas temperature below absolute zero.
+    let mut sim = on_load(50.0, 300.0);
+    let before = sim.snapshot();
+    let good = sim.plant.operator().gas_temperature_k;
+    sim.plant.set_operator(|o| o.gas_temperature_k = -1.0);
+    assert!(!sim.step(5.0), "the step must be refused");
+    assert!(sim.last_error().contains("gas supply temperature"), "{}", sim.last_error());
+    let refused = sim.snapshot();
+    // Nothing moved: the time, the shaft, the counters are those of the last accepted step.
+    for slot in [
+        snap::TIME_S,
+        snap::SPEED_RPM,
+        snap::ELECTRIC_POWER_KW,
+        snap::GAS_STD_M3,
+        snap::ENERGY_ELECTRIC_KWH,
+        snap::COOLANT_SUPPLY_C,
+        snap::LEDGER_RESIDUAL_J,
+    ] {
+        assert_eq!(
+            refused[slot].to_bits(),
+            before[slot].to_bits(),
+            "{} moved in a refused step",
+            crate::SNAPSHOT_FIELDS[slot]
+        );
+    }
+    // A second refusal is no worse than the first.
+    assert!(!sim.step(1.0));
+    // With the input put right the model goes on, by exactly the time asked for: the
+    // refused seconds are not owed.
+    sim.plant.set_operator(|o| o.gas_temperature_k = good);
+    assert!(sim.step(1.0), "{}", sim.last_error());
+    assert!(sim.last_error().is_empty());
+    let after = sim.snapshot();
+    assert!((after[snap::TIME_S] - before[snap::TIME_S] - 1.0).abs() < 1.0e-9);
+    advance(&mut sim, 30.0);
+    let s = sim.snapshot();
+    assert!((s[snap::ELECTRIC_POWER_KW] - 500.0).abs() < 0.5, "{}", grid_side_summary(&s));
+    assert!(ledger_relative_residual(&s) < 1.0e-9);
 }

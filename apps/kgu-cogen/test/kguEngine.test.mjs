@@ -1052,3 +1052,110 @@ test("a start without automatic synchronisation waits for the command", () => {
   );
   sim.free();
 });
+
+// ---------------------------------------------------------------------------
+// Standstill: the shaft comes to rest and the unit stands, for hours
+// ---------------------------------------------------------------------------
+
+// Stand for `seconds`, checking every minute that the shaft is at exactly zero speed
+// and the model still steps.
+function stand(sim, seconds) {
+  const minutes = Math.ceil(seconds / 60);
+  for (let i = 0; i < minutes; i++) {
+    advance(sim, seconds / minutes);
+    const s = sim.snapshot();
+    assert.ok(Object.is(s[SNAP.SPEED_RPM], 0), `speed ${s[SNAP.SPEED_RPM]} rpm at t ${s[SNAP.TIME_S]} s`);
+    assert.equal(s[SNAP.KINETIC_ENERGY_KJ], 0);
+  }
+}
+
+// Start, wait for the breaker and for the load; returns the time to the bus.
+function startAndLoad(sim, loadPct) {
+  sim.set_load_ramp_pct_per_min(300);
+  sim.set_load_setpoint_pct(loadPct);
+  sim.cmd_start();
+  const toBus = advanceUntil(sim, 200, "breaker closed", (s) => s[SNAP.BREAKER_CLOSED] === 1);
+  advanceUntil(sim, 120, "load reference", (s) => Math.abs(s[SNAP.LOAD_REFERENCE_PCT] - loadPct) < 1e-9);
+  advance(sim, 30);
+  const s = sim.snapshot();
+  assert.ok(Math.abs(s[SNAP.ELECTRIC_POWER_KW] - 10 * loadPct) < 0.5, gridSide(s));
+  assert.ok(relativeResidual(s) < 1e-9, `ledger residual ${s[SNAP.LEDGER_RESIDUAL_J]} J`);
+  return toBus;
+}
+
+test("normal stop, two hours at rest at exactly zero speed, start, load", () => {
+  const sim = new KguSim();
+  const firstToBus = startAndLoad(sim, 60);
+  sim.cmd_stop();
+  advanceUntil(sim, 500, "coasting", (s) => s[SNAP.SEQUENCE_STEP] === SEQUENCE.COAST_DOWN);
+  // Not inputs: the time to the controller's standstill level and to rest, and that
+  // rest is zero, not a small number.
+  const toReady = advanceUntil(sim, 60, "ready", (s) => s[SNAP.STATE_CODE] === STATE.READY);
+  const toRest = toReady + advanceUntil(sim, 5, "rest", (s) => s[SNAP.SPEED_RPM] === 0);
+  assert.ok(toReady > 11 && toReady < 12.5, `ready ${toReady} s after the gas was shut`);
+  assert.ok(toRest - toReady < 0.5, `at rest ${toRest} s after the gas was shut`);
+  assert.ok(relativeResidual(sim.snapshot()) < 1e-9);
+  stand(sim, 7200);
+  const rested = sim.snapshot();
+  assert.equal(rested[SNAP.STATE_CODE], STATE.READY);
+  assert.ok(relativeResidual(rested) < 1e-9, `ledger residual ${rested[SNAP.LEDGER_RESIDUAL_J]} J`);
+  assert.ok(rested[SNAP.COOLANT_SUPPLY_C] < 80 && rested[SNAP.COOLANT_SUPPLY_C] > 30);
+  const secondToBus = startAndLoad(sim, 60);
+  assert.ok(Math.abs(secondToBus - firstToBus) < 25, `to the bus in ${secondToBus} s, ${firstToBus} s the first time`);
+  assert.equal(sim.snapshot()[SNAP.START_COUNT], 2);
+  sim.free();
+});
+
+test("emergency stop, two hours at rest, acknowledgement, start", () => {
+  const sim = new KguSim();
+  startAndLoad(sim, 60);
+  sim.cmd_emergency_stop();
+  const toRest = advanceUntil(sim, 60, "rest", (s) => s[SNAP.SPEED_RPM] === 0);
+  assert.ok(toRest > 11 && toRest < 13, `at rest ${toRest} s after the emergency stop`);
+  stand(sim, 7200);
+  assert.equal(sim.snapshot()[SNAP.STATE_CODE], STATE.TRIP, "still latched");
+  assert.ok(relativeResidual(sim.snapshot()) < 1e-9);
+  sim.cmd_ack();
+  advance(sim, 0.05);
+  assert.equal(sim.snapshot()[SNAP.STATE_CODE], STATE.READY);
+  startAndLoad(sim, 60);
+  sim.free();
+});
+
+test("interrupted and failed starts leave a unit that stands and starts", () => {
+  const sim = new KguSim();
+  const limits = sim.limits();
+  assert.ok(limits[LIMIT.SHAFT_STATIC_FRICTION_NM] > 0);
+  assert.ok(limits[LIMIT.SHAFT_REST_SPEED_RPM] > 0 && limits[LIMIT.SHAFT_REST_SPEED_RPM] < 5);
+  // Interrupted while pre-lubricating: the shaft never turned.
+  sim.cmd_start();
+  advance(sim, 10);
+  assert.equal(sim.snapshot()[SNAP.SEQUENCE_STEP], SEQUENCE.PRE_LUBRICATION);
+  sim.cmd_stop();
+  advance(sim, 1);
+  assert.equal(sim.snapshot()[SNAP.STATE_CODE], STATE.READY);
+  stand(sim, 600);
+  // Interrupted while cranking: the starter had the shaft turning.
+  sim.cmd_start();
+  advance(sim, limits[LIMIT.PRE_LUBRICATION_TIME_S] + 3);
+  assert.equal(sim.snapshot()[SNAP.SEQUENCE_STEP], SEQUENCE.CRANKING);
+  assert.ok(sim.snapshot()[SNAP.SPEED_RPM] > 50);
+  sim.cmd_stop();
+  advanceUntil(sim, 30, "rest", (s) => s[SNAP.SPEED_RPM] === 0);
+  advanceUntil(sim, 5, "ready", (s) => s[SNAP.STATE_CODE] === STATE.READY);
+  stand(sim, 600);
+  // A start that fails for want of gas: cranked, tripped, coasted down.
+  sim.set_gas_gauge_kpa(0);
+  sim.cmd_start();
+  advanceUntil(sim, 120, "failed start", (s) => s[SNAP.STATE_CODE] === STATE.TRIP);
+  assert.notEqual(sim.snapshot()[SNAP.ALARM_BITS] & ALARM.FAILED_START, 0);
+  advanceUntil(sim, 30, "rest", (s) => s[SNAP.SPEED_RPM] === 0);
+  stand(sim, 600);
+  assert.equal(sim.snapshot()[SNAP.GAS_STD_M3], 0);
+  // Gas back, acknowledged: it starts and takes load.
+  sim.set_gas_gauge_kpa(50); // the supply's default gauge pressure
+  sim.cmd_ack();
+  advance(sim, 0.05);
+  startAndLoad(sim, 50);
+  sim.free();
+});

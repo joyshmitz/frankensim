@@ -175,7 +175,7 @@ snapshot_layout!(
 );
 
 /// Names of the entries of [`KguSim::limits`], in order.
-pub const LIMIT_FIELDS: [&str; 62] = [
+pub const LIMIT_FIELDS: [&str; 64] = [
     "RATED_ELECTRIC_KW",
     "RATED_SPEED_RPM",
     "OVERSPEED_TRIP_RPM",
@@ -243,6 +243,10 @@ pub const LIMIT_FIELDS: [&str; 62] = [
     "METER_LOSS_OF_VOLTAGE_CAPACITY",
     // 1 when a full journal displaces its oldest record, 0 when it keeps it.
     "METER_OVERFLOW_OVERWRITES_OLDEST",
+    // Static friction that holds the stopped shaft, and the speed below which it stops an
+    // undriven shaft within one sub-step.
+    "SHAFT_STATIC_FRICTION_NM",
+    "SHAFT_REST_SPEED_RPM",
 ];
 
 /// Number of values per entry of [`KguSim::events`].
@@ -652,6 +656,11 @@ impl KguSim {
             } else {
                 0.0
             },
+            self.plant.standstill_card.static_friction_torque_nm,
+            self.plant
+                .standstill_card
+                .rest_speed_rad_s(SHAFT_INERTIA_KG_M2, SUB_STEP_S)
+                * rpm,
         ]
     }
 

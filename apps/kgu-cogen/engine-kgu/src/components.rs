@@ -3,8 +3,10 @@
 //!
 //! Every part owns its ports and a pure `propose`; its state belongs to the
 //! system. The parts are joined only through `fs_system::SystemBuilder`
-//! (`plant.rs`). The shaft inertia is not here: it is the kernel's own
-//! `fs_system::elements::Mass` in the rotational domain.
+//! (`plant.rs`). The shaft's inertia is the kernel's own
+//! `fs_system::elements::Mass` in the rotational domain; here it is wrapped
+//! in [`ShaftComponent`], which adds the one thing that element has not: a
+//! shaft that comes to rest.
 //!
 //! 1. [`GasControlValveComponent`]: compressible orifice with a rate-limited
 //!    actuator and a gas meter at supply conditions.
@@ -14,6 +16,8 @@
 //! 4. [`SynchronousGeneratorComponent`]: classical machine on an infinite bus
 //!    behind the transformer reactance, with the generator breaker; currents
 //!    and torque from `fs_phs::circuit::synchronous::SynchronousMotor`.
+//! 5. [`ShaftComponent`]: the kernel's inertia, and static friction that
+//!    stops an undriven shaft at exactly zero speed.
 
 use core::f64::consts::PI;
 use core::num::NonZeroUsize;
@@ -22,14 +26,16 @@ use std::cell::RefCell;
 use fs_exec::Cx;
 use fs_phs::circuit::synchronous::{SynchronousMotor, SynchronousMotorParameters};
 use fs_ports::component::{
-    Class, Component, PortRole, PortSpec, Proposal, Receipt, STREAM_ENTHALPY_RATE,
+    Class, Component, PortRole, PortSpec, PortTangent, Proposal, Receipt, STREAM_ENTHALPY_RATE,
     STREAM_MASS_RATE, STREAM_PRESSURE, STREAM_SPECIFIC_ENTHALPY, StreamBasis,
 };
 use fs_ports::{PortKind, StableId};
+use fs_system::elements::{Mass, Motion};
 
 use crate::cards::{
     CombustionLimitsCard, ExhaustGasCard, FrictionCard, FuelGasCard, GasValveCard, GeneratorCard,
-    HeatSplitCard, IndicatedWorkCard, RATED_ELECTRIC_W, StarterCard, orifice_mass_flux_kg_m2_s,
+    HeatSplitCard, IndicatedWorkCard, RATED_ELECTRIC_W, StandstillCard, StarterCard,
+    orifice_mass_flux_kg_m2_s,
 };
 
 /// Typed refusal of the unit's components.
@@ -1144,5 +1150,197 @@ impl Component for SynchronousGeneratorComponent {
             residual: 0.0,
             tolerance: 0.0,
         }))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 5. Shaft: the kernel's inertia, and rest
+// ---------------------------------------------------------------------------
+
+/// The shaft line's inertia with a state of rest.
+///
+/// While the shaft turns, or anything is commanded to drive it, this is the
+/// kernel's [`Mass`] and nothing else: its `propose` is called and its
+/// outputs passed on unchanged.
+///
+/// The engine's friction law is regularised through zero speed, so below its
+/// speed scale it is viscous and by itself never stops the shaft: the speed
+/// decays for ever, into numbers the kernel can no longer difference. Static
+/// friction ([`StandstillCard`]) ends that. A step in which
+///
+/// * neither the starter nor the ignition is commanded (signals, held over
+///   the step), and
+/// * the speed at the start of the step is no more than the static friction
+///   torque would remove within the step, `|omega| <= T_static dt / J`,
+///
+/// ends at exactly zero speed. The mean speed of that step is half the speed
+/// it began with, whatever torque the machines on the shaft return; the
+/// kinetic energy that was left, with the work those machines did on the
+/// shaft in the step, leaves as heat through `friction_heat`. A shaft at rest
+/// meets the same two conditions and stays at rest, releasing nothing, until
+/// the starter is commanded.
+///
+/// The decision is taken on the accepted state and on commands, never on the
+/// torque of the step itself: that torque is what the block solve iterates
+/// on, and a law that switched on it would leave the solve no slope. So this
+/// is not a breakaway law: a torque that nothing commanded would not move a
+/// resting shaft here. The plant has no such torque.
+///
+/// Ports: `p` (the kernel inertia's own: net torque in, mean speed of the
+/// step out), `friction_heat` (heat of the stop), `drive` (signal: starter
+/// engaged, ignition on).
+pub struct ShaftComponent {
+    inertia: Mass,
+    inertia_kg_m2: f64,
+    card: StandstillCard,
+    ports: [PortSpec; 3],
+}
+
+impl ShaftComponent {
+    /// A shaft line of `inertia_kg_m2` held at rest by the card's static
+    /// friction.
+    ///
+    /// # Panics
+    /// An inertia that is not positive and finite.
+    #[must_use]
+    pub fn new(inertia_kg_m2: f64, card: StandstillCard) -> Self {
+        let inertia = Mass::in_domain(PortKind::RotationalTorqueAngularVelocity, inertia_kg_m2)
+            .expect("shaft inertia");
+        let power = inertia.ports()[0].clone();
+        Self {
+            inertia,
+            inertia_kg_m2,
+            card,
+            ports: [
+                power,
+                PortSpec::heat(sid("friction_heat"), PortRole::EffortIn)
+                    .expect("shaft friction heat port"),
+                PortSpec::signal_in(sid("drive"), nz(2)),
+            ],
+        }
+    }
+
+    /// The static friction card.
+    #[must_use]
+    pub fn card(&self) -> &StandstillCard {
+        &self.card
+    }
+
+    /// Whether a step of `dt_s` from `old` under `inputs` ends at rest.
+    fn comes_to_rest(&self, old: &Motion, dt_s: f64, inputs: &[f64]) -> bool {
+        let driven = inputs[2] >= 0.5 || inputs[3] >= 0.5;
+        !driven && old.velocity_m_s.abs() <= self.card.rest_speed_rad_s(self.inertia_kg_m2, dt_s)
+    }
+}
+
+impl Component for ShaftComponent {
+    type State = Motion;
+    type Error = KguError;
+
+    fn ports(&self) -> &[PortSpec] {
+        &self.ports
+    }
+
+    fn class(&self) -> Class {
+        // Affine in the torque at a fixed state and fixed commands, but with a slope that
+        // depends on both.
+        Class::Smooth
+    }
+
+    fn stored_energy_j(&self, state: &Self::State) -> Result<f64, Self::Error> {
+        Ok(0.5 * self.inertia_kg_m2 * state.velocity_m_s * state.velocity_m_s)
+    }
+
+    fn propose(
+        &self,
+        old: &Self::State,
+        dt_s: f64,
+        inputs: &[f64],
+        new: &mut Self::State,
+        outputs: &mut [f64],
+        cx: &Cx<'_>,
+    ) -> Result<Proposal, Self::Error> {
+        check_cx(cx)?;
+        all_finite(inputs, "shaft inputs must be finite")?;
+        // Inputs: net torque (0), temperature the friction heat is released at (1), drive
+        // [starter engaged, ignition on] (2..4). Outputs: mean speed of the step (0), heat (1).
+        let (torque, temperature) = (inputs[0], inputs[1]);
+        if !(temperature > 0.0) {
+            return Err(KguError::Invalid("shaft heat port needs a positive temperature"));
+        }
+        if !self.comes_to_rest(old, dt_s, inputs) {
+            let mut mean_speed = [0.0];
+            let proposal = self
+                .inertia
+                .propose(old, dt_s, &inputs[..1], new, &mut mean_speed, cx)
+                .map_err(|_| KguError::Invalid("the kernel's inertia refused the step"))?;
+            outputs[0] = mean_speed[0];
+            outputs[1] = 0.0;
+            return Ok(proposal);
+        }
+        // Static friction stops the shaft within the step. The speed falls from where it
+        // was to zero; its mean over the step is half of where it was.
+        let mean_speed = 0.5 * old.velocity_m_s;
+        *new = Motion {
+            position_m: old.position_m + dt_s * mean_speed,
+            velocity_m_s: 0.0,
+        };
+        let kinetic_j = self.stored_energy_j(old)?;
+        // First law of the step: the work the shaft received and the kinetic energy it
+        // had both leave as heat.
+        let work_j = dt_s * torque * mean_speed;
+        let heat_j = kinetic_j + work_j;
+        outputs[0] = mean_speed;
+        outputs[1] = -heat_j / dt_s;
+        let released = heat_j.max(0.0);
+        Ok(Proposal::Step(Receipt {
+            stored_change_j: -kinetic_j,
+            dissipated_j: released,
+            numerical_loss_j: 0.0,
+            entropy_generated_j_per_k: released / temperature,
+            energy_tolerance_j: 64.0 * f64::EPSILON * (kinetic_j + work_j.abs()) + 1.0e-18,
+            residual: 0.0,
+            tolerance: 0.0,
+        }))
+    }
+}
+
+impl PortTangent for ShaftComponent {
+    fn jvp(
+        &self,
+        old: &Self::State,
+        dt_s: f64,
+        inputs: &[f64],
+        d_inputs: &[f64],
+        d_outputs: &mut [f64],
+        _cx: &Cx<'_>,
+    ) -> Result<(), Self::Error> {
+        if self.comes_to_rest(old, dt_s, inputs) {
+            // The mean speed is fixed by the state; the heat takes the work.
+            d_outputs[0] = 0.0;
+            d_outputs[1] = -0.5 * old.velocity_m_s * d_inputs[0];
+        } else {
+            d_outputs[0] = 0.5 * dt_s / self.inertia_kg_m2 * d_inputs[0];
+            d_outputs[1] = 0.0;
+        }
+        Ok(())
+    }
+
+    fn vjp(
+        &self,
+        old: &Self::State,
+        dt_s: f64,
+        inputs: &[f64],
+        bar_outputs: &[f64],
+        bar_inputs: &mut [f64],
+        _cx: &Cx<'_>,
+    ) -> Result<(), Self::Error> {
+        bar_inputs.fill(0.0);
+        bar_inputs[0] = if self.comes_to_rest(old, dt_s, inputs) {
+            -0.5 * old.velocity_m_s * bar_outputs[1]
+        } else {
+            0.5 * dt_s / self.inertia_kg_m2 * bar_outputs[0]
+        };
+        Ok(())
     }
 }

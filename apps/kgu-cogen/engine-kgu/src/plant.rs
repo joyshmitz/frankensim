@@ -6,7 +6,7 @@
 //! ```text
 //! gas supply (boundary) -> gas_valve ==stream==> engine --+
 //!                                                         |  common flow (shaft speed)
-//!        starter (battery boundary) ----------------------+-- shaft (kernel Mass)
+//!        starter (battery boundary) ----------------------+-- shaft (kernel Mass, with rest)
 //!        generator (bus boundary) ------------------------+
 //! controller --signals--> starter, gas_valve, engine, cabinet
 //! cabinet (protection) --signal--> generator breaker
@@ -33,8 +33,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use fs_exec::Cx;
-use fs_ports::PortKind;
-use fs_system::elements::{Conductance, HeatCapacity, Mass, Motion};
+use fs_system::elements::{Conductance, HeatCapacity, Motion};
 use fs_system::{NodeId, RouteTemperature, SolveConfig, System, SystemBuilder, heat_sink};
 
 use crate::analyser::PowerQualityAnalyser;
@@ -46,13 +45,13 @@ use crate::cards::{
     DEFAULT_CONDITION_FACTOR, DumpCoolerCard, ExhaustExchangerCard, ExhaustGasCard, FuelGasCard,
     GasValveCard, GeneratorCard, HeatSplitCard, IndicatedWorkCard, NOMINAL_FREQUENCY_HZ,
     MeterCard, NetworkExchangerCard, PassportCard, PowerQualityCard, RATED_ELECTRIC_W,
-    RATED_OMEGA_RAD_S, RestorationCard, SHAFT_INERTIA_KG_M2, StarterCard,
+    RATED_OMEGA_RAD_S, RestorationCard, SHAFT_INERTIA_KG_M2, StandstillCard, StarterCard,
     SynchronisationWindowCard,
 };
 use crate::meter::RevenueMeter;
 use crate::components::{
     GasControlValveComponent, GasEngineComponent, GasEngineState, GasValveState, GeneratorState,
-    StarterMotorComponent, StarterState, SynchronousGeneratorComponent,
+    ShaftComponent, StarterMotorComponent, StarterState, SynchronousGeneratorComponent,
 };
 use crate::heat::{
     DumpCoolerComponent, DumpCoolerState, ExhaustExchangerState, ExhaustHeatExchangerComponent,
@@ -91,6 +90,8 @@ pub mod sink {
     pub const GENERATOR: &str = "generator_cooling_air";
     /// Starter losses.
     pub const STARTER: &str = "starter_losses";
+    /// Heat of the static friction that stops the shaft.
+    pub const STANDSTILL: &str = "shaft_static_friction";
 }
 
 /// Operator inputs, boundary conditions and injectable faults.
@@ -268,7 +269,7 @@ pub struct KguNodes {
     pub gas_valve: NodeId,
     /// Engine.
     pub engine: NodeId,
-    /// Shaft inertia (kernel `Mass`).
+    /// Shaft inertia (kernel `Mass` inside [`ShaftComponent`]).
     pub shaft: NodeId,
     /// Starter motor.
     pub starter: NodeId,
@@ -304,6 +305,8 @@ pub struct KguPlant {
     pub cabinet_card: BreakerCabinetCard,
     /// The restoration settings.
     pub restoration_card: RestorationCard,
+    /// The static friction that holds the stopped shaft.
+    pub standstill_card: StandstillCard,
     /// The coolant circuit's card.
     pub coolant_card: CoolantCard,
     /// The exhaust exchanger's card, with its fitted tube length.
@@ -353,6 +356,8 @@ impl KguPlant {
                 .expect("generator reference loss inside the fitted range")
         });
         let rated_friction_w = work.rated_friction_w;
+        // What holds the stopped shaft: the constant part of the same friction.
+        let standstill_card = StandstillCard::from_friction(&work.friction());
         let rated_indicated_w = work.indicated_power_w(passport.fuel_for_electric_w(RATED_ELECTRIC_W));
         let no_load_torque_nm =
             (rated_friction_w + work.reference_generator_loss_w(0.0)) / RATED_OMEGA_RAD_S;
@@ -403,8 +408,7 @@ impl KguPlant {
         let coolant_c = HeatCapacity::new(coolant_card.capacity_j_k).expect("coolant capacity");
         let block_loss_c =
             Conductance::new(coolant_card.room_conductance_w_k).expect("block conductance");
-        let shaft_c = Mass::in_domain(PortKind::RotationalTorqueAngularVelocity, SHAFT_INERTIA_KG_M2)
-            .expect("shaft inertia");
+        let shaft_c = ShaftComponent::new(SHAFT_INERTIA_KG_M2, standstill_card);
         let starter_c = StarterMotorComponent::new(StarterCard::ASSUMED);
         let cabinet_card = BreakerCabinetCard::DEFAULT;
         let restoration_card = RestorationCard::DEFAULT;
@@ -499,6 +503,8 @@ impl KguPlant {
         let engine_ignition = port(&b, engine, "ignition");
         let engine_conditions = port(&b, engine, "conditions");
         let shaft_p = port(&b, shaft, "p");
+        let shaft_heat = port(&b, shaft, "friction_heat");
+        let shaft_drive = port(&b, shaft, "drive");
         let starter_shaft = port(&b, starter, "shaft");
         let starter_battery = port(&b, starter, "battery");
         let starter_heat = port(&b, starter, "heat");
@@ -536,6 +542,13 @@ impl KguPlant {
         .expect("valve command");
         b.signal_map(controller_actuators, engine_ignition, vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
             .expect("ignition command");
+        // The shaft is told whether anything is commanded to drive it: starter, ignition.
+        b.signal_map(
+            controller_actuators,
+            shaft_drive,
+            vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+        )
+        .expect("shaft drive commands");
         b.signal_map(
             controller_actuators,
             cabinet_command,
@@ -613,6 +626,7 @@ impl KguPlant {
             (engine_radiation, sink::RADIATION, ROOM_K),
             (generator_heat, sink::GENERATOR, ROOM_K),
             (starter_heat, sink::STARTER, ROOM_K),
+            (shaft_heat, sink::STANDSTILL, ROOM_K),
         ] {
             b.heat_route(
                 source,
@@ -794,6 +808,7 @@ impl KguPlant {
             meter: RevenueMeter::new(MeterCard::ASSUMED),
             cabinet_card,
             restoration_card,
+            standstill_card,
             coolant_card,
             exhaust_card,
             shared,
@@ -867,7 +882,13 @@ impl KguPlant {
     pub fn step(&mut self, dt_s: f64, cx: &Cx<'_>) -> Result<(), String> {
         self.time_debt_s += dt_s;
         while self.time_debt_s >= SUB_STEP_S * (1.0 - 1.0e-9) {
-            self.sub_step(cx)?;
+            if let Err(refusal) = self.sub_step(cx) {
+                // The kernel's step is atomic: the system stands at its last accepted
+                // state. The time this call still owed is dropped with the refusal, so the
+                // next call starts from that state and owes only its own time.
+                self.time_debt_s = 0.0;
+                return Err(refusal);
+            }
             self.time_debt_s -= SUB_STEP_S;
         }
         if self.time_debt_s < 0.0 {
