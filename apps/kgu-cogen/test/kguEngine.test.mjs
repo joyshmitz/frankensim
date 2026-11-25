@@ -15,6 +15,8 @@ import {
   EVENT_KIND,
   LIMIT,
   LIMIT_FIELDS,
+  METER_EVENT_STRIDE,
+  METER_JOURNAL,
   PROTECTION,
   QUALITY_KIND,
   RESTORATION,
@@ -25,6 +27,7 @@ import {
   STATE,
   decodeAnalyserEvents,
   decodeEvents,
+  decodeMeterEvents,
   decodeProtectionCode,
 } from "../snapshotLayout.mjs";
 
@@ -392,14 +395,20 @@ test("two runs of the same commands agree to the bit", () => {
     advance(sim, 2);
     sim.set_grid_voltage_pu(1.0);
     advance(sim, 100);
-    const out = [Array.from(sim.snapshot()), Array.from(sim.events()), Array.from(sim.analyser_events())];
+    const out = [
+      Array.from(sim.snapshot()),
+      Array.from(sim.events()),
+      Array.from(sim.analyser_events()),
+      Array.from(sim.meter_events()),
+    ];
     sim.free();
     return out;
   };
   const [c, d] = [disturbed(), disturbed()];
   assert.equal(c[0][SNAP.BREAKER_CLOSED], 1);
   assert.equal(c[0][SNAP.RESTORATION_ATTEMPTS], 1);
-  for (const part of [0, 1, 2]) {
+  assert.equal(c[3].length, METER_EVENT_STRIDE, "one record of the 2 s dip in the meter's journal");
+  for (const part of [0, 1, 2, 3]) {
     assert.equal(c[part].length, d[part].length);
     for (let i = 0; i < c[part].length; i++) {
       assert.ok(Object.is(c[part][i], d[part][i]), `part ${part}, value ${i}: ${c[part][i]} against ${d[part][i]}`);
@@ -465,6 +474,19 @@ test("a balanced grid reproduces the numbers recorded before the bus had three p
   // A healthy balanced grid leaves both records empty.
   assert.equal(sim.analyser_events().length, 0);
   assert.equal(eventsOf(sim, EVENT_KIND.PROTECTION).length, 0);
+  // And the meter's journals; its active registers are the engine's own counter.
+  assert.equal(sim.meter_events().length, 0);
+  for (const slot of [
+    "METER_LOW_VOLTAGE_RECORDS",
+    "METER_HIGH_VOLTAGE_RECORDS",
+    "METER_LOSS_OF_VOLTAGE_RECORDS",
+    "METER_OVERFLOW_BITS",
+    "SYNCHRONISER_ARMED_BY_OPERATOR",
+  ]) {
+    assert.equal(s[SNAP[slot]], 0, slot);
+  }
+  const net = s[SNAP.METER_ACTIVE_EXPORT_KWH] - s[SNAP.METER_ACTIVE_IMPORT_KWH];
+  assert.ok(Math.abs(net - s[SNAP.ENERGY_ELECTRIC_KWH]) < 1e-9 * net, `meter ${net} kWh`);
   sim.free();
 });
 
@@ -751,4 +773,282 @@ test("the analyser records a dip the protection rides through, and keeps its own
   assert.ok(Math.abs(ahead.dip[0].startS - inStep.dip[0].startS - 3600) < 1e-6);
   assert.ok(Object.is(ahead.trip[0].timeS, inStep.trip[0].timeS));
   assert.ok(Math.abs(ahead.dip[0].startS - ahead.trip[0].timeS - (3600 - 0.15)) < 0.011);
+});
+
+// ---------------------------------------------------------------------------
+// The revenue meter: one look per second, journals of limited capacity
+// ---------------------------------------------------------------------------
+
+const DIP_160_V_PU = 160 / PHASE_VOLT;
+
+test("a 130 ms dip is in the meter's journal only when one of its looks falls inside", () => {
+  // The same dip twice: 130 ms to 160 V on phase b, the unit exporting. Only the place of
+  // the meter's one look per second differs (`lookAfterS`, counted from the phase's fall).
+  const run = (lookAfterS) => {
+    const sim = onLoad(50);
+    const fellAt = sim.snapshot()[SNAP.TIME_S];
+    sim.set_meter_sample_phase_s(fellAt + lookAfterS);
+    sim.set_grid_phase_voltages_pu(1.0, DIP_160_V_PU, 1.0);
+    advance(sim, 0.13);
+    sim.set_grid_voltage_pu(1.0);
+    advance(sim, 3);
+    const s = sim.snapshot();
+    // Shorter than the protection's 0.15 s: the breaker stays in either way.
+    assert.equal(s[SNAP.BREAKER_CLOSED], 1, gridSide(s));
+    assert.equal(protectionTrips(sim).length, 0);
+    // The analyser has it either way, with its length and depth.
+    const quality = decodeAnalyserEvents(sim.analyser_events());
+    assert.equal(quality.length, 1);
+    assert.equal(quality[0].kind, QUALITY_KIND.DIP);
+    assert.equal(quality[0].phase, 2);
+    assert.ok(Math.abs(quality[0].durationS - 0.13) < 1e-9, `duration ${quality[0].durationS} s`);
+    assert.ok(Math.abs(quality[0].extremeV - 160) < 1e-9, `residual ${quality[0].extremeV} V`);
+    const out = { fellAt, records: decodeMeterEvents(sim.meter_events()), count: s[SNAP.METER_LOW_VOLTAGE_RECORDS] };
+    sim.free();
+    return out;
+  };
+
+  // The looks half a second either side of the dip: nothing in the journal.
+  const between = run(0.5);
+  assert.equal(between.records.length, 0);
+  assert.equal(between.count, 0);
+
+  // A look 65 ms into the dip: a record, and all it holds is the look that saw the voltage
+  // low, the phase, and the next look, which saw it back.
+  const inside = run(0.065);
+  assert.equal(inside.records.length, 1);
+  assert.equal(inside.count, 1);
+  const record = inside.records[0];
+  assert.equal(record.journal, METER_JOURNAL.LOW_VOLTAGE);
+  assert.deepEqual(record.phases, [2]);
+  assert.ok(Math.abs(record.seenS - (inside.fellAt + 0.065)) < 1e-9, `seen at ${record.seenS}`);
+  assert.ok(Math.abs(record.clearedS - record.seenS - 1) < 1e-9, "seen gone at the next look, a second later");
+  assert.deepEqual(Object.keys(record).sort(), ["clearedS", "journal", "phaseBits", "phases", "seenS"]);
+  assert.equal(METER_EVENT_STRIDE, 4, "journal, phases and two instants: no depth, no duration");
+});
+
+test("the share of sample phases that catch a 130 ms dip is its share of the second", () => {
+  let caught = 0;
+  for (let place = 0; place < 100; place++) {
+    const sim = new KguSim();
+    sim.set_meter_sample_phase_s((place + 0.5) / 100);
+    advance(sim, 2);
+    sim.set_grid_phase_voltages_pu(DIP_160_V_PU, 1.0, 1.0);
+    advance(sim, 0.13);
+    sim.set_grid_voltage_pu(1.0);
+    advance(sim, 1.5);
+    caught += sim.meter_events().length / METER_EVENT_STRIDE;
+    assert.equal(decodeAnalyserEvents(sim.analyser_events()).length, 1, "the analyser sees every one");
+    sim.free();
+  }
+  assert.ok(Math.abs(caught / 100 - 0.13) < 0.011, `caught at ${caught} of 100 sample phases`);
+});
+
+test("a 3 s dip is in both records, each by its own clock; the meter's time is one of its looks", () => {
+  const sim = onLoad(50);
+  sim.set_analyser_clock_offset_s(100);
+  sim.set_meter_clock_offset_s(250);
+  sim.set_meter_sample_phase_s(0.4);
+  const fellAt = sim.snapshot()[SNAP.TIME_S];
+  sim.set_grid_phase_voltages_pu(1.0, 1.0, DIP_160_V_PU);
+  advance(sim, 3);
+  sim.set_grid_voltage_pu(1.0);
+  advance(sim, 3);
+  const s = sim.snapshot();
+  assert.ok(Math.abs(s[SNAP.ANALYSER_CLOCK_S] - s[SNAP.TIME_S] - 100) < 1e-9);
+  assert.ok(Math.abs(s[SNAP.METER_CLOCK_S] - s[SNAP.TIME_S] - 250) < 1e-9);
+  const quality = decodeAnalyserEvents(sim.analyser_events());
+  assert.equal(quality.length, 1);
+  assert.ok(Math.abs(quality[0].startS - (fellAt + 100)) < 1e-9, "the analyser stamps the start");
+  assert.ok(Math.abs(quality[0].durationS - 3) < 1e-9);
+  const records = decodeMeterEvents(sim.meter_events());
+  assert.equal(records.length, 1);
+  assert.equal(records[0].journal, METER_JOURNAL.LOW_VOLTAGE);
+  assert.deepEqual(records[0].phases, [3]);
+  // A look of the meter's clock (whole seconds plus 0.4 s), the first after the phase fell.
+  const whole = records[0].seenS - 0.4;
+  assert.ok(Math.abs(whole - Math.round(whole)) < 1e-9, `seen at ${records[0].seenS}`);
+  const late = records[0].seenS - 250 - fellAt;
+  assert.ok(late > 0 && late < 1, `the look came ${late} s after the phase fell`);
+  assert.ok(Math.abs(records[0].clearedS - records[0].seenS - 3) < 1e-9);
+  assert.ok(Math.abs(records[0].seenS - quality[0].startS - (150 + late)) < 1e-9);
+  sim.free();
+});
+
+test("the 101st low-voltage event overflows the meter's journal as its card says", () => {
+  const sim = new KguSim();
+  const limits = sim.limits();
+  const capacity = limits[LIMIT.METER_LOW_VOLTAGE_CAPACITY];
+  assert.equal(capacity, 100);
+  assert.equal(limits[LIMIT.METER_LOSS_OF_VOLTAGE_CAPACITY], 20);
+  assert.equal(limits[LIMIT.METER_SUPERVISION_PERIOD_S], 1);
+  // Event k holds from 3k s for 1.5 s; the meter looks 0.505 s past each second.
+  sim.set_meter_sample_phase_s(0.505);
+  const event = () => {
+    sim.set_grid_phase_voltages_pu(1.0, 0.8, 1.0);
+    advance(sim, 1.5);
+    sim.set_grid_voltage_pu(1.0);
+    advance(sim, 1.5);
+  };
+  for (let i = 0; i < 100; i++) event();
+  assert.equal(sim.snapshot()[SNAP.METER_LOW_VOLTAGE_RECORDS], capacity);
+  assert.equal(sim.snapshot()[SNAP.METER_OVERFLOW_BITS], 0, "full, not yet overflowed");
+  event();
+  const s = sim.snapshot();
+  assert.equal(s[SNAP.METER_LOW_VOLTAGE_RECORDS], capacity, "the journal holds no more");
+  assert.equal(s[SNAP.METER_OVERFLOW_BITS], 1 << (METER_JOURNAL.LOW_VOLTAGE - 1));
+  const records = decodeMeterEvents(sim.meter_events());
+  assert.equal(records.length, capacity);
+  if (limits[LIMIT.METER_OVERFLOW_OVERWRITES_OLDEST] === 1) {
+    assert.ok(Math.abs(records[0].seenS - 3.505) < 1e-9, `oldest record seen at ${records[0].seenS}`);
+    assert.ok(Math.abs(records.at(-1).seenS - 300.505) < 1e-9);
+  } else {
+    assert.ok(Math.abs(records[0].seenS - 0.505) < 1e-9);
+    assert.ok(Math.abs(records.at(-1).seenS - 297.505) < 1e-9);
+  }
+  assert.equal(s[SNAP.ANALYSER_RECORDED_EVENTS], 101, "the analyser has all of them");
+  sim.clear_meter_events();
+  advance(sim, 0.01);
+  assert.equal(sim.meter_events().length, 0);
+  assert.equal(sim.snapshot()[SNAP.METER_OVERFLOW_BITS], 0);
+  sim.free();
+});
+
+test("the meter's registers follow the direction of active and reactive power", () => {
+  const sim = onLoad(100);
+  const registers = (s) => [
+    s[SNAP.METER_ACTIVE_EXPORT_KWH],
+    s[SNAP.METER_ACTIVE_IMPORT_KWH],
+    s[SNAP.METER_REACTIVE_EXPORT_KVARH],
+    s[SNAP.METER_REACTIVE_IMPORT_KVARH],
+  ];
+  // A quarter of an hour of steady export, under-excited (absorbing about 194 kvar).
+  let before = sim.snapshot();
+  assert.ok(before[SNAP.REACTIVE_POWER_KVAR] < -100);
+  advance(sim, 900);
+  let after = sim.snapshot();
+  let [r0, r1] = [registers(before), registers(after)];
+  const engine = after[SNAP.ENERGY_ELECTRIC_KWH] - before[SNAP.ENERGY_ELECTRIC_KWH];
+  const exported = r1[0] - r0[0];
+  assert.ok(Math.abs(exported - engine) < 1e-9 * engine, `meter ${exported} kWh, engine ${engine} kWh`);
+  assert.ok(Math.abs(exported - 250) < 0.25, `1 000 kW for a quarter of an hour: ${exported} kWh`);
+  assert.ok(Object.is(r1[1], r0[1]), "no active import while exporting");
+  assert.ok(Object.is(r1[2], r0[2]), "no reactive export while under-excited");
+  const expected = -0.25 * 0.5 * (before[SNAP.REACTIVE_POWER_KVAR] + after[SNAP.REACTIVE_POWER_KVAR]);
+  assert.ok(Math.abs(r1[3] - r0[3] - expected) < 0.01 * expected, `${r1[3] - r0[3]} kvarh against ${expected}`);
+
+  // Over-excited, the reactive power goes out and into the other register.
+  sim.set_excitation_pu(1.2);
+  advance(sim, 60);
+  before = sim.snapshot();
+  assert.ok(before[SNAP.REACTIVE_POWER_KVAR] > 100, `${before[SNAP.REACTIVE_POWER_KVAR]} kvar`);
+  advance(sim, 300);
+  after = sim.snapshot();
+  [r0, r1] = [registers(before), registers(after)];
+  assert.ok(r1[2] - r0[2] > 5, `reactive export ${r1[2] - r0[2]} kvarh`);
+  assert.ok(Object.is(r1[3], r0[3]), "no reactive import while over-excited");
+  assert.ok(Object.is(r1[1], r0[1]));
+  const net = r1[0] - r1[1];
+  assert.ok(Math.abs(net - after[SNAP.ENERGY_ELECTRIC_KWH]) < 1e-9 * net);
+  sim.free();
+});
+
+// ---------------------------------------------------------------------------
+// Synchronisation on the operator's command
+// ---------------------------------------------------------------------------
+
+// Advance in single sub-steps until the breaker closes; returns the time taken and the
+// phase angle of the last look before it closed.
+function advanceToClosing(sim, limitS) {
+  let waited = 0;
+  let phaseDeg = sim.snapshot()[SNAP.SYNC_PHASE_ANGLE_DEG];
+  while (sim.snapshot()[SNAP.BREAKER_CLOSED] !== 1) {
+    phaseDeg = sim.snapshot()[SNAP.SYNC_PHASE_ANGLE_DEG];
+    advance(sim, 0.01);
+    waited += 0.01;
+    assert.ok(waited < limitS, `the breaker did not close in ${limitS} s`);
+  }
+  return { waited, phaseDeg };
+}
+
+test("manual return: the operator's command lets the synchroniser close, once", () => {
+  const sim = onLoad(50);
+  sim.set_grid_phase_voltages_pu(1.0, 1.0, 0.73);
+  advance(sim, 1);
+  sim.set_grid_voltage_pu(1.0);
+  advance(sim, 5);
+
+  // Before the acknowledgement the command is refused, with the reasons as bits.
+  const refusedBits = CLOSE_REFUSAL.NOT_SYNCHRONISING | CLOSE_REFUSAL.TRIP_LATCHED;
+  assert.equal(sim.cmd_synchronise(), refusedBits);
+  advance(sim, 30);
+  assert.equal(sim.snapshot()[SNAP.BREAKER_CLOSED], 0);
+
+  // Acknowledged, and no command: off the bus, however often the phase passes zero.
+  sim.cmd_ack();
+  advance(sim, 45);
+  assert.equal(sim.snapshot()[SNAP.BREAKER_CLOSED], 0, gridSide(sim.snapshot()));
+  assert.equal(sim.snapshot()[SNAP.SEQUENCE_STEP], SEQUENCE.SYNCHRONISING);
+  assert.equal(sim.snapshot()[SNAP.SYNCHRONISER_ARMED_BY_OPERATOR], 0);
+
+  // The command, given well away from zero phase: the synchroniser does the rest.
+  advanceUntil(sim, 30, "phase away", (s) => Math.abs(s[SNAP.SYNC_PHASE_ANGLE_DEG]) > 40);
+  const commandedAt = sim.snapshot()[SNAP.TIME_S];
+  assert.equal(sim.cmd_synchronise(), 0);
+  advance(sim, 0.02);
+  assert.equal(sim.snapshot()[SNAP.SYNCHRONISER_ARMED_BY_OPERATOR], 1);
+  assert.equal(sim.snapshot()[SNAP.BREAKER_CLOSED], 0, "not before the phase is there");
+  const { waited, phaseDeg } = advanceToClosing(sim, 25);
+  assert.ok(waited > 1, `closed ${waited} s after the command`);
+  assert.ok(Math.abs(phaseDeg) < 1.5, `closed at ${phaseDeg} degrees`);
+  assert.equal(sim.snapshot()[SNAP.SYNCHRONISER_ARMED_BY_OPERATOR], 0, "one attempt");
+  assert.equal(sim.snapshot()[SNAP.STATE_CODE], STATE.RUNNING);
+  // The log shows who decided.
+  const commands = eventsOf(sim, EVENT_KIND.SYNCHRONISE_COMMAND);
+  assert.deepEqual(commands.map((e) => e.code), [refusedBits, 0]);
+  assert.ok(Math.abs(commands[1].timeS - commandedAt) < 1e-9);
+  assert.ok(Math.abs(commands[1].value) > 40, `phase at the command ${commands[1].value} degrees`);
+  const closings = eventsOf(sim, EVENT_KIND.BREAKER).filter((e) => e.code === 1);
+  assert.equal(closings.length, 2);
+  assert.ok(closings[1].timeS > commands[1].timeS);
+  assert.equal(eventsOf(sim, EVENT_KIND.REFUSED).length, 0, "no close request was made");
+  advance(sim, 60);
+  assert.ok(Math.abs(sim.snapshot()[SNAP.ELECTRIC_POWER_KW] - 500) < 0.5, gridSide(sim.snapshot()));
+  sim.free();
+
+  // A stop cancels a commanded synchronisation that is still waiting for the phase.
+  const other = onLoad(50);
+  other.cmd_breaker_open();
+  advance(other, 20);
+  advanceUntil(other, 30, "phase away", (s) => Math.abs(s[SNAP.SYNC_PHASE_ANGLE_DEG]) > 40);
+  assert.equal(other.cmd_synchronise(), 0);
+  advance(other, 0.02);
+  assert.equal(other.snapshot()[SNAP.SYNCHRONISER_ARMED_BY_OPERATOR], 1);
+  other.cmd_stop();
+  advance(other, 30);
+  assert.equal(other.snapshot()[SNAP.SEQUENCE_STEP], SEQUENCE.COOL_DOWN);
+  assert.equal(other.snapshot()[SNAP.BREAKER_CLOSED], 0);
+  assert.equal(other.snapshot()[SNAP.SYNCHRONISER_ARMED_BY_OPERATOR], 0);
+  other.free();
+});
+
+test("a start without automatic synchronisation waits for the command", () => {
+  const sim = new KguSim();
+  assert.equal(sim.cmd_synchronise(), CLOSE_REFUSAL.NOT_SYNCHRONISING, "a unit at rest refuses it");
+  sim.set_auto_sync(false);
+  sim.set_load_setpoint_pct(40);
+  sim.cmd_start();
+  advanceUntil(sim, 200, "synchronising", (s) => s[SNAP.STATE_CODE] === STATE.SYNCHRONIZING);
+  advance(sim, 45);
+  assert.equal(sim.snapshot()[SNAP.BREAKER_CLOSED], 0, "waits without a command");
+  advanceUntil(sim, 30, "phase away", (s) => Math.abs(s[SNAP.SYNC_PHASE_ANGLE_DEG]) > 40);
+  assert.equal(sim.cmd_synchronise(), 0);
+  const { waited, phaseDeg } = advanceToClosing(sim, 25);
+  assert.ok(waited > 1 && Math.abs(phaseDeg) < 1.5, `closed after ${waited} s at ${phaseDeg} degrees`);
+  assert.equal(sim.snapshot()[SNAP.STATE_CODE], STATE.RUNNING);
+  assert.deepEqual(
+    eventsOf(sim, EVENT_KIND.SYNCHRONISE_COMMAND).map((e) => e.code),
+    [CLOSE_REFUSAL.NOT_SYNCHRONISING, 0],
+  );
+  sim.free();
 });

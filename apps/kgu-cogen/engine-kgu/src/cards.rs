@@ -958,6 +958,58 @@ impl PowerQualityCard {
     };
 }
 
+/// What a full journal of the revenue meter does with the next record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JournalOverflow {
+    /// The oldest record is displaced by the new one.
+    OverwriteOldest,
+    /// The new record is not written; the journal keeps what it has.
+    KeepOldest,
+}
+
+/// The revenue meter in the cabinet: a meter with one-second threshold
+/// supervision of the phase voltages and capacity-limited journals.
+///
+/// Origin: **assumed; to be verified against the meter's documentation.**
+/// Every value here is a property of an instrument, typical of the kind and
+/// taken from no particular one: the supervision period, the three levels
+/// (per unit of the rated phase voltage), the capacities of the journals and
+/// what a full journal does. The meter's accuracy class is not modelled.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeterCard {
+    /// Period of the voltage supervision by the meter's own clock [s]. The
+    /// meter looks at the phase voltages at these instants and at no others.
+    pub supervision_period_s: f64,
+    /// A phase below this at a supervision instant is low [pu].
+    pub low_voltage_pu: f64,
+    /// A phase above this at a supervision instant is high [pu].
+    pub high_voltage_pu: f64,
+    /// A phase below this at a supervision instant is lost [pu].
+    pub loss_of_voltage_pu: f64,
+    /// Records the low-voltage journal holds.
+    pub low_voltage_capacity: u32,
+    /// Records the high-voltage journal holds.
+    pub high_voltage_capacity: u32,
+    /// Records the loss-of-voltage journal holds.
+    pub loss_of_voltage_capacity: u32,
+    /// What a full journal does with the next record.
+    pub overflow: JournalOverflow,
+}
+
+impl MeterCard {
+    /// The model's meter.
+    pub const ASSUMED: Self = Self {
+        supervision_period_s: 1.0,
+        low_voltage_pu: 0.90,
+        high_voltage_pu: 1.10,
+        loss_of_voltage_pu: 0.05,
+        low_voltage_capacity: 100,
+        high_voltage_capacity: 100,
+        loss_of_voltage_capacity: 20,
+        overflow: JournalOverflow::OverwriteOldest,
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Heat recovery (assumed, with one fitted length)
 // ---------------------------------------------------------------------------

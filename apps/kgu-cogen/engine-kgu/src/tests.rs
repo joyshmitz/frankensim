@@ -25,6 +25,7 @@ use crate::components::{
 use crate::controller::{
     ControllerState, GensetControllerComponent, OperatorSignals, Sequence, alarm, refusal,
 };
+use crate::meter::{METER_EVENT_STRIDE, journal};
 use crate::plant::event_kind;
 use crate::{EVENT_STRIDE, KguSim, snap, with_clock_free_cx};
 
@@ -547,6 +548,7 @@ fn controller_conforms_in_every_step_of_its_sequence() {
     let ready = ControllerState::ready();
     let operator = OperatorSignals {
         restoration_auto: true,
+        synchronise: false,
         load_setpoint: 0.8,
         start: false,
         stop: false,
@@ -602,10 +604,16 @@ fn controller_conforms_in_every_step_of_its_sequence() {
             (RATED_OMEGA_RAD_S, false, [1.0, 1.0, 0.0]),
             (RATED_OMEGA_RAD_S, false, [1.0, 16.0, 1.0]),
         ] {
-            let mut inputs = [0.0; 25];
+            let mut inputs = [0.0; 26];
             inputs[..6].copy_from_slice(&[omega, 0.05, 0.0, 0.0, 0.0, 360.0]);
             inputs[6..9].copy_from_slice(&cabinet);
-            OperatorSignals { start, ..operator }.write(&mut inputs[9..]);
+            // Where there is no start pulse there is a command to synchronise.
+            OperatorSignals {
+                start,
+                synchronise: !start,
+                ..operator
+            }
+            .write(&mut inputs[9..]);
             with_clock_free_cx(|cx| {
                 check_component(
                     &controller,
@@ -1194,9 +1202,10 @@ fn the_controller_trips_on_overspeed() {
         fan_failed: false,
         load_ramp_per_s: 0.0,
         restoration_auto: false,
+        synchronise: false,
     };
     for (share, trips) in [(1.14, false), (1.15, true)] {
-        let mut inputs = [0.0; 25];
+        let mut inputs = [0.0; 26];
         inputs[..6].copy_from_slice(&[share * RATED_OMEGA_RAD_S, 0.0, 0.0, 0.0, 0.0, 360.0]);
         operator.write(&mut inputs[9..]);
         let mut next = running;
@@ -1245,10 +1254,13 @@ fn two_runs_of_the_same_commands_agree_to_the_bit() {
         advance(&mut sim, 2.0);
         sim.set_grid_voltage_pu(1.0);
         advance(&mut sim, 100.0);
-        (sim.snapshot(), sim.events(), sim.analyser_events())
+        let journals: Vec<u64> = sim.meter_events().iter().map(|x| x.to_bits()).collect();
+        (sim.snapshot(), sim.events(), sim.analyser_events(), journals)
     };
-    let (a, events_a, quality_a) = run();
-    let (b, events_b, quality_b) = run();
+    let (a, events_a, quality_a, journals_a) = run();
+    let (b, events_b, quality_b, journals_b) = run();
+    assert_eq!(journals_a, journals_b);
+    assert_eq!(journals_a.len(), METER_EVENT_STRIDE, "one record of the 2 s dip");
     assert_eq!(a[snap::BREAKER_CLOSED], 1.0, "{}", grid_side_summary(&a));
     assert_eq!(a[snap::RESTORATION_ATTEMPTS], 1.0);
     for (index, (x, y)) in a.iter().zip(&b).enumerate() {
@@ -1539,6 +1551,24 @@ fn a_balanced_grid_reproduces_the_numbers_of_the_single_voltage_model() {
     assert_eq!(s[snap::ANALYSER_RECORDED_EVENTS], 0.0);
     assert_eq!(s[snap::ANALYSER_OPEN_EVENTS], 0.0);
     assert!(events_of(&sim, event_kind::PROTECTION).is_empty());
+    // And the meter's journals.
+    assert!(sim.meter_events().is_empty());
+    for slot in [
+        snap::METER_LOW_VOLTAGE_RECORDS,
+        snap::METER_HIGH_VOLTAGE_RECORDS,
+        snap::METER_LOSS_OF_VOLTAGE_RECORDS,
+        snap::METER_OVERFLOW_BITS,
+        snap::SYNCHRONISER_ARMED_BY_OPERATOR,
+    ] {
+        assert_eq!(s[slot], 0.0, "{}", crate::SNAPSHOT_FIELDS[slot]);
+    }
+    // The meter's active registers are the engine's own counter, by its sign.
+    let net = s[snap::METER_ACTIVE_EXPORT_KWH] - s[snap::METER_ACTIVE_IMPORT_KWH];
+    assert!(
+        (net - s[snap::ENERGY_ELECTRIC_KWH]).abs() < 1.0e-9 * s[snap::ENERGY_ELECTRIC_KWH],
+        "meter {net} kWh against the engine's {} kWh",
+        s[snap::ENERGY_ELECTRIC_KWH]
+    );
 }
 
 #[test]
@@ -2010,4 +2040,350 @@ fn the_analyser_records_a_dip_the_protection_rides_through_and_keeps_its_own_clo
     assert!(record.iter().any(|e| e.0 == quality_kind::SWELL && e.1 == 3));
     sim.clear_analyser_events();
     assert!(sim.analyser_events().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// The revenue meter: one look per second, journals of limited capacity
+// ---------------------------------------------------------------------------
+
+/// The meter's journals as `(journal, phase bits, seen, cleared)`.
+fn meter_records(sim: &KguSim) -> Vec<(u32, u32, f64, f64)> {
+    sim.meter_events()
+        .chunks(METER_EVENT_STRIDE)
+        .map(|r| (r[0] as u32, r[1] as u32, r[2], r[3]))
+        .collect()
+}
+
+/// 160 V on a 230.9 V phase.
+const DIP_160_V_PU: f64 = 160.0 / PHASE_VOLT;
+
+#[test]
+fn a_130_ms_dip_is_in_the_meters_journal_only_when_one_of_its_looks_falls_inside() {
+    // The same dip twice: 130 ms to 160 V on phase b, the unit exporting. Only the place
+    // of the meter's one look per second differs. (`look_after_s`: where the next look
+    // falls, counted from the moment the phase falls.)
+    let run = |look_after_s: f64| {
+        let mut sim = on_load(50.0, 300.0);
+        let fell_at = sim.snapshot()[snap::TIME_S];
+        sim.set_meter_sample_phase_s(fell_at + look_after_s);
+        sim.set_grid_phase_voltages_pu(1.0, DIP_160_V_PU, 1.0);
+        advance(&mut sim, 0.13);
+        sim.set_grid_voltage_pu(1.0);
+        advance(&mut sim, 3.0);
+        let s = sim.snapshot();
+        // Shorter than the protection's 0.15 s: the breaker stays in either way.
+        assert_eq!(s[snap::BREAKER_CLOSED], 1.0, "{}", grid_side_summary(&s));
+        assert!(events_of(&sim, event_kind::PROTECTION).is_empty());
+        // The analyser has it either way, with its length and depth.
+        let quality = quality_events(&sim);
+        assert_eq!(quality.len(), 1, "{quality:?}");
+        assert_eq!((quality[0].0, quality[0].1), (quality_kind::DIP, 2));
+        assert!((quality[0].2 - fell_at).abs() < 1.0e-9);
+        assert!((quality[0].3 - 0.13).abs() < 1.0e-9, "duration {} s", quality[0].3);
+        assert!((quality[0].4 - 160.0).abs() < 1.0e-9, "residual {} V", quality[0].4);
+        (fell_at, meter_records(&sim), s)
+    };
+
+    // The looks half a second either side of the dip: nothing in the journal.
+    let (_, records, s) = run(0.5);
+    assert!(records.is_empty(), "{records:?}");
+    assert_eq!(s[snap::METER_LOW_VOLTAGE_RECORDS], 0.0);
+
+    // A look 65 ms into the dip: a record, and all it holds is the look that saw the
+    // voltage low, the phase, and the next look, which saw it back. Neither is the dip's
+    // start or its end, and nothing in the record says 160 V or 130 ms.
+    let (fell_at, records, s) = run(0.065);
+    assert_eq!(records.len(), 1, "{records:?}");
+    let (kind, phases, seen, cleared) = records[0];
+    assert_eq!((kind, phases), (journal::LOW_VOLTAGE, 0b010));
+    assert!((seen - (fell_at + 0.065)).abs() < 1.0e-9, "seen at {seen}, fell at {fell_at}");
+    assert!((cleared - seen - 1.0).abs() < 1.0e-9, "cleared {} s after it was seen", cleared - seen);
+    assert_eq!(METER_EVENT_STRIDE, 4, "journal, phases and two instants: no depth, no duration");
+    assert_eq!(s[snap::METER_LOW_VOLTAGE_RECORDS], 1.0);
+    assert_eq!(s[snap::METER_OVERFLOW_BITS], 0.0);
+}
+
+#[test]
+fn the_share_of_sample_phases_that_catch_a_130_ms_dip_is_its_share_of_the_second() {
+    // Nothing tells the meter how long a disturbance must be. A hundred places of its look
+    // within the second, the same dip each time: it is caught when a look falls in it.
+    let mut caught = 0;
+    for place in 0..100 {
+        let mut sim = KguSim::new();
+        sim.set_meter_sample_phase_s((f64::from(place) + 0.5) / 100.0);
+        advance(&mut sim, 2.0);
+        sim.set_grid_phase_voltages_pu(DIP_160_V_PU, 1.0, 1.0);
+        advance(&mut sim, 0.13);
+        sim.set_grid_voltage_pu(1.0);
+        advance(&mut sim, 1.5);
+        let records = meter_records(&sim);
+        assert!(records.len() <= 1);
+        caught += records.len();
+        assert_eq!(quality_events(&sim).len(), 1, "the analyser sees every one of them");
+    }
+    let share = caught as f64 / 100.0;
+    assert!((share - 0.13).abs() < 0.011, "caught at {caught} of 100 sample phases");
+}
+
+#[test]
+fn a_3_s_dip_is_in_both_records_each_by_its_own_clock_and_the_meters_time_is_a_look() {
+    let mut sim = on_load(50.0, 300.0);
+    sim.set_analyser_clock_offset_s(100.0);
+    sim.set_meter_clock_offset_s(250.0);
+    sim.set_meter_sample_phase_s(0.4);
+    let fell_at = sim.snapshot()[snap::TIME_S];
+    sim.set_grid_phase_voltages_pu(1.0, 1.0, DIP_160_V_PU);
+    advance(&mut sim, 3.0);
+    sim.set_grid_voltage_pu(1.0);
+    advance(&mut sim, 3.0);
+    let s = sim.snapshot();
+    assert!((s[snap::ANALYSER_CLOCK_S] - s[snap::TIME_S] - 100.0).abs() < 1.0e-9);
+    assert!((s[snap::METER_CLOCK_S] - s[snap::TIME_S] - 250.0).abs() < 1.0e-9);
+
+    let quality = quality_events(&sim);
+    assert_eq!(quality.len(), 1, "{quality:?}");
+    assert!((quality[0].2 - (fell_at + 100.0)).abs() < 1.0e-9, "the analyser stamps the start");
+    assert!((quality[0].3 - 3.0).abs() < 1.0e-9);
+
+    let records = meter_records(&sim);
+    assert_eq!(records.len(), 1, "{records:?}");
+    let (kind, phases, seen, cleared) = records[0];
+    assert_eq!((kind, phases), (journal::LOW_VOLTAGE, 0b100));
+    // The meter's time is one of its looks (whole seconds of its clock plus 0.4 s), the
+    // first one after the phase fell: later than the start by up to a second.
+    let whole = seen - 0.4;
+    assert!((whole - whole.round()).abs() < 1.0e-9, "seen at {seen} by the meter's clock");
+    let late = (seen - 250.0) - fell_at;
+    assert!(late > 0.0 && late < 1.0, "the look came {late} s after the phase fell");
+    // Three looks fell inside the 3 s; the fourth saw the voltage back.
+    assert!((cleared - seen - 3.0).abs() < 1.0e-9);
+    // The same event in the two records: apart by the two clocks' difference and by how
+    // late the look was.
+    assert!((seen - quality[0].2 - (150.0 + late)).abs() < 1.0e-9);
+    // The protection answered too (0.15 s), in model time.
+    let trips = events_of(&sim, event_kind::PROTECTION);
+    assert_eq!(trips.len(), 1);
+    assert!((trips[0].0 - fell_at - 0.15).abs() < 0.011);
+}
+
+#[test]
+fn the_101st_low_voltage_event_overflows_the_journal_as_the_card_says() {
+    let mut sim = KguSim::new();
+    let limit = |name: &str| {
+        let index = crate::LIMIT_FIELDS.iter().position(|n| *n == name).expect("limit");
+        sim.limits()[index]
+    };
+    let capacity = limit("METER_LOW_VOLTAGE_CAPACITY");
+    let overwrites = limit("METER_OVERFLOW_OVERWRITES_OLDEST") == 1.0;
+    assert_eq!(capacity, 100.0);
+    // Event k holds from 3k s for 1.5 s; the meter looks at 0.505 s past each second, so
+    // each event is seen once (at 3k + 0.505) and seen gone at the next look.
+    sim.set_meter_sample_phase_s(0.505);
+    let event = |sim: &mut KguSim| {
+        sim.set_grid_phase_voltages_pu(1.0, 0.8, 1.0);
+        advance(sim, 1.5);
+        sim.set_grid_voltage_pu(1.0);
+        advance(sim, 1.5);
+    };
+    for _ in 0..100 {
+        event(&mut sim);
+    }
+    let full = sim.snapshot();
+    assert_eq!(full[snap::METER_LOW_VOLTAGE_RECORDS], capacity);
+    assert_eq!(full[snap::METER_OVERFLOW_BITS], 0.0, "full, not yet overflowed");
+    assert!((meter_records(&sim)[0].2 - 0.505).abs() < 1.0e-9);
+
+    event(&mut sim);
+    let s = sim.snapshot();
+    assert_eq!(s[snap::METER_LOW_VOLTAGE_RECORDS], capacity, "the journal holds no more");
+    assert_eq!(s[snap::METER_OVERFLOW_BITS], 1.0, "low-voltage journal overflowed");
+    assert_eq!(s[snap::METER_HIGH_VOLTAGE_RECORDS], 0.0);
+    assert_eq!(s[snap::METER_LOSS_OF_VOLTAGE_RECORDS], 0.0);
+    let records = meter_records(&sim);
+    let (oldest, newest) = (records[0].2, records[99].2);
+    if overwrites {
+        // The first event's record is gone; the 101st is the newest.
+        assert!((oldest - 3.505).abs() < 1.0e-9, "oldest record seen at {oldest}");
+        assert!((newest - 300.505).abs() < 1.0e-9, "newest record seen at {newest}");
+    } else {
+        assert!((oldest - 0.505).abs() < 1.0e-9);
+        assert!((newest - 297.505).abs() < 1.0e-9);
+    }
+    // The analyser, with its longer record, has all of them.
+    assert_eq!(s[snap::ANALYSER_RECORDED_EVENTS], 101.0);
+    // Clearing empties the journals and the flag, not the energy registers.
+    sim.clear_meter_events();
+    advance(&mut sim, 0.01);
+    assert!(sim.meter_events().is_empty());
+    assert_eq!(sim.snapshot()[snap::METER_OVERFLOW_BITS], 0.0);
+}
+
+#[test]
+fn the_meters_registers_follow_the_direction_of_active_and_reactive_power() {
+    let mut sim = on_load(100.0, 300.0);
+    let registers = |s: &[f64]| {
+        [
+            s[snap::METER_ACTIVE_EXPORT_KWH],
+            s[snap::METER_ACTIVE_IMPORT_KWH],
+            s[snap::METER_REACTIVE_EXPORT_KVARH],
+            s[snap::METER_REACTIVE_IMPORT_KVARH],
+        ]
+    };
+    // A quarter of an hour of steady export at 1.00 pu excitation, where the machine
+    // absorbs reactive power (about 194 kvar).
+    let before = sim.snapshot();
+    assert!(before[snap::REACTIVE_POWER_KVAR] < -100.0);
+    advance(&mut sim, 900.0);
+    let after = sim.snapshot();
+    let (r0, r1) = (registers(&before), registers(&after));
+    let engine = after[snap::ENERGY_ELECTRIC_KWH] - before[snap::ENERGY_ELECTRIC_KWH];
+    let exported = r1[0] - r0[0];
+    assert!((exported - engine).abs() < 1.0e-9 * engine, "meter {exported} kWh, engine {engine} kWh");
+    assert!((exported - 250.0).abs() < 0.25, "1 000 kW for a quarter of an hour: {exported} kWh");
+    assert_eq!(r1[1].to_bits(), r0[1].to_bits(), "no active import while exporting");
+    assert_eq!(r1[2].to_bits(), r0[2].to_bits(), "no reactive export while under-excited");
+    let absorbed = r1[3] - r0[3];
+    let expected = -0.25 * 0.5 * (before[snap::REACTIVE_POWER_KVAR] + after[snap::REACTIVE_POWER_KVAR]);
+    assert!((absorbed - expected).abs() < 0.01 * expected, "{absorbed} kvarh against {expected}");
+
+    // Over-excited, the reactive power goes out and into the other register.
+    sim.set_excitation_pu(1.2);
+    advance(&mut sim, 60.0);
+    let before = sim.snapshot();
+    assert!(before[snap::REACTIVE_POWER_KVAR] > 100.0, "{} kvar", before[snap::REACTIVE_POWER_KVAR]);
+    advance(&mut sim, 300.0);
+    let after = sim.snapshot();
+    let (r0, r1) = (registers(&before), registers(&after));
+    assert!(r1[2] - r0[2] > 5.0, "reactive export {} kvarh", r1[2] - r0[2]);
+    assert_eq!(r1[3].to_bits(), r0[3].to_bits(), "no reactive import while over-excited");
+    assert_eq!(r1[1].to_bits(), r0[1].to_bits());
+    // From the start of the model: the two active registers are the engine's counter.
+    let net = r1[0] - r1[1];
+    assert!((net - after[snap::ENERGY_ELECTRIC_KWH]).abs() < 1.0e-9 * net);
+}
+
+// ---------------------------------------------------------------------------
+// Synchronisation on the operator's command
+// ---------------------------------------------------------------------------
+
+/// Advance in single sub-steps until the breaker closes; returns the time
+/// taken and the phase angle [deg] of the last look before it closed.
+fn advance_to_closing(sim: &mut KguSim, limit_s: f64) -> (f64, f64) {
+    let mut waited = 0.0;
+    let mut phase_deg = sim.snapshot()[snap::SYNC_PHASE_ANGLE_DEG];
+    while sim.snapshot()[snap::BREAKER_CLOSED] != 1.0 {
+        phase_deg = sim.snapshot()[snap::SYNC_PHASE_ANGLE_DEG];
+        advance(sim, 0.01);
+        waited += 0.01;
+        assert!(waited < limit_s, "the breaker did not close in {limit_s} s");
+    }
+    (waited, phase_deg)
+}
+
+#[test]
+fn after_a_grid_event_the_operators_command_lets_the_synchroniser_close_once() {
+    let mut sim = on_load(50.0, 300.0);
+    sim.set_grid_phase_voltages_pu(1.0, 1.0, 0.73);
+    advance(&mut sim, 1.0);
+    sim.set_grid_voltage_pu(1.0);
+    advance(&mut sim, 5.0);
+
+    // Before the acknowledgement the command is refused, with the reasons as bits.
+    let refused = sim.cmd_synchronise();
+    assert_eq!(refused, refusal::NOT_SYNCHRONISING | refusal::TRIP_LATCHED);
+    advance(&mut sim, 30.0);
+    assert_eq!(sim.snapshot()[snap::BREAKER_CLOSED], 0.0);
+    assert_eq!(sim.snapshot()[snap::SYNCHRONISER_ARMED_BY_OPERATOR], 0.0);
+
+    // Acknowledged, and no command: the unit stays off the bus, however often the phase
+    // passes through zero (more than twice in 45 s at the synchronising slip).
+    sim.cmd_ack();
+    advance(&mut sim, 45.0);
+    let waiting = sim.snapshot();
+    assert_eq!(waiting[snap::BREAKER_CLOSED], 0.0, "{}", grid_side_summary(&waiting));
+    assert_eq!(waiting[snap::SEQUENCE_STEP], f64::from(Sequence::Synchronising.index()));
+    assert_eq!(waiting[snap::SYNCHRONISER_ARMED_BY_OPERATOR], 0.0);
+
+    // The command, given well away from zero phase: accepted, and from here the
+    // synchroniser does the rest. No close request is made.
+    advance_until(&mut sim, 30.0, "phase away", |s| s[snap::SYNC_PHASE_ANGLE_DEG].abs() > 40.0);
+    let commanded_at = sim.snapshot()[snap::TIME_S];
+    assert_eq!(sim.cmd_synchronise(), 0);
+    advance(&mut sim, 0.02);
+    assert_eq!(sim.snapshot()[snap::SYNCHRONISER_ARMED_BY_OPERATOR], 1.0);
+    assert_eq!(sim.snapshot()[snap::BREAKER_CLOSED], 0.0, "not before the phase is there");
+    let (waited, phase_deg) = advance_to_closing(&mut sim, 25.0);
+    // Not inputs: when it closed (the phase had to come round at the slip) and at what angle.
+    assert!(waited > 1.0, "closed {waited} s after the command");
+    assert!(phase_deg.abs() < 1.5, "closed at {phase_deg} degrees");
+    let closed = sim.snapshot();
+    assert_eq!(closed[snap::SYNCHRONISER_ARMED_BY_OPERATOR], 0.0, "one attempt");
+    assert_eq!(closed[snap::STATE_CODE], 3.0);
+    // The log shows who decided: the refused command, then the accepted one, then the closing.
+    let commands = events_of(&sim, event_kind::SYNCHRONISE_COMMAND);
+    assert_eq!(commands.len(), 2, "{commands:?}");
+    assert_eq!(commands[0].1, refusal::NOT_SYNCHRONISING | refusal::TRIP_LATCHED);
+    assert_eq!(commands[1].1, 0);
+    assert!((commands[1].0 - commanded_at).abs() < 1.0e-9);
+    assert!(commands[1].2.abs() > 40.0, "phase at the command {} degrees", commands[1].2);
+    let closings: Vec<_> =
+        events_of(&sim, event_kind::BREAKER).into_iter().filter(|e| e.1 == 1).collect();
+    assert_eq!(closings.len(), 2);
+    assert!(closings[1].0 > commands[1].0);
+    assert!(events_of(&sim, event_kind::REFUSED).is_empty(), "no close request was made");
+    advance(&mut sim, 60.0);
+    let s = sim.snapshot();
+    assert!((s[snap::ELECTRIC_POWER_KW] - 500.0).abs() < 0.5, "{}", grid_side_summary(&s));
+
+    // A stop cancels a commanded synchronisation that is still waiting for the phase.
+    let mut sim = on_load(50.0, 300.0);
+    sim.cmd_breaker_open();
+    advance(&mut sim, 20.0);
+    advance_until(&mut sim, 30.0, "phase away", |s| s[snap::SYNC_PHASE_ANGLE_DEG].abs() > 40.0);
+    assert_eq!(sim.cmd_synchronise(), 0);
+    advance(&mut sim, 0.02);
+    assert_eq!(sim.snapshot()[snap::SYNCHRONISER_ARMED_BY_OPERATOR], 1.0);
+    sim.cmd_stop();
+    advance(&mut sim, 30.0);
+    let stopping = sim.snapshot();
+    assert_eq!(stopping[snap::SEQUENCE_STEP], f64::from(Sequence::CoolDown.index()));
+    assert_eq!(stopping[snap::BREAKER_CLOSED], 0.0);
+    assert_eq!(stopping[snap::SYNCHRONISER_ARMED_BY_OPERATOR], 0.0);
+}
+
+#[test]
+fn a_start_without_automatic_synchronisation_waits_for_the_command_or_the_close_request() {
+    // A unit at rest refuses the command.
+    let mut sim = KguSim::new();
+    assert_eq!(sim.cmd_synchronise(), refusal::NOT_SYNCHRONISING);
+
+    sim.set_auto_sync(false);
+    sim.set_load_setpoint_pct(40.0);
+    sim.cmd_start();
+    advance_until(&mut sim, 200.0, "synchronising", |s| s[snap::STATE_CODE] == 2.0);
+    advance(&mut sim, 45.0);
+    assert_eq!(sim.snapshot()[snap::BREAKER_CLOSED], 0.0, "waits without a command");
+    advance_until(&mut sim, 30.0, "phase away", |s| s[snap::SYNC_PHASE_ANGLE_DEG].abs() > 40.0);
+    assert_eq!(sim.cmd_synchronise(), 0);
+    let (waited, phase_deg) = advance_to_closing(&mut sim, 25.0);
+    assert!(waited > 1.0 && phase_deg.abs() < 1.5, "closed after {waited} s at {phase_deg} degrees");
+    assert_eq!(sim.snapshot()[snap::STATE_CODE], 3.0);
+    assert_eq!(events_of(&sim, event_kind::SYNCHRONISE_COMMAND).len(), 2, "one refused at rest, one accepted");
+
+    // The operator's own closing inside the window still works with nothing armed.
+    let mut sim = KguSim::new();
+    sim.set_auto_sync(false);
+    sim.cmd_start();
+    advance_until(&mut sim, 200.0, "synchronising", |s| s[snap::STATE_CODE] == 2.0);
+    advance(&mut sim, 6.0);
+    let mut waited = 0.0;
+    while sim.snapshot()[snap::SYNC_PERMITTED] != 1.0 {
+        advance(&mut sim, 0.01);
+        waited += 0.01;
+        assert!(waited < 30.0);
+    }
+    assert_eq!(sim.cmd_breaker_close(), 0);
+    advance(&mut sim, 0.02);
+    assert_eq!(sim.snapshot()[snap::BREAKER_CLOSED], 1.0);
+    assert!(events_of(&sim, event_kind::SYNCHRONISE_COMMAND).is_empty());
 }

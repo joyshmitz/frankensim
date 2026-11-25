@@ -99,6 +99,17 @@ export const SNAPSHOT_FIELDS = Object.freeze([
   "ANALYSER_CLOCK_S",
   "ANALYSER_OPEN_EVENTS",
   "ANALYSER_RECORDED_EVENTS",
+  // Slice 1d: the revenue meter, and synchronisation on the operator's command.
+  "METER_ACTIVE_EXPORT_KWH",
+  "METER_ACTIVE_IMPORT_KWH",
+  "METER_REACTIVE_EXPORT_KVARH",
+  "METER_REACTIVE_IMPORT_KVARH",
+  "METER_CLOCK_S",
+  "METER_LOW_VOLTAGE_RECORDS",
+  "METER_HIGH_VOLTAGE_RECORDS",
+  "METER_LOSS_OF_VOLTAGE_RECORDS",
+  "METER_OVERFLOW_BITS",
+  "SYNCHRONISER_ARMED_BY_OPERATOR",
 ]);
 
 /** Index of every snapshot slot by name: `snapshot[SNAP.SPEED_RPM]`. */
@@ -192,7 +203,10 @@ export function decodeProtectionCode(code) {
   return { protection: Math.floor(code / 10), phase: code % 10 };
 }
 
-/** Bits returned by `cmd_breaker_close()`; zero means accepted. */
+/**
+ * Bits returned by `cmd_breaker_close()`; zero means accepted. `cmd_synchronise()`
+ * returns the same bits, of which only NOT_SYNCHRONISING and TRIP_LATCHED can refuse it.
+ */
 export const CLOSE_REFUSAL = Object.freeze({
   VOLTAGE: 1 << 0,
   FREQUENCY: 1 << 1,
@@ -260,6 +274,15 @@ export const LIMIT_FIELDS = Object.freeze([
   "ANALYSER_SWELL_PU",
   "ANALYSER_INTERRUPTION_PU",
   "ANALYSER_HYSTERESIS_PU",
+  // The revenue meter's card.
+  "METER_SUPERVISION_PERIOD_S",
+  "METER_LOW_VOLTAGE_PU",
+  "METER_HIGH_VOLTAGE_PU",
+  "METER_LOSS_OF_VOLTAGE_PU",
+  "METER_LOW_VOLTAGE_CAPACITY",
+  "METER_HIGH_VOLTAGE_CAPACITY",
+  "METER_LOSS_OF_VOLTAGE_CAPACITY",
+  "METER_OVERFLOW_OVERWRITES_OLDEST", // 1: a full journal displaces its oldest record; 0: it keeps it
 ]);
 
 /** Index of every entry of `limits()` by name. */
@@ -278,7 +301,46 @@ export const EVENT_KIND = Object.freeze({
   REFUSED: 5, // code: CLOSE_REFUSAL bits, or 0 for a refused start
   SEQUENCE: 6, // code: new SEQUENCE; value: shaft speed, rpm
   PROTECTION: 7, // cabinet protection trip; code: see decodeProtectionCode; value: what it tripped at
+  // The operator's command to synchronise. code: 0 accepted, else CLOSE_REFUSAL bits;
+  // value: phase angle at the command, degrees. A closing with no such event before it
+  // was the automation's own, or a manual close request.
+  SYNCHRONISE_COMMAND: 8,
 });
+
+/**
+ * `meter_events()` is a flat array of `[journal, phase_bits, seen_s, cleared_s]`
+ * per record: the low-voltage journal first, then high voltage, then loss of
+ * voltage, oldest first within each. Both times are supervision instants of the
+ * meter's OWN clock (`set_meter_clock_offset_s`, `set_meter_sample_phase_s`):
+ * the look that first saw the condition and the first later look that saw it
+ * gone (NaN until then). The meter looks once per supervision period, so a
+ * record has no depth and no duration, and a disturbance between two looks has
+ * no record at all.
+ */
+export const METER_EVENT_STRIDE = 4;
+
+/** Journals of the meter; `1 << (journal - 1)` is the journal's bit in `METER_OVERFLOW_BITS`. */
+export const METER_JOURNAL = Object.freeze({
+  LOW_VOLTAGE: 1,
+  HIGH_VOLTAGE: 2,
+  LOSS_OF_VOLTAGE: 3,
+});
+
+/** Decode `meter_events()` into objects; `phases` lists the phases seen (1, 2, 3 for a, b, c). */
+export function decodeMeterEvents(flat) {
+  const records = [];
+  for (let i = 0; i + METER_EVENT_STRIDE <= flat.length; i += METER_EVENT_STRIDE) {
+    const phaseBits = flat[i + 1];
+    records.push({
+      journal: flat[i],
+      phaseBits,
+      phases: [1, 2, 3].filter((phase) => phaseBits & (1 << (phase - 1))),
+      seenS: flat[i + 2],
+      clearedS: flat[i + 3],
+    });
+  }
+  return records;
+}
 
 /**
  * `analyser_events()` is a flat array of `[kind, phase, start_s, duration_s,

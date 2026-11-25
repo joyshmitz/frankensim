@@ -40,6 +40,13 @@ export class KguSim {
         wasm.kgusim_clear_events(this.__wbg_ptr);
     }
     /**
+     * Empty the meter's journals and their overflow flags. The energy
+     * registers are not touched.
+     */
+    clear_meter_events() {
+        wasm.kgusim_clear_meter_events(this.__wbg_ptr);
+    }
+    /**
      * Acknowledge alarms; a latched trip whose cause is gone is cleared.
      */
     cmd_ack() {
@@ -83,11 +90,29 @@ export class KguSim {
         wasm.kgusim_cmd_stop(this.__wbg_ptr);
     }
     /**
+     * Command to synchronise: the operator decides, the automatic
+     * synchroniser closes the breaker near zero phase, for this one attempt.
+     * Accepted on the synchronising step (a start with the automatic
+     * synchronisation off, after a manual opening, after the acknowledgement
+     * in manual restoration). Returns zero when accepted, otherwise the
+     * reasons with the bits of [`Self::cmd_breaker_close`]: 16 the unit is
+     * not synchronising, 32 a trip is latched. A normal stop cancels the
+     * wait. Either way the command is in the event log.
+     * @returns {number}
+     */
+    cmd_synchronise() {
+        const ret = wasm.kgusim_cmd_synchronise(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
      * The event log, oldest first, four values per event: time [s], kind
      * (1 state, 2 breaker, 3 alarm raised, 4 alarm cleared, 5 command
-     * refused, 6 sequence step, 7 cabinet protection trip), code, value.
+     * refused, 6 sequence step, 7 cabinet protection trip, 8 the operator's
+     * command to synchronise), code, value.
      * For a protection trip the code is ten times the function's index plus
-     * the phase (1 to 3, or 0), and the value is what it tripped at.
+     * the phase (1 to 3, or 0), and the value is what it tripped at. For a
+     * command to synchronise the code is zero when it was accepted, else the
+     * refusal bits, and the value is the phase angle at the command [deg].
      * @returns {Float64Array}
      */
     events() {
@@ -147,6 +172,22 @@ export class KguSim {
      */
     machine_facts() {
         const ret = wasm.kgusim_machine_facts(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * The revenue meter's journals: the low-voltage journal first, then
+     * high voltage, then loss of voltage, oldest first within each. Four
+     * values per record: journal (1 low voltage, 2 high voltage, 3 loss of
+     * voltage), phases seen (bit 0 phase a, 1 b, 2 c), the supervision
+     * instant that first saw the condition and the first later one that saw
+     * it gone (NaN until then), both by the meter's own clock [s]. The meter
+     * knows no depth and no duration finer than its supervision period.
+     * @returns {Float64Array}
+     */
+    meter_events() {
+        const ret = wasm.kgusim_meter_events(this.__wbg_ptr);
         var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
         return v1;
@@ -277,6 +318,23 @@ export class KguSim {
      */
     set_load_setpoint_pct(pct) {
         wasm.kgusim_set_load_setpoint_pct(this.__wbg_ptr, pct);
+    }
+    /**
+     * How far the revenue meter's clock is ahead of the model's time [s].
+     * The meter's journals are stamped with its own clock.
+     * @param {number} offset_s
+     */
+    set_meter_clock_offset_s(offset_s) {
+        wasm.kgusim_set_meter_clock_offset_s(this.__wbg_ptr, offset_s);
+    }
+    /**
+     * Where within its supervision period the meter looks at the phase
+     * voltages [s]: the instants are at whole periods of the meter's own
+     * clock plus this. Taken modulo the period (one second by the card).
+     * @param {number} phase_s
+     */
+    set_meter_sample_phase_s(phase_s) {
+        wasm.kgusim_set_meter_sample_phase_s(this.__wbg_ptr, phase_s);
     }
     /**
      * Temperature of the water returning from the network [C].

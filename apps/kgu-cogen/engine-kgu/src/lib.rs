@@ -21,6 +21,7 @@ pub mod analyser;
 pub mod cabinet;
 pub mod controller;
 pub mod heat;
+pub mod meter;
 pub mod plant;
 
 #[cfg(test)]
@@ -157,10 +158,24 @@ snapshot_layout!(
     ANALYSER_CLOCK_S,
     ANALYSER_OPEN_EVENTS,
     ANALYSER_RECORDED_EVENTS,
+    // The revenue meter's four energy registers.
+    METER_ACTIVE_EXPORT_KWH,
+    METER_ACTIVE_IMPORT_KWH,
+    METER_REACTIVE_EXPORT_KVARH,
+    METER_REACTIVE_IMPORT_KVARH,
+    METER_CLOCK_S,
+    // Records held in each of the meter's journals.
+    METER_LOW_VOLTAGE_RECORDS,
+    METER_HIGH_VOLTAGE_RECORDS,
+    METER_LOSS_OF_VOLTAGE_RECORDS,
+    // Journals that have displaced or refused a record: bit 0 low voltage, 1 high, 2 loss.
+    METER_OVERFLOW_BITS,
+    // 1 while the automatic synchroniser is armed by the operator's command to synchronise.
+    SYNCHRONISER_ARMED_BY_OPERATOR,
 );
 
 /// Names of the entries of [`KguSim::limits`], in order.
-pub const LIMIT_FIELDS: [&str; 54] = [
+pub const LIMIT_FIELDS: [&str; 62] = [
     "RATED_ELECTRIC_KW",
     "RATED_SPEED_RPM",
     "OVERSPEED_TRIP_RPM",
@@ -218,6 +233,16 @@ pub const LIMIT_FIELDS: [&str; 54] = [
     "ANALYSER_SWELL_PU",
     "ANALYSER_INTERRUPTION_PU",
     "ANALYSER_HYSTERESIS_PU",
+    // The revenue meter's card.
+    "METER_SUPERVISION_PERIOD_S",
+    "METER_LOW_VOLTAGE_PU",
+    "METER_HIGH_VOLTAGE_PU",
+    "METER_LOSS_OF_VOLTAGE_PU",
+    "METER_LOW_VOLTAGE_CAPACITY",
+    "METER_HIGH_VOLTAGE_CAPACITY",
+    "METER_LOSS_OF_VOLTAGE_CAPACITY",
+    // 1 when a full journal displaces its oldest record, 0 when it keeps it.
+    "METER_OVERFLOW_OVERWRITES_OLDEST",
 ];
 
 /// Number of values per entry of [`KguSim::events`].
@@ -395,6 +420,23 @@ impl KguSim {
         }
     }
 
+    /// How far the revenue meter's clock is ahead of the model's time [s].
+    /// The meter's journals are stamped with its own clock.
+    pub fn set_meter_clock_offset_s(&mut self, offset_s: f64) {
+        if offset_s.is_finite() {
+            self.plant.meter.set_clock_offset_s(offset_s);
+        }
+    }
+
+    /// Where within its supervision period the meter looks at the phase
+    /// voltages [s]: the instants are at whole periods of the meter's own
+    /// clock plus this. Taken modulo the period (one second by the card).
+    pub fn set_meter_sample_phase_s(&mut self, phase_s: f64) {
+        if phase_s.is_finite() {
+            self.plant.meter.set_sample_phase_s(phase_s);
+        }
+    }
+
     /// Bus frequency [Hz].
     pub fn set_grid_freq_hz(&mut self, hz: f64) {
         if hz.is_finite() {
@@ -455,6 +497,23 @@ impl KguSim {
         } else {
             self.plant.log_refused_close(bits);
         }
+        bits
+    }
+
+    /// Command to synchronise: the operator decides, the automatic
+    /// synchroniser closes the breaker near zero phase, for this one attempt.
+    /// Accepted on the synchronising step (a start with the automatic
+    /// synchronisation off, after a manual opening, after the acknowledgement
+    /// in manual restoration). Returns zero when accepted, otherwise the
+    /// reasons with the bits of [`Self::cmd_breaker_close`]: 16 the unit is
+    /// not synchronising, 32 a trip is latched. A normal stop cancels the
+    /// wait. Either way the command is in the event log.
+    pub fn cmd_synchronise(&mut self) -> u32 {
+        let bits = self.plant.synchronise_refusal();
+        if bits == 0 {
+            self.plant.set_operator(|o| o.synchronise = true);
+        }
+        self.plant.log_synchronise_command(bits);
         bits
     }
 
@@ -523,6 +582,7 @@ impl KguSim {
         let cabinet = &self.plant.cabinet_card;
         let restore = &self.plant.restoration_card;
         let quality = self.plant.analyser.card();
+        let meter = self.plant.meter.card();
         let rated_current = self.plant.generator_card.rated_current_a();
         let rpm = 30.0 / PI;
         vec![
@@ -580,6 +640,18 @@ impl KguSim {
             quality.swell_pu,
             quality.interruption_pu,
             quality.hysteresis_pu,
+            meter.supervision_period_s,
+            meter.low_voltage_pu,
+            meter.high_voltage_pu,
+            meter.loss_of_voltage_pu,
+            f64::from(meter.low_voltage_capacity),
+            f64::from(meter.high_voltage_capacity),
+            f64::from(meter.loss_of_voltage_capacity),
+            if meter.overflow == crate::cards::JournalOverflow::OverwriteOldest {
+                1.0
+            } else {
+                0.0
+            },
         ]
     }
 
@@ -591,9 +663,12 @@ impl KguSim {
 
     /// The event log, oldest first, four values per event: time [s], kind
     /// (1 state, 2 breaker, 3 alarm raised, 4 alarm cleared, 5 command
-    /// refused, 6 sequence step, 7 cabinet protection trip), code, value.
+    /// refused, 6 sequence step, 7 cabinet protection trip, 8 the operator's
+    /// command to synchronise), code, value.
     /// For a protection trip the code is ten times the function's index plus
-    /// the phase (1 to 3, or 0), and the value is what it tripped at.
+    /// the phase (1 to 3, or 0), and the value is what it tripped at. For a
+    /// command to synchronise the code is zero when it was accepted, else the
+    /// refusal bits, and the value is the phase angle at the command [deg].
     #[must_use]
     pub fn events(&self) -> Vec<f64> {
         let mut flat = Vec::with_capacity(self.plant.events().len() * EVENT_STRIDE);
@@ -636,6 +711,33 @@ impl KguSim {
     /// Empty the analyser's record. Events still open stay open.
     pub fn clear_analyser_events(&mut self) {
         self.plant.analyser.clear_events();
+    }
+
+    /// The revenue meter's journals: the low-voltage journal first, then
+    /// high voltage, then loss of voltage, oldest first within each. Four
+    /// values per record: journal (1 low voltage, 2 high voltage, 3 loss of
+    /// voltage), phases seen (bit 0 phase a, 1 b, 2 c), the supervision
+    /// instant that first saw the condition and the first later one that saw
+    /// it gone (NaN until then), both by the meter's own clock [s]. The meter
+    /// knows no depth and no duration finer than its supervision period.
+    #[must_use]
+    pub fn meter_events(&self) -> Vec<f64> {
+        let mut flat = Vec::new();
+        for record in self.plant.meter.records() {
+            flat.extend_from_slice(&[
+                f64::from(record.journal),
+                f64::from(record.phase_bits),
+                record.seen_s,
+                record.cleared_s,
+            ]);
+        }
+        flat
+    }
+
+    /// Empty the meter's journals and their overflow flags. The energy
+    /// registers are not touched.
+    pub fn clear_meter_events(&mut self) {
+        self.plant.meter.clear_records();
     }
 
     /// Fixed facts of the machine: `[cylinders, pole pairs, shaft inertia
@@ -816,5 +918,23 @@ impl KguSim {
         s[snap::ANALYSER_CLOCK_S] = plant.analyser.clock_s(plant.system.time_s());
         s[snap::ANALYSER_OPEN_EVENTS] = f64::from(plant.analyser.open_events());
         s[snap::ANALYSER_RECORDED_EVENTS] = f64::from(plant.analyser.recorded_events());
+
+        // The revenue meter.
+        let meter = &plant.meter;
+        s[snap::METER_ACTIVE_EXPORT_KWH] = meter.active_export_j() / 3.6e6;
+        s[snap::METER_ACTIVE_IMPORT_KWH] = meter.active_import_j() / 3.6e6;
+        s[snap::METER_REACTIVE_EXPORT_KVARH] = meter.reactive_export_var_s() / 3.6e6;
+        s[snap::METER_REACTIVE_IMPORT_KVARH] = meter.reactive_import_var_s() / 3.6e6;
+        s[snap::METER_CLOCK_S] = meter.clock_s(plant.system.time_s());
+        s[snap::METER_LOW_VOLTAGE_RECORDS] =
+            meter.record_count(crate::meter::journal::LOW_VOLTAGE) as f64;
+        s[snap::METER_HIGH_VOLTAGE_RECORDS] =
+            meter.record_count(crate::meter::journal::HIGH_VOLTAGE) as f64;
+        s[snap::METER_LOSS_OF_VOLTAGE_RECORDS] =
+            meter.record_count(crate::meter::journal::LOSS_OF_VOLTAGE) as f64;
+        s[snap::METER_OVERFLOW_BITS] = f64::from(meter.overflow_bits());
+
+        s[snap::SYNCHRONISER_ARMED_BY_OPERATOR] =
+            if controller.synchroniser_armed { 1.0 } else { 0.0 };
     }
 }

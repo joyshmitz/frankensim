@@ -23,6 +23,11 @@ export class KguSim {
      */
     clear_events(): void;
     /**
+     * Empty the meter's journals and their overflow flags. The energy
+     * registers are not touched.
+     */
+    clear_meter_events(): void;
+    /**
      * Acknowledge alarms; a latched trip whose cause is gone is cleared.
      */
     cmd_ack(): void;
@@ -52,11 +57,25 @@ export class KguSim {
      */
     cmd_stop(): void;
     /**
+     * Command to synchronise: the operator decides, the automatic
+     * synchroniser closes the breaker near zero phase, for this one attempt.
+     * Accepted on the synchronising step (a start with the automatic
+     * synchronisation off, after a manual opening, after the acknowledgement
+     * in manual restoration). Returns zero when accepted, otherwise the
+     * reasons with the bits of [`Self::cmd_breaker_close`]: 16 the unit is
+     * not synchronising, 32 a trip is latched. A normal stop cancels the
+     * wait. Either way the command is in the event log.
+     */
+    cmd_synchronise(): number;
+    /**
      * The event log, oldest first, four values per event: time [s], kind
      * (1 state, 2 breaker, 3 alarm raised, 4 alarm cleared, 5 command
-     * refused, 6 sequence step, 7 cabinet protection trip), code, value.
+     * refused, 6 sequence step, 7 cabinet protection trip, 8 the operator's
+     * command to synchronise), code, value.
      * For a protection trip the code is ten times the function's index plus
-     * the phase (1 to 3, or 0), and the value is what it tripped at.
+     * the phase (1 to 3, or 0), and the value is what it tripped at. For a
+     * command to synchronise the code is zero when it was accepted, else the
+     * refusal bits, and the value is the phase angle at the command [deg].
      */
     events(): Float64Array;
     /**
@@ -78,6 +97,16 @@ export class KguSim {
      * rated speed kW, rated fuel flow kg/s]`.
      */
     machine_facts(): Float64Array;
+    /**
+     * The revenue meter's journals: the low-voltage journal first, then
+     * high voltage, then loss of voltage, oldest first within each. Four
+     * values per record: journal (1 low voltage, 2 high voltage, 3 loss of
+     * voltage), phases seen (bit 0 phase a, 1 b, 2 c), the supervision
+     * instant that first saw the condition and the first later one that saw
+     * it gone (NaN until then), both by the meter's own clock [s]. The meter
+     * knows no depth and no duration finer than its supervision period.
+     */
+    meter_events(): Float64Array;
     /**
      * A unit at standstill, cold and ready to start, on a healthy bus.
      */
@@ -152,6 +181,17 @@ export class KguSim {
      */
     set_load_setpoint_pct(pct: number): void;
     /**
+     * How far the revenue meter's clock is ahead of the model's time [s].
+     * The meter's journals are stamped with its own clock.
+     */
+    set_meter_clock_offset_s(offset_s: number): void;
+    /**
+     * Where within its supervision period the meter looks at the phase
+     * voltages [s]: the instants are at whole periods of the meter's own
+     * clock plus this. Taken modulo the period (one second by the card).
+     */
+    set_meter_sample_phase_s(phase_s: number): void;
+    /**
      * Temperature of the water returning from the network [C].
      */
     set_network_return_temp_c(celsius: number): void;
@@ -194,17 +234,20 @@ export interface InitOutput {
     readonly kgusim_analyser_events: (a: number) => [number, number];
     readonly kgusim_clear_analyser_events: (a: number) => void;
     readonly kgusim_clear_events: (a: number) => void;
+    readonly kgusim_clear_meter_events: (a: number) => void;
     readonly kgusim_cmd_ack: (a: number) => void;
     readonly kgusim_cmd_breaker_close: (a: number) => number;
     readonly kgusim_cmd_breaker_open: (a: number) => void;
     readonly kgusim_cmd_emergency_stop: (a: number) => void;
     readonly kgusim_cmd_start: (a: number) => void;
     readonly kgusim_cmd_stop: (a: number) => void;
+    readonly kgusim_cmd_synchronise: (a: number) => number;
     readonly kgusim_events: (a: number) => [number, number];
     readonly kgusim_last_error: (a: number) => [number, number];
     readonly kgusim_limit_field_names: (a: number) => [number, number];
     readonly kgusim_limits: (a: number) => [number, number];
     readonly kgusim_machine_facts: (a: number) => [number, number];
+    readonly kgusim_meter_events: (a: number) => [number, number];
     readonly kgusim_new: () => number;
     readonly kgusim_set_analyser_clock_offset_s: (a: number, b: number) => void;
     readonly kgusim_set_atm_pressure_kpa: (a: number, b: number) => void;
@@ -221,6 +264,8 @@ export interface InitOutput {
     readonly kgusim_set_heat_demand_frac: (a: number, b: number) => void;
     readonly kgusim_set_load_ramp_pct_per_min: (a: number, b: number) => void;
     readonly kgusim_set_load_setpoint_pct: (a: number, b: number) => void;
+    readonly kgusim_set_meter_clock_offset_s: (a: number, b: number) => void;
+    readonly kgusim_set_meter_sample_phase_s: (a: number, b: number) => void;
     readonly kgusim_set_network_return_temp_c: (a: number, b: number) => void;
     readonly kgusim_set_oil_pressure_low: (a: number, b: number) => void;
     readonly kgusim_set_restoration_mode: (a: number, b: number) => void;

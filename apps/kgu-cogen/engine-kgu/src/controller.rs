@@ -43,7 +43,7 @@ use crate::components::{KguError, all_finite, check_cx, nz, sid, wrap_angle};
 /// tripped functions, grid healthy]`.
 pub const SENSE_WIDTH: usize = 9;
 /// Width of the `operator` input, see [`OperatorSignals`].
-pub const OPERATOR_WIDTH: usize = 16;
+pub const OPERATOR_WIDTH: usize = 17;
 /// Width of the `actuators` output: `[starter, gas shut-off open, ignition,
 /// valve demand, breaker close request, cabinet reset]`.
 pub const ACTUATOR_WIDTH: usize = 6;
@@ -302,6 +302,22 @@ pub fn close_refusal(sequence: Sequence, alarms: u32, check: &SynchroCheck) -> u
     bits
 }
 
+/// Reasons a command to synchronise would be refused now ([`refusal`] bits),
+/// zero when it is accepted. The command hands the closing to the automatic
+/// synchroniser, which waits for the window by itself, so only the step of
+/// the sequence and a latched trip can refuse it.
+#[must_use]
+pub fn synchronise_refusal(sequence: Sequence, alarms: u32) -> u32 {
+    let mut bits = 0;
+    if sequence != Sequence::Synchronising {
+        bits |= refusal::NOT_SYNCHRONISING;
+    }
+    if alarms & alarm::TRIPS != 0 {
+        bits |= refusal::TRIP_LATCHED;
+    }
+    bits
+}
+
 /// The operator's side of the controller, in the order of the `operator`
 /// signal port. Pulses are one for exactly one step.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -339,6 +355,9 @@ pub struct OperatorSignals {
     /// Whether the unit returns to the bus by itself after a grid event
     /// (automatic restoration) or waits for the operator (manual).
     pub restoration_auto: bool,
+    /// Command to synchronise (pulse): the operator decides, the automatic
+    /// synchroniser closes the breaker for this one attempt.
+    pub synchronise: bool,
 }
 
 impl OperatorSignals {
@@ -361,6 +380,7 @@ impl OperatorSignals {
         values[13] = flag(self.fan_failed);
         values[14] = self.load_ramp_per_s;
         values[15] = flag(self.restoration_auto);
+        values[16] = flag(self.synchronise);
     }
 
     fn read(values: &[f64]) -> Self {
@@ -382,6 +402,7 @@ impl OperatorSignals {
             fan_failed: flag(values[13]),
             load_ramp_per_s: values[14].max(0.0),
             restoration_auto: flag(values[15]),
+            synchronise: flag(values[16]),
         }
     }
 }
@@ -431,6 +452,10 @@ pub struct ControllerState {
     /// The automation is on its way back to the bus: the synchroniser closes
     /// by itself whatever the operator's auto-synchronise setting.
     pub returning: bool,
+    /// The operator has commanded this synchronisation: the automatic
+    /// synchroniser closes the breaker for this one attempt, whatever holds
+    /// it back otherwise. Cleared when the unit leaves the synchronising step.
+    pub synchroniser_armed: bool,
     /// Time the power has fallen short with the valve fully open [s].
     pub gas_shortfall_time_s: f64,
     /// Time the low-oil-pressure input has been on with the engine firing [s].
@@ -472,6 +497,7 @@ impl ControllerState {
             restoration_attempts: 0,
             attempt_window_start_s: 0.0,
             returning: false,
+            synchroniser_armed: false,
             gas_shortfall_time_s: 0.0,
             oil_pressure_time_s: 0.0,
             running_time_s: 0.0,
@@ -873,6 +899,13 @@ impl Component for GensetControllerComponent {
                         set.run_up_rate_rad_s2 * dt_s,
                     );
                     let refused = close_refusal(old.sequence, old.alarms, &check);
+                    // Who lets the automatic synchroniser close: the start's own setting
+                    // or the automatic return, unless a manual opening or a manual return
+                    // holds it back; or the operator's command, for this attempt.
+                    next.synchroniser_armed = old.synchroniser_armed || operator.synchronise;
+                    let automatic = ((operator.auto_synchronise || old.returning)
+                        && !old.resynchronise_inhibited)
+                        || next.synchroniser_armed;
                     if operator.stop {
                         Self::enter(&mut next, Sequence::CoolDown);
                         next.returning = false;
@@ -881,8 +914,7 @@ impl Component for GensetControllerComponent {
                         next.refusals = old.refusals + 1;
                     } else if refused == 0
                         && (operator.breaker_close
-                            || ((operator.auto_synchronise || old.returning)
-                                && !old.resynchronise_inhibited
+                            || (automatic
                                 && check.phase_angle_rad.abs() <= set.auto_close_phase_rad))
                     {
                         Self::enter(&mut next, Sequence::OnLoad);
@@ -1012,6 +1044,12 @@ impl Component for GensetControllerComponent {
                     }
                 }
             }
+        }
+
+        // The operator's command to synchronise is for one attempt: it does not outlast
+        // the synchronising step, however that step is left.
+        if next.sequence != Sequence::Synchronising {
+            next.synchroniser_armed = false;
         }
 
         // --- Governor. -------------------------------------------------------------------

@@ -45,9 +45,11 @@ use crate::cards::{
     BUS_VOLTAGE_V, BreakerCabinetCard, CombustionLimitsCard, ControllerSetpoints, CoolantCard,
     DEFAULT_CONDITION_FACTOR, DumpCoolerCard, ExhaustExchangerCard, ExhaustGasCard, FuelGasCard,
     GasValveCard, GeneratorCard, HeatSplitCard, IndicatedWorkCard, NOMINAL_FREQUENCY_HZ,
-    NetworkExchangerCard, PassportCard, PowerQualityCard, RATED_ELECTRIC_W, RATED_OMEGA_RAD_S,
-    RestorationCard, SHAFT_INERTIA_KG_M2, StarterCard, SynchronisationWindowCard,
+    MeterCard, NetworkExchangerCard, PassportCard, PowerQualityCard, RATED_ELECTRIC_W,
+    RATED_OMEGA_RAD_S, RestorationCard, SHAFT_INERTIA_KG_M2, StarterCard,
+    SynchronisationWindowCard,
 };
+use crate::meter::RevenueMeter;
 use crate::components::{
     GasControlValveComponent, GasEngineComponent, GasEngineState, GasValveState, GeneratorState,
     StarterMotorComponent, StarterState, SynchronousGeneratorComponent,
@@ -58,7 +60,7 @@ use crate::heat::{
 };
 use crate::controller::{
     ControllerState, GensetControllerComponent, OPERATOR_WIDTH, OperatorSignals, SENSE_WIDTH,
-    SynchroCheck, close_refusal,
+    SynchroCheck, close_refusal, synchronise_refusal,
 };
 
 /// The plant's fixed sub-step [s]: the governor's sample period. The
@@ -139,6 +141,9 @@ pub struct OperatorInputs {
     pub breaker_close: bool,
     /// Manual breaker open pulse.
     pub breaker_open: bool,
+    /// Command to synchronise (pulse): the automatic synchroniser closes the
+    /// breaker for this one attempt.
+    pub synchronise: bool,
 }
 
 impl Default for OperatorInputs {
@@ -166,6 +171,7 @@ impl Default for OperatorInputs {
             acknowledge: false,
             breaker_close: false,
             breaker_open: false,
+            synchronise: false,
         }
     }
 }
@@ -246,6 +252,13 @@ pub mod event_kind {
     /// unbalance [%], negative-sequence current [% of rated], phase current
     /// [A], frequency [Hz], reverse power [kW].
     pub const PROTECTION: u32 = 7;
+    /// The operator commanded a synchronisation. `code` is zero when the
+    /// command was accepted (the automatic synchroniser will close the
+    /// breaker), otherwise the refusal bits; `value` is the phase angle at
+    /// the command [degrees]. A closing with no such event before it was
+    /// the automation's own (automatic start or automatic return) or a
+    /// manual close request.
+    pub const SYNCHRONISE_COMMAND: u32 = 8;
 }
 
 /// Handles of the plant's nodes.
@@ -285,6 +298,8 @@ pub struct KguPlant {
     events: Vec<Event>,
     /// The cabinet's power-quality analyser.
     pub analyser: PowerQualityAnalyser,
+    /// The cabinet's revenue meter.
+    pub meter: RevenueMeter,
     /// The cabinet's protection settings.
     pub cabinet_card: BreakerCabinetCard,
     /// The restoration settings.
@@ -776,6 +791,7 @@ impl KguPlant {
                 PowerQualityCard::DEFAULT,
                 generator_card.rated_phase_voltage_v(),
             ),
+            meter: RevenueMeter::new(MeterCard::ASSUMED),
             cabinet_card,
             restoration_card,
             coolant_card,
@@ -835,6 +851,14 @@ impl KguPlant {
         close_refusal(controller.sequence, controller.alarms, &self.synchro_check())
     }
 
+    /// Reasons a command to synchronise would be refused now; zero when the
+    /// controller will arm its synchroniser at the next sub-step.
+    #[must_use]
+    pub fn synchronise_refusal(&self) -> u32 {
+        let controller = self.controller_state();
+        synchronise_refusal(controller.sequence, controller.alarms)
+    }
+
     /// Advance by `dt_s`, in whole sub-steps of [`SUB_STEP_S`]. Time that
     /// does not fill a sub-step is carried to the next call.
     ///
@@ -867,6 +891,7 @@ impl KguPlant {
                     "fs_system::System::step kept shortening: {remaining:.3e} s of a sub-step left"
                 ));
             }
+            let grid_energy_before_j = self.boundary_energy_in_j("generator.grid");
             let report = self
                 .system
                 .step(remaining, cx)
@@ -877,6 +902,12 @@ impl KguPlant {
             let voltages = self.operator().grid_phase_voltage_pu;
             let step_start_s = self.system.time_s() - report.dt_s;
             self.analyser.observe(step_start_s, report.dt_s, voltages);
+            // The meter reads the same voltages, the energy the ledger booked at the
+            // generator's bus port over the step, and the reactive power.
+            let exported_j = grid_energy_before_j - self.boundary_energy_in_j("generator.grid");
+            let reactive_var = self.generator_state().reactive_power_var;
+            self.meter
+                .observe(step_start_s, report.dt_s, voltages, exported_j, reactive_var);
             self.sample();
         }
 
@@ -911,6 +942,7 @@ impl KguPlant {
         operator.acknowledge = false;
         operator.breaker_close = false;
         operator.breaker_open = false;
+        operator.synchronise = false;
     }
 
     fn push_event(&mut self, kind: u32, code: u32, value: f64) {
@@ -991,6 +1023,13 @@ impl KguPlant {
     /// Record that a close request was refused before it reached the controller.
     pub fn log_refused_close(&mut self, bits: u32) {
         self.push_event(event_kind::REFUSED, bits, 0.0);
+    }
+
+    /// Record the operator's command to synchronise: accepted (`bits` zero)
+    /// or refused, with the phase angle at that moment.
+    pub fn log_synchronise_command(&mut self, bits: u32) {
+        let phase_deg = self.synchro_check().phase_angle_rad.to_degrees();
+        self.push_event(event_kind::SYNCHRONISE_COMMAND, bits, phase_deg);
     }
 
     /// The event log, oldest first.
@@ -1172,5 +1211,6 @@ fn operator_signals(operator: &OperatorInputs) -> OperatorSignals {
         fan_failed: operator.fan_failed,
         load_ramp_per_s: operator.load_ramp_per_s,
         restoration_auto: operator.restoration_auto,
+        synchronise: operator.synchronise,
     }
 }
