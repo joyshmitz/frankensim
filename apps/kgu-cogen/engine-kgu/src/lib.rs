@@ -17,6 +17,8 @@
 
 pub mod cards;
 pub mod components;
+pub mod analyser;
+pub mod cabinet;
 pub mod controller;
 pub mod heat;
 pub mod plant;
@@ -129,10 +131,36 @@ snapshot_layout!(
     BLOCK_LOSS_KW,
     THERMAL_EFFICIENCY_PCT,
     ENERGY_DUMPED_KWH,
+    // Bus phase voltages on the generator's side of the transformer, phase to neutral
+    PHASE_A_VOLTAGE_V,
+    PHASE_B_VOLTAGE_V,
+    PHASE_C_VOLTAGE_V,
+    PHASE_A_CURRENT_A,
+    PHASE_B_CURRENT_A,
+    PHASE_C_CURRENT_A,
+    // negative over positive sequence voltage
+    VOLTAGE_UNBALANCE_PCT,
+    // of the generator's rated current
+    NEGATIVE_SEQUENCE_CURRENT_PCT,
+    // the protection's replica of the rotor's heating over its limit
+    ROTOR_THERMAL_USED_FRAC,
+    // cabinet::protection bits: functions whose condition holds / that have tripped
+    PROTECTION_PICKUP_BITS,
+    PROTECTION_TRIPPED_BITS,
+    NEGATIVE_SEQUENCE_LOSS_KW,
+    // 0 manual, 1 automatic
+    RESTORATION_MODE,
+    // seconds of healthy grid still to wait before the automatic return; NaN when not counting
+    GRID_HEALTHY_COUNTDOWN_S,
+    RESTORATION_ATTEMPTS,
+    WAITING_FOR_GRID,
+    ANALYSER_CLOCK_S,
+    ANALYSER_OPEN_EVENTS,
+    ANALYSER_RECORDED_EVENTS,
 );
 
 /// Names of the entries of [`KguSim::limits`], in order.
-pub const LIMIT_FIELDS: [&str; 20] = [
+pub const LIMIT_FIELDS: [&str; 54] = [
     "RATED_ELECTRIC_KW",
     "RATED_SPEED_RPM",
     "OVERSPEED_TRIP_RPM",
@@ -153,6 +181,43 @@ pub const LIMIT_FIELDS: [&str; 20] = [
     "PRE_LUBRICATION_TIME_S",
     "PURGE_TIME_S",
     "WARM_UP_TIME_S",
+    // The breaker cabinet's protection settings.
+    "RATED_CURRENT_A",
+    "RATED_PHASE_VOLTAGE_V",
+    "PHASE_UNDERVOLTAGE_PU",
+    "PHASE_UNDERVOLTAGE_DELAY_S",
+    "PHASE_OVERVOLTAGE_PU",
+    "PHASE_OVERVOLTAGE_DELAY_S",
+    "VOLTAGE_UNBALANCE_TRIP_PCT",
+    "VOLTAGE_UNBALANCE_DELAY_S",
+    "NEGATIVE_SEQUENCE_PICKUP_PCT",
+    "NEGATIVE_SEQUENCE_LIMIT_S",
+    "NEGATIVE_SEQUENCE_COOLING_S",
+    "OVERCURRENT_A",
+    "OVERCURRENT_DELAY_S",
+    "OVERCURRENT_HIGH_A",
+    "OVERCURRENT_HIGH_DELAY_S",
+    "UNDERFREQUENCY_HZ",
+    "UNDERFREQUENCY_DELAY_S",
+    "OVERFREQUENCY_HZ",
+    "OVERFREQUENCY_DELAY_S",
+    "REVERSE_POWER_KW",
+    "REVERSE_POWER_DELAY_S",
+    // Restoration after a grid event.
+    "HEALTHY_VOLTAGE_LOW_PU",
+    "HEALTHY_VOLTAGE_HIGH_PU",
+    "HEALTHY_UNBALANCE_PCT",
+    "HEALTHY_FREQUENCY_LOW_HZ",
+    "HEALTHY_FREQUENCY_HIGH_HZ",
+    "HEALTHY_GRID_DELAY_S",
+    "LONGEST_GRID_WAIT_S",
+    "LARGEST_AUTO_ATTEMPTS",
+    "ATTEMPT_WINDOW_S",
+    // The power-quality analyser's thresholds.
+    "ANALYSER_DIP_PU",
+    "ANALYSER_SWELL_PU",
+    "ANALYSER_INTERRUPTION_PU",
+    "ANALYSER_HYSTERESIS_PU",
 ];
 
 /// Number of values per entry of [`KguSim::events`].
@@ -282,10 +347,51 @@ impl KguSim {
         }
     }
 
-    /// Bus voltage [pu of 10 kV].
+    /// Bus voltage [pu]: all three phases at this magnitude.
     pub fn set_grid_voltage_pu(&mut self, pu: f64) {
-        if pu.is_finite() {
-            self.plant.set_operator(|o| o.grid_voltage_pu = pu.clamp(0.0, 1.2));
+        self.set_grid_phase_voltages_pu(pu, pu, pu);
+    }
+
+    /// Magnitudes of the three phase voltages of the bus [pu of the rated
+    /// phase voltage], phases a, b, c. A grid disturbance is a circumstance
+    /// of the scenario: any phase, any depth.
+    pub fn set_grid_phase_voltages_pu(&mut self, a: f64, b: f64, c: f64) {
+        if a.is_finite() && b.is_finite() && c.is_finite() {
+            self.plant.set_operator(|o| {
+                o.grid_phase_voltage_pu = [a.clamp(0.0, 1.3), b.clamp(0.0, 1.3), c.clamp(0.0, 1.3)];
+            });
+        }
+    }
+
+    /// How far each phase voltage is turned from its nominal position
+    /// [degrees], phases a, b, c; zero for a grid with its phases a third of
+    /// a turn apart.
+    pub fn set_grid_phase_angles_deg(&mut self, a: f64, b: f64, c: f64) {
+        if a.is_finite() && b.is_finite() && c.is_finite() {
+            self.plant.set_operator(|o| {
+                o.grid_phase_angle_rad = [
+                    a.clamp(-60.0, 60.0).to_radians(),
+                    b.clamp(-60.0, 60.0).to_radians(),
+                    c.clamp(-60.0, 60.0).to_radians(),
+                ];
+            });
+        }
+    }
+
+    /// How the unit comes back after the cabinet's protection has opened the
+    /// breaker on a grid event: `0` manual (people acknowledge and close),
+    /// `1` automatic (the automation waits for a healthy grid, synchronises
+    /// and loads the unit by itself). Default manual.
+    pub fn set_restoration_mode(&mut self, mode: u32) {
+        self.plant.set_operator(|o| o.restoration_auto = mode == 1);
+    }
+
+    /// How far the power-quality analyser's clock is ahead of the model's
+    /// time [s]. The controller's and the protection's events stay in model
+    /// time.
+    pub fn set_analyser_clock_offset_s(&mut self, offset_s: f64) {
+        if offset_s.is_finite() {
+            self.plant.analyser.set_clock_offset_s(offset_s);
         }
     }
 
@@ -414,6 +520,10 @@ impl KguSim {
     pub fn limits(&self) -> Vec<f64> {
         let set = &self.plant.setpoints;
         let window = &self.plant.window;
+        let cabinet = &self.plant.cabinet_card;
+        let restore = &self.plant.restoration_card;
+        let quality = self.plant.analyser.card();
+        let rated_current = self.plant.generator_card.rated_current_a();
         let rpm = 30.0 / PI;
         vec![
             RATED_ELECTRIC_W * 1.0e-3,
@@ -423,7 +533,7 @@ impl KguSim {
             set.coolant_warning_k - 273.15,
             set.coolant_trip_k - 273.15,
             set.gas_low_pressure_pa * 1.0e-3,
-            set.undervoltage_trip_pu,
+            cabinet.undervoltage.pickup,
             window.voltage_difference_pu,
             window.frequency_difference_hz,
             window.phase_angle_rad.to_degrees(),
@@ -436,6 +546,40 @@ impl KguSim {
             set.pre_lubrication_time_s,
             set.purge_time_s,
             set.warm_up_time_s,
+            rated_current,
+            self.plant.generator_card.rated_phase_voltage_v(),
+            cabinet.undervoltage.pickup,
+            cabinet.undervoltage.delay_s,
+            cabinet.overvoltage.pickup,
+            cabinet.overvoltage.delay_s,
+            100.0 * cabinet.voltage_unbalance.pickup,
+            cabinet.voltage_unbalance.delay_s,
+            100.0 * cabinet.negative_sequence_pickup_pu,
+            cabinet.negative_sequence_limit_s,
+            cabinet.negative_sequence_cooling_s,
+            cabinet.overcurrent.pickup * rated_current,
+            cabinet.overcurrent.delay_s,
+            cabinet.overcurrent_high.pickup * rated_current,
+            cabinet.overcurrent_high.delay_s,
+            cabinet.underfrequency.pickup,
+            cabinet.underfrequency.delay_s,
+            cabinet.overfrequency.pickup,
+            cabinet.overfrequency.delay_s,
+            cabinet.reverse_power.pickup * 1.0e-3,
+            cabinet.reverse_power.delay_s,
+            restore.healthy_voltage_low_pu,
+            restore.healthy_voltage_high_pu,
+            100.0 * restore.healthy_unbalance,
+            restore.healthy_frequency_low_hz,
+            restore.healthy_frequency_high_hz,
+            restore.healthy_delay_s,
+            restore.longest_wait_s,
+            f64::from(restore.largest_attempts),
+            restore.attempt_window_s,
+            quality.dip_pu,
+            quality.swell_pu,
+            quality.interruption_pu,
+            quality.hysteresis_pu,
         ]
     }
 
@@ -447,7 +591,9 @@ impl KguSim {
 
     /// The event log, oldest first, four values per event: time [s], kind
     /// (1 state, 2 breaker, 3 alarm raised, 4 alarm cleared, 5 command
-    /// refused, 6 sequence step), code, value.
+    /// refused, 6 sequence step, 7 cabinet protection trip), code, value.
+    /// For a protection trip the code is ten times the function's index plus
+    /// the phase (1 to 3, or 0), and the value is what it tripped at.
     #[must_use]
     pub fn events(&self) -> Vec<f64> {
         let mut flat = Vec::with_capacity(self.plant.events().len() * EVENT_STRIDE);
@@ -465,6 +611,31 @@ impl KguSim {
     /// Empty the event log.
     pub fn clear_events(&mut self) {
         self.plant.clear_events();
+    }
+
+    /// The power-quality analyser's record of closed voltage events, oldest
+    /// first, five values per event: kind (1 dip, 2 swell, 3 interruption),
+    /// phase (1, 2, 3 for a, b, c), start by the analyser's own clock [s],
+    /// duration [s], residual or highest voltage [V, phase to neutral].
+    #[must_use]
+    pub fn analyser_events(&self) -> Vec<f64> {
+        let events = self.plant.analyser.events();
+        let mut flat = Vec::with_capacity(events.len() * crate::analyser::QUALITY_EVENT_STRIDE);
+        for event in events {
+            flat.extend_from_slice(&[
+                f64::from(event.kind),
+                f64::from(event.phase),
+                event.start_s,
+                event.duration_s,
+                event.extreme_v,
+            ]);
+        }
+        flat
+    }
+
+    /// Empty the analyser's record. Events still open stay open.
+    pub fn clear_analyser_events(&mut self) {
+        self.plant.analyser.clear_events();
     }
 
     /// Fixed facts of the machine: `[cylinders, pole pairs, shaft inertia
@@ -580,8 +751,7 @@ impl KguSim {
         s[snap::ENERGY_DUMPED_KWH] = plant.sink_heat_j(crate::plant::sink::DUMP) / 3.6e6;
         s[snap::RADIATION_LOSS_KW] = engine.radiation_w * 1.0e-3;
         s[snap::FRICTION_POWER_KW] = engine.friction_power_w * 1.0e-3;
-        s[snap::GENERATOR_LOSS_KW] =
-            (generator.copper_loss_w + generator.core_loss_w + generator.damper_loss_w) * 1.0e-3;
+        s[snap::GENERATOR_LOSS_KW] = generator.total_loss_w() * 1.0e-3;
         s[snap::JACKET_HEAT_KW] = engine.jacket_heat_w * 1.0e-3;
         // Supply is the coolant node's temperature (engine outlet). Return is what the pump
         // sends back into the engine: the supply less the rise across jacket and exhaust
@@ -606,5 +776,45 @@ impl KguSim {
         s[snap::KINETIC_ENERGY_KJ] = 0.5 * SHAFT_INERTIA_KG_M2 * omega * omega * 1.0e-3;
         s[snap::NEWTON_ITERATIONS] = f64::from(plant.last_iterations);
         s[snap::LAST_CLOSE_REFUSAL_BITS] = f64::from(controller.last_close_refusal);
+
+        // The bus's three phases, the generator's three currents, and the cabinet.
+        let cabinet = plant.cabinet_state();
+        let card = &plant.generator_card;
+        let phase_volts = card.rated_phase_voltage_v();
+        s[snap::PHASE_A_VOLTAGE_V] = operator.grid_phase_voltage_pu[0] * phase_volts;
+        s[snap::PHASE_B_VOLTAGE_V] = operator.grid_phase_voltage_pu[1] * phase_volts;
+        s[snap::PHASE_C_VOLTAGE_V] = operator.grid_phase_voltage_pu[2] * phase_volts;
+        s[snap::PHASE_A_CURRENT_A] = generator.phase_current_a[0];
+        s[snap::PHASE_B_CURRENT_A] = generator.phase_current_a[1];
+        s[snap::PHASE_C_CURRENT_A] = generator.phase_current_a[2];
+        s[snap::VOLTAGE_UNBALANCE_PCT] = 100.0 * operator.grid_sequences().unbalance();
+        s[snap::NEGATIVE_SEQUENCE_CURRENT_PCT] =
+            100.0 * generator.negative_sequence_current_a / card.rated_current_a();
+        s[snap::ROTOR_THERMAL_USED_FRAC] =
+            cabinet.rotor_heat_s / plant.cabinet_card.negative_sequence_limit_s;
+        s[snap::PROTECTION_PICKUP_BITS] = f64::from(cabinet.pickup);
+        s[snap::PROTECTION_TRIPPED_BITS] = f64::from(cabinet.tripped);
+        s[snap::NEGATIVE_SEQUENCE_LOSS_KW] = (generator.negative_sequence_stator_loss_w
+            + generator.negative_sequence_rotor_loss_w)
+            * 1.0e-3;
+
+        // Restoration after a grid event.
+        let waiting = controller.sequence == crate::controller::Sequence::GridWait;
+        let counting = waiting
+            && operator.restoration_auto
+            && controller.alarms & crate::controller::alarm::RESTORATION_LOCKOUT == 0;
+        s[snap::RESTORATION_MODE] = if operator.restoration_auto { 1.0 } else { 0.0 };
+        s[snap::GRID_HEALTHY_COUNTDOWN_S] = if counting {
+            (plant.restoration_card.healthy_delay_s - controller.grid_healthy_time_s).max(0.0)
+        } else {
+            f64::NAN
+        };
+        s[snap::RESTORATION_ATTEMPTS] = f64::from(controller.restoration_attempts);
+        s[snap::WAITING_FOR_GRID] = if waiting { 1.0 } else { 0.0 };
+
+        // The power-quality analyser.
+        s[snap::ANALYSER_CLOCK_S] = plant.analyser.clock_s(plant.system.time_s());
+        s[snap::ANALYSER_OPEN_EVENTS] = f64::from(plant.analyser.open_events());
+        s[snap::ANALYSER_RECORDED_EVENTS] = f64::from(plant.analyser.recorded_events());
     }
 }

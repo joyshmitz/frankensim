@@ -4,11 +4,15 @@
 
 use fs_ports::component::conformance::{Case, check_component};
 
+use crate::analyser::{QUALITY_EVENT_STRIDE, quality_kind};
+use crate::cabinet::{
+    BreakerCabinetComponent, CabinetState, MEASURE_WIDTH, protection, sequence_components,
+};
 use crate::cards::{
-    CombustionLimitsCard, ControllerSetpoints, DEFAULT_CONDITION_FACTOR, DumpCoolerCard,
-    ExhaustExchangerCard, ExhaustGasCard, FuelGasCard, GasValveCard, GeneratorCard, HeatSplitCard,
-    IndicatedWorkCard, NetworkExchangerCard, PassportCard, RATED_OMEGA_RAD_S, StarterCard,
-    SynchronisationWindowCard,
+    BreakerCabinetCard, CombustionLimitsCard, ControllerSetpoints, DEFAULT_CONDITION_FACTOR,
+    DumpCoolerCard, ExhaustExchangerCard, ExhaustGasCard, FuelGasCard, GasValveCard,
+    GeneratorCard, HeatSplitCard, IndicatedWorkCard, NetworkExchangerCard, PassportCard,
+    RATED_OMEGA_RAD_S, RestorationCard, StarterCard, SynchronisationWindowCard,
 };
 use crate::heat::{
     DumpCoolerComponent, DumpCoolerState, ExhaustExchangerState, ExhaustHeatExchangerComponent,
@@ -213,15 +217,30 @@ fn generator_conforms_open_closed_and_through_a_pole_slip() {
         breaker_closed: true,
         ..open
     };
-    for (state, omega, command, excitation, hz) in [
-        (&open, RATED_OMEGA_RAD_S, 0.0, 1.0, 50.0),
-        (&open, 0.0, 0.0, 1.0, 50.0),
-        (&loaded, RATED_OMEGA_RAD_S, 1.0, 1.0, 50.0),
-        (&loaded, RATED_OMEGA_RAD_S * 1.01, 1.0, 1.2, 50.0),
-        (&loaded, RATED_OMEGA_RAD_S, 1.0, 0.8, 49.8),
-        (&slipping, RATED_OMEGA_RAD_S * 1.05, 1.0, 1.0, 50.0),
+    // The last three: negative-sequence phase voltage (real, imaginary) and the angle of
+    // the positive-sequence voltage.
+    for (state, omega, command, excitation, hz, unbalance) in [
+        (&open, RATED_OMEGA_RAD_S, 0.0, 1.0, 50.0, [0.0, 0.0, 0.0]),
+        (&open, 0.0, 0.0, 1.0, 50.0, [0.0, 0.0, 0.0]),
+        (&loaded, RATED_OMEGA_RAD_S, 1.0, 1.0, 50.0, [0.0, 0.0, 0.0]),
+        (&loaded, RATED_OMEGA_RAD_S * 1.01, 1.0, 1.2, 50.0, [0.0, 0.0, 0.0]),
+        (&loaded, RATED_OMEGA_RAD_S, 1.0, 0.8, 49.8, [0.0, 0.0, 0.0]),
+        (&slipping, RATED_OMEGA_RAD_S * 1.05, 1.0, 1.0, 50.0, [0.0, 0.0, 0.0]),
+        (&loaded, RATED_OMEGA_RAD_S, 1.0, 1.0, 50.0, [20.8, 0.0, 0.0]),
+        (&loaded, RATED_OMEGA_RAD_S, 1.0, 1.0, 50.0, [-9.0, 6.0, 0.05]),
+        (&open, RATED_OMEGA_RAD_S, 0.0, 1.0, 50.0, [20.8, 0.0, 0.0]),
     ] {
-        let inputs = [-omega, 400.0, 303.15, command, excitation, hz];
+        let inputs = [
+            -omega,
+            400.0,
+            303.15,
+            command,
+            excitation,
+            hz,
+            unbalance[0],
+            unbalance[1],
+            unbalance[2],
+        ];
         with_clock_free_cx(|cx| {
             check_component(
                 &generator,
@@ -238,17 +257,296 @@ fn generator_conforms_open_closed_and_through_a_pole_slip() {
     }
 }
 
+/// A negative-sequence voltage on the bus drives a current through the
+/// negative-sequence impedance; its heat is split between stator and rotor,
+/// and half of the rotor's share comes through the shaft.
+#[test]
+fn negative_sequence_voltage_gives_unequal_phase_currents_and_books_its_heat() {
+    use fs_ports::component::Component;
+    let card = GeneratorCard::ASSUMED;
+    let generator = SynchronousGeneratorComponent::new(card);
+    let loaded = GeneratorState {
+        load_angle_rad: 0.25,
+        breaker_closed: true,
+        ..GeneratorState::open()
+    };
+    let step = |unbalance: [f64; 3]| {
+        let inputs = [
+            -RATED_OMEGA_RAD_S,
+            400.0,
+            303.15,
+            1.0,
+            1.0,
+            50.0,
+            unbalance[0],
+            unbalance[1],
+            unbalance[2],
+        ];
+        let mut next = loaded;
+        let mut outputs = [0.0; 3];
+        with_clock_free_cx(|cx| generator.propose(&loaded, 0.01, &inputs, &mut next, &mut outputs, cx))
+            .expect("generator step");
+        (next, outputs)
+    };
+    let (balanced, balanced_out) = step([0.0, 0.0, 0.0]);
+    let (unbalanced, unbalanced_out) = step([20.8, 0.0, 0.0]);
+
+    // Balanced: three equal currents, each the positive-sequence current.
+    for current in balanced.phase_current_a {
+        assert!((current - balanced.line_current_a).abs() < 1.0e-9 * balanced.line_current_a);
+    }
+    assert_eq!(balanced.negative_sequence_current_a, 0.0);
+    assert_eq!(balanced.negative_sequence_rotor_loss_w, 0.0);
+
+    // 20.8 V (9 % of 230.9 V) across R2 + j X2 = (0.05 + j 0.26) pu of 0.128 ohm.
+    let base = card.base_impedance_ohm();
+    let expected = 20.8 / (base * 0.05_f64.hypot(0.26));
+    assert!(
+        (unbalanced.negative_sequence_current_a - expected).abs() < 1.0e-9 * expected,
+        "I2 {} A against {expected} A",
+        unbalanced.negative_sequence_current_a
+    );
+    let [a, b, c] = unbalanced.phase_current_a;
+    let spread = a.max(b).max(c) - a.min(b).min(c);
+    assert!(spread > 0.5 * expected, "phase currents {a}, {b}, {c} A");
+    // The positive-sequence quantities do not move.
+    assert_eq!(unbalanced.line_current_a.to_bits(), balanced.line_current_a.to_bits());
+    assert_eq!(unbalanced.copper_loss_w.to_bits(), balanced.copper_loss_w.to_bits());
+
+    // Heat: 3 R I2^2 in the stator and 3 R_rotor I2^2 in the rotor. The bus supplies
+    // 3 R2 I2^2 of it (the export falls by that), the shaft the other half of the rotor's.
+    let stator = 3.0 * 0.02 * base * expected * expected;
+    let rotor = 3.0 * 0.06 * base * expected * expected;
+    assert!((unbalanced.negative_sequence_stator_loss_w - stator).abs() < 1.0e-9 * stator);
+    assert!((unbalanced.negative_sequence_rotor_loss_w - rotor).abs() < 1.0e-9 * rotor);
+    let export_drop = balanced.electric_power_w - unbalanced.electric_power_w;
+    assert!(
+        (export_drop - (stator + 0.5 * rotor)).abs() < 1.0e-6 * rotor,
+        "export fell by {export_drop} W, 3 R2 I2^2 is {} W",
+        stator + 0.5 * rotor
+    );
+    let shaft_gain = RATED_OMEGA_RAD_S * (balanced_out[0] - unbalanced_out[0]);
+    assert!((shaft_gain - 0.5 * rotor).abs() < 1.0e-6 * rotor, "shaft gives {shaft_gain} W more");
+}
+
+#[test]
+fn sequence_components_are_exact_for_a_balanced_set_and_right_for_one_low_phase() {
+    for magnitude in [1.0, 0.62, 0.73, 1.1] {
+        let balanced = sequence_components([magnitude; 3], [0.0; 3]);
+        assert_eq!(balanced.positive, [magnitude, 0.0]);
+        assert_eq!(balanced.negative, [0.0, 0.0]);
+        assert_eq!(balanced.unbalance(), 0.0);
+    }
+    // One phase at 0.73: positive (2 + 0.73) / 3, negative 0.27 / 3, whichever phase.
+    for low in 0..3 {
+        let mut magnitude = [1.0; 3];
+        magnitude[low] = 0.73;
+        let sequences = sequence_components(magnitude, [0.0; 3]);
+        assert!((sequences.positive_magnitude() - 0.91).abs() < 1.0e-12);
+        assert!((sequences.negative_magnitude() - 0.09).abs() < 1.0e-12);
+        assert!(sequences.positive_angle().abs() < 1.0e-12);
+    }
+    // A set turned as a whole is still balanced, with its positive sequence turned.
+    let turned = sequence_components([1.0; 3], [0.1; 3]);
+    assert!((turned.positive_angle() - 0.1).abs() < 1.0e-12);
+    assert!(turned.negative_magnitude() < 1.0e-12);
+    // Phases b and c swapped is a pure negative sequence.
+    let third = 2.0 * core::f64::consts::PI / 3.0;
+    let swapped = sequence_components([1.0; 3], [0.0, -third, third]);
+    assert!(swapped.positive_magnitude() < 1.0e-12);
+    assert!((swapped.negative_magnitude() - 1.0).abs() < 1.0e-12);
+}
+
+/// Measurements for the cabinet: phase voltages [pu], no angle offsets, phase
+/// currents [A], negative-sequence current [A], frequency, power, breaker closed.
+fn cabinet_measure(
+    voltage: [f64; 3],
+    current: [f64; 3],
+    negative_a: f64,
+    hz: f64,
+    power_w: f64,
+) -> [f64; MEASURE_WIDTH] {
+    [
+        voltage[0], voltage[1], voltage[2], 0.0, 0.0, 0.0, current[0], current[1], current[2],
+        negative_a, hz, power_w, 1.0,
+    ]
+}
+
+/// Run the cabinet with a closed breaker under held measurements until it
+/// trips; returns the time to the trip and the state, or `None` if it holds
+/// for `limit_s`.
+fn cabinet_trip_time(
+    cabinet: &BreakerCabinetComponent,
+    measure: [f64; MEASURE_WIDTH],
+    limit_s: f64,
+) -> Option<(f64, CabinetState)> {
+    use fs_ports::component::Component;
+    let mut state = CabinetState {
+        closed: true,
+        ..CabinetState::open()
+    };
+    let mut inputs = [0.0; 2 + MEASURE_WIDTH];
+    inputs[0] = 1.0;
+    inputs[2..].copy_from_slice(&measure);
+    let dt = 0.01;
+    let steps = (limit_s / dt).round() as usize;
+    for step in 1..=steps {
+        let mut next = state;
+        let mut outputs = [0.0; 1];
+        with_clock_free_cx(|cx| cabinet.propose(&state, dt, &inputs, &mut next, &mut outputs, cx))
+            .expect("cabinet step");
+        state = next;
+        if state.trips > 0 {
+            assert_eq!(outputs[0], 0.0, "a trip opens the breaker in the same step");
+            return Some((step as f64 * dt, state));
+        }
+        assert_eq!(outputs[0], 1.0);
+    }
+    None
+}
+
+#[test]
+fn cabinet_conforms_and_each_protection_function_trips_at_its_setting() {
+    let card = BreakerCabinetCard::DEFAULT;
+    let rated = GeneratorCard::ASSUMED.rated_current_a();
+    let cabinet = BreakerCabinetComponent::new(card, RestorationCard::DEFAULT, rated);
+    let healthy = cabinet_measure([1.0; 3], [1_400.0; 3], 0.0, 50.0, 0.9e6);
+
+    // Conformance: open, closed and healthy, picked up, tripping, latched, reset.
+    let open = CabinetState::open();
+    let closed = CabinetState {
+        closed: true,
+        ..open
+    };
+    let latched = CabinetState {
+        tripped: 1 << protection::UNDERVOLTAGE,
+        trips: 1,
+        ..open
+    };
+    let low = cabinet_measure([1.0, 0.73, 1.0], [1_600.0; 3], 600.0, 50.0, 0.9e6);
+    for (state, command, measure) in [
+        (&open, [0.0, 0.0], healthy),
+        (&open, [1.0, 0.0], healthy),
+        (&closed, [1.0, 0.0], healthy),
+        (&closed, [1.0, 0.0], low),
+        (&latched, [1.0, 0.0], healthy),
+        (&latched, [0.0, 1.0], healthy),
+    ] {
+        let mut inputs = [0.0; 2 + MEASURE_WIDTH];
+        inputs[..2].copy_from_slice(&command);
+        inputs[2..].copy_from_slice(&measure);
+        with_clock_free_cx(|cx| {
+            check_component(
+                &cabinet,
+                &Case {
+                    state,
+                    stale: &closed,
+                    dt_s: 0.01,
+                    inputs: &inputs,
+                },
+                cx,
+            )
+        })
+        .expect("cabinet conformance");
+    }
+
+    // A healthy generator on a healthy grid is left alone.
+    assert!(cabinet_trip_time(&cabinet, healthy, 30.0).is_none());
+
+    // Each function: the condition just past its level trips after its delay, on the
+    // right phase, and reports the value. (function, measurements, delay, phase)
+    let cases = [
+        (
+            protection::UNDERVOLTAGE,
+            cabinet_measure([1.0, 1.0, 0.84], [1_400.0; 3], 0.0, 50.0, 0.9e6),
+            card.undervoltage.delay_s,
+            3,
+        ),
+        (
+            protection::OVERVOLTAGE,
+            cabinet_measure([1.16, 1.0, 1.0], [1_400.0; 3], 0.0, 50.0, 0.9e6),
+            card.overvoltage.delay_s,
+            1,
+        ),
+        (
+            protection::OVERCURRENT,
+            cabinet_measure([1.0; 3], [1_400.0, 1.21 * rated, 1_400.0], 0.0, 50.0, 0.9e6),
+            card.overcurrent.delay_s,
+            2,
+        ),
+        (
+            protection::OVERCURRENT_HIGH,
+            cabinet_measure([1.0; 3], [2.6 * rated, 1_400.0, 1_400.0], 0.0, 50.0, 0.9e6),
+            card.overcurrent_high.delay_s,
+            1,
+        ),
+        (
+            protection::UNDERFREQUENCY,
+            cabinet_measure([1.0; 3], [1_400.0; 3], 0.0, 47.4, 0.9e6),
+            card.underfrequency.delay_s,
+            0,
+        ),
+        (
+            protection::OVERFREQUENCY,
+            cabinet_measure([1.0; 3], [1_400.0; 3], 0.0, 51.6, 0.9e6),
+            card.overfrequency.delay_s,
+            0,
+        ),
+        (
+            protection::REVERSE_POWER,
+            cabinet_measure([1.0; 3], [100.0; 3], 0.0, 50.0, -60.0e3),
+            card.reverse_power.delay_s,
+            0,
+        ),
+    ];
+    for (function, measure, delay, phase) in cases {
+        let (time, state) = cabinet_trip_time(&cabinet, measure, 60.0).expect("trip");
+        assert_eq!(state.last_function, function);
+        assert_eq!(state.tripped, 1 << function);
+        assert_eq!(state.last_phase, phase, "function {function}");
+        assert!((time - delay).abs() < 0.011, "function {function}: {time} s against {delay} s");
+    }
+
+    // Unbalance by one low phase that stays above the under-voltage level: 1, 1, 0.86
+    // is 4.9 % and holds; 1, 1, 0.855 is 5.1 % and trips after its delay.
+    let holds = cabinet_measure([1.0, 1.0, 0.86], [1_400.0; 3], 0.0, 50.0, 0.9e6);
+    assert!(cabinet_trip_time(&cabinet, holds, 30.0).is_none());
+    let trips = cabinet_measure([1.0, 1.0, 0.855], [1_400.0; 3], 0.0, 50.0, 0.9e6);
+    let (time, state) = cabinet_trip_time(&cabinet, trips, 30.0).expect("unbalance trip");
+    assert_eq!(state.last_function, protection::VOLTAGE_UNBALANCE);
+    assert!((time - card.voltage_unbalance.delay_s).abs() < 0.011);
+    assert!(state.last_value > 0.05 && state.last_value < 0.052);
+
+    // The rotor's replica: below the continuous level it never trips; above it the time
+    // is the limit over the square of the current, so twice the current is a quarter
+    // of the time.
+    let below = cabinet_measure([1.0; 3], [1_400.0; 3], 0.07 * rated, 50.0, 0.9e6);
+    assert!(cabinet_trip_time(&cabinet, below, 600.0).is_none());
+    let mut times = Vec::new();
+    for share in [0.2, 0.4] {
+        let measure = cabinet_measure([1.0; 3], [1_400.0; 3], share * rated, 50.0, 0.9e6);
+        let (time, state) = cabinet_trip_time(&cabinet, measure, 600.0).expect("thermal trip");
+        assert_eq!(state.last_function, protection::NEGATIVE_SEQUENCE);
+        let expected = card.negative_sequence_limit_s / (share * share);
+        assert!((time - expected).abs() < 0.02, "{time} s against {expected} s at {share} pu");
+        times.push(time);
+    }
+    assert!((times[0] / times[1] - 4.0).abs() < 0.01);
+}
+
 #[test]
 fn controller_conforms_in_every_step_of_its_sequence() {
     let controller = GensetControllerComponent::new(
         ControllerSetpoints::DEFAULT,
         SynchronisationWindowCard::ASSUMED,
+        RestorationCard::DEFAULT,
         2,
         GeneratorCard::ASSUMED.excitation_range_pu,
         1_060.0,
     );
     let ready = ControllerState::ready();
     let operator = OperatorSignals {
+        restoration_auto: true,
         load_setpoint: 0.8,
         start: false,
         stop: false,
@@ -277,6 +575,7 @@ fn controller_conforms_in_every_step_of_its_sequence() {
         Sequence::CoolDown,
         Sequence::CoastDown,
         Sequence::Tripped,
+        Sequence::GridWait,
     ] {
         let firing = matches!(
             sequence,
@@ -286,6 +585,7 @@ fn controller_conforms_in_every_step_of_its_sequence() {
                 | Sequence::OnLoad
                 | Sequence::Unloading
                 | Sequence::CoolDown
+                | Sequence::GridWait
         );
         let state = ControllerState {
             sequence,
@@ -294,10 +594,18 @@ fn controller_conforms_in_every_step_of_its_sequence() {
             speed_reference_rad_s: if firing { 150.0 } else { 0.0 },
             ..ready
         };
-        for (omega, start) in [(0.0, true), (RATED_OMEGA_RAD_S, false), (190.0, false)] {
-            let mut inputs = [0.0; 21];
+        // The last three sensed values: cabinet trip count, tripped functions, grid healthy.
+        for (omega, start, cabinet) in [
+            (0.0, true, [0.0, 0.0, 1.0]),
+            (RATED_OMEGA_RAD_S, false, [0.0, 0.0, 1.0]),
+            (190.0, false, [0.0, 0.0, 0.0]),
+            (RATED_OMEGA_RAD_S, false, [1.0, 1.0, 0.0]),
+            (RATED_OMEGA_RAD_S, false, [1.0, 16.0, 1.0]),
+        ] {
+            let mut inputs = [0.0; 25];
             inputs[..6].copy_from_slice(&[omega, 0.05, 0.0, 0.0, 0.0, 360.0]);
-            OperatorSignals { start, ..operator }.write(&mut inputs[6..]);
+            inputs[6..9].copy_from_slice(&cabinet);
+            OperatorSignals { start, ..operator }.write(&mut inputs[9..]);
             with_clock_free_cx(|cx| {
                 check_component(
                     &controller,
@@ -804,15 +1112,29 @@ fn oil_pressure_and_grid_undervoltage_inputs_trip_after_their_delays() {
     assert_eq!(s[snap::STATE_CODE], 5.0);
     assert_eq!(s[snap::ALARM_BITS] as u32 & alarm::OIL_PRESSURE, alarm::OIL_PRESSURE);
 
+    // Grid under-voltage on all three phases. Rewritten for slice 1c: the cabinet's
+    // protection opens the breaker after the same 0.15 s, but the engine is no longer
+    // stopped: it runs on unloaded and waits (manual restoration, the default).
     let mut sim = on_load(30.0, 300.0);
     sim.set_grid_voltage_pu(0.62);
     advance(&mut sim, 0.10);
     assert_eq!(sim.snapshot()[snap::BREAKER_CLOSED], 1.0, "inside the 0.15 s delay");
     advance(&mut sim, 0.10);
     let s = sim.snapshot();
-    assert_eq!(s[snap::STATE_CODE], 5.0);
     assert_eq!(s[snap::BREAKER_CLOSED], 0.0);
-    assert_eq!(s[snap::ALARM_BITS] as u32 & alarm::GRID_UNDERVOLTAGE, alarm::GRID_UNDERVOLTAGE);
+    assert_eq!(s[snap::STATE_CODE], 2.0, "off the bus, not stopped");
+    assert_eq!(s[snap::SEQUENCE_STEP], f64::from(Sequence::GridWait.index()));
+    assert_eq!(s[snap::WAITING_FOR_GRID], 1.0);
+    assert_eq!(s[snap::ALARM_BITS] as u32, alarm::GRID_UNDERVOLTAGE);
+    assert_eq!(s[snap::VOLTAGE_UNBALANCE_PCT], 0.0, "three equal phases");
+    let trips = events_of(&sim, event_kind::PROTECTION);
+    assert_eq!(trips.len(), 1);
+    assert_eq!(trips[0].1 / 10, protection::UNDERVOLTAGE);
+    assert!((trips[0].2 - 0.62 * 230.94).abs() < 0.01, "tripped at {} V", trips[0].2);
+    advance(&mut sim, 30.0);
+    let idling = sim.snapshot();
+    assert!((idling[snap::SPEED_RPM] - 1_500.0).abs() < 1.0, "{} rpm", idling[snap::SPEED_RPM]);
+    assert!(idling[snap::FUEL_POWER_KW] > 300.0, "no-load fuel {} kW", idling[snap::FUEL_POWER_KW]);
 }
 
 #[test]
@@ -843,6 +1165,7 @@ fn the_controller_trips_on_overspeed() {
     let controller = GensetControllerComponent::new(
         ControllerSetpoints::DEFAULT,
         SynchronisationWindowCard::ASSUMED,
+        RestorationCard::DEFAULT,
         2,
         GeneratorCard::ASSUMED.excitation_range_pu,
         1_060.0,
@@ -870,13 +1193,14 @@ fn the_controller_trips_on_overspeed() {
         excitation_pu: 1.0,
         fan_failed: false,
         load_ramp_per_s: 0.0,
+        restoration_auto: false,
     };
     for (share, trips) in [(1.14, false), (1.15, true)] {
-        let mut inputs = [0.0; 21];
+        let mut inputs = [0.0; 25];
         inputs[..6].copy_from_slice(&[share * RATED_OMEGA_RAD_S, 0.0, 0.0, 0.0, 0.0, 360.0]);
-        operator.write(&mut inputs[6..]);
+        operator.write(&mut inputs[9..]);
         let mut next = running;
-        let mut outputs = [0.0; 5];
+        let mut outputs = [0.0; 6];
         with_clock_free_cx(|cx| {
             use fs_ports::component::Component;
             controller.propose(&running, 0.01, &inputs, &mut next, &mut outputs, cx)
@@ -885,7 +1209,7 @@ fn the_controller_trips_on_overspeed() {
         assert_eq!(next.sequence == Sequence::Tripped, trips, "at {share} of rated speed");
         if trips {
             assert_eq!(next.alarms, alarm::OVERSPEED);
-            assert_eq!(outputs, [0.0; 5], "everything off");
+            assert_eq!(outputs, [0.0; 6], "everything off");
         }
     }
 }
@@ -910,6 +1234,30 @@ fn two_runs_of_the_same_commands_agree_to_the_bit() {
         assert_eq!(x.to_bits(), y.to_bits(), "snapshot slot {} differs", crate::SNAPSHOT_FIELDS[index]);
     }
     assert_eq!(events_a, events_b);
+
+    // And through an unbalanced bus, a protection trip, the wait and the automatic return.
+    let run = || {
+        let mut sim = on_load(60.0, 300.0);
+        sim.set_restoration_mode(1);
+        sim.set_grid_phase_voltages_pu(1.0, 1.0, 0.94);
+        advance(&mut sim, 20.0);
+        sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+        advance(&mut sim, 2.0);
+        sim.set_grid_voltage_pu(1.0);
+        advance(&mut sim, 100.0);
+        (sim.snapshot(), sim.events(), sim.analyser_events())
+    };
+    let (a, events_a, quality_a) = run();
+    let (b, events_b, quality_b) = run();
+    assert_eq!(a[snap::BREAKER_CLOSED], 1.0, "{}", grid_side_summary(&a));
+    assert_eq!(a[snap::RESTORATION_ATTEMPTS], 1.0);
+    for (index, (x, y)) in a.iter().zip(&b).enumerate() {
+        assert_eq!(x.to_bits(), y.to_bits(), "snapshot slot {} differs", crate::SNAPSHOT_FIELDS[index]);
+    }
+    assert_eq!(events_a, events_b);
+    assert_eq!(quality_a, quality_b);
+    // One dip (the phase at 0.73); 0.94 is inside the analyser's band.
+    assert_eq!(quality_a.len(), QUALITY_EVENT_STRIDE, "{quality_a:?}");
 }
 
 #[test]
@@ -1095,4 +1443,571 @@ fn thermal_recovery_tracks_the_passport_at_75_percent_and_overshoots_it_at_30_pe
             heat_side_summary(&s)
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Three-phase grid, breaker cabinet, restoration, power-quality analyser
+// ---------------------------------------------------------------------------
+
+const PHASE_VOLT: f64 = 230.940_107_675_850_3;
+
+fn grid_side_summary(s: &[f64]) -> String {
+    format!(
+        "t {:.2} s, state {} step {}, breaker {}, P {:.1} kW, phases {:.1}/{:.1}/{:.1} V, \
+         currents {:.0}/{:.0}/{:.0} A, U2/U1 {:.2} %, I2 {:.2} %, rotor {:.3}, pickup {}, \
+         tripped {}, alarms {}, attempts {}",
+        s[snap::TIME_S],
+        s[snap::STATE_CODE],
+        s[snap::SEQUENCE_STEP],
+        s[snap::BREAKER_CLOSED],
+        s[snap::ELECTRIC_POWER_KW],
+        s[snap::PHASE_A_VOLTAGE_V],
+        s[snap::PHASE_B_VOLTAGE_V],
+        s[snap::PHASE_C_VOLTAGE_V],
+        s[snap::PHASE_A_CURRENT_A],
+        s[snap::PHASE_B_CURRENT_A],
+        s[snap::PHASE_C_CURRENT_A],
+        s[snap::VOLTAGE_UNBALANCE_PCT],
+        s[snap::NEGATIVE_SEQUENCE_CURRENT_PCT],
+        s[snap::ROTOR_THERMAL_USED_FRAC],
+        s[snap::PROTECTION_PICKUP_BITS],
+        s[snap::PROTECTION_TRIPPED_BITS],
+        s[snap::ALARM_BITS],
+        s[snap::RESTORATION_ATTEMPTS],
+    )
+}
+
+/// The analyser's record as `(kind, phase, start, duration, extreme volts)`.
+fn quality_events(sim: &KguSim) -> Vec<(u32, u32, f64, f64, f64)> {
+    sim.analyser_events()
+        .chunks(QUALITY_EVENT_STRIDE)
+        .map(|e| (e[0] as u32, e[1] as u32, e[2], e[3], e[4]))
+        .collect()
+}
+
+#[test]
+fn a_balanced_grid_reproduces_the_numbers_of_the_single_voltage_model() {
+    // The run recorded for slice 1b on 2026-11-25 (default ramp, 100 % setpoint, 1 200 s
+    // after the breaker closed), before the bus had three phases and the cabinet stood
+    // between controller and breaker. A balanced bus must change none of it.
+    let mut sim = KguSim::new();
+    sim.set_load_setpoint_pct(100.0);
+    sim.cmd_start();
+    while sim.snapshot()[snap::BREAKER_CLOSED] != 1.0 {
+        advance(&mut sim, 0.1);
+        assert!(sim.snapshot()[snap::TIME_S] < 200.0);
+    }
+    let at_bus = sim.snapshot();
+    // The numbers were recorded on the WebAssembly package, and the Node test holds the
+    // package to them to 1e-12. The native build differs from the package in the ninth
+    // digit (1000.000003 kW against 1000.000001 kW); the cause was not investigated and
+    // is presumed to be the two targets' elementary functions. Hence 1e-7 here.
+    let near = |value: f64, recorded: f64| (value - recorded).abs() <= 1.0e-7 * recorded.abs();
+    assert!((at_bus[snap::TIME_S] - 91.0).abs() < 1.0e-6, "to the bus in {} s", at_bus[snap::TIME_S]);
+    assert!(near(at_bus[snap::GAS_STD_M3], 0.622_927_594_215_562_3), "{}", at_bus[snap::GAS_STD_M3]);
+    advance(&mut sim, 1_200.0);
+    let s = sim.snapshot();
+    for (slot, recorded) in [
+        (snap::ELECTRIC_POWER_KW, 1_000.000_001_063_500_3),
+        (snap::REACTIVE_POWER_KVAR, -193.704_270_175_513_41),
+        (snap::ELECTRIC_EFFICIENCY_PCT, 38.200_000_058_707_4),
+        (snap::THERMAL_EFFICIENCY_PCT, 42.751_546_685_290_72),
+        (snap::COOLANT_SUPPLY_C, 88.315_634_091_591_5),
+        (snap::COOLANT_RETURN_C, 68.174_570_353_446_71),
+        (snap::EXHAUST_TEMPERATURE_C, 484.766_669_933_899_15),
+        (snap::STACK_TEMPERATURE_C, 214.834_170_290_433_7),
+    ] {
+        assert!(
+            near(s[slot], recorded),
+            "{}: {} against the recorded {recorded}",
+            crate::SNAPSHOT_FIELDS[slot],
+            s[slot]
+        );
+    }
+    // And the new read-outs of a balanced machine: three equal voltages and currents.
+    assert_eq!(s[snap::VOLTAGE_UNBALANCE_PCT], 0.0);
+    assert_eq!(s[snap::NEGATIVE_SEQUENCE_CURRENT_PCT], 0.0);
+    assert_eq!(s[snap::NEGATIVE_SEQUENCE_LOSS_KW], 0.0);
+    assert_eq!(s[snap::PROTECTION_PICKUP_BITS], 0.0);
+    assert_eq!(s[snap::ROTOR_THERMAL_USED_FRAC], 0.0);
+    for slot in [snap::PHASE_A_CURRENT_A, snap::PHASE_B_CURRENT_A, snap::PHASE_C_CURRENT_A] {
+        assert!((s[slot] - s[snap::STATOR_CURRENT_A]).abs() < 1.0e-9 * s[snap::STATOR_CURRENT_A]);
+    }
+    assert!((s[snap::PHASE_B_VOLTAGE_V] - PHASE_VOLT).abs() < 1.0e-9);
+    // A healthy balanced grid leaves the analyser's record empty.
+    assert!(sim.analyser_events().is_empty());
+    assert_eq!(s[snap::ANALYSER_RECORDED_EVENTS], 0.0);
+    assert_eq!(s[snap::ANALYSER_OPEN_EVENTS], 0.0);
+    assert!(events_of(&sim, event_kind::PROTECTION).is_empty());
+}
+
+#[test]
+fn one_phase_at_168_volts_trips_the_phase_undervoltage_first_and_the_engine_runs_on() {
+    // The case from practice: exporting, one phase falls to 168 V (0.73 of 230 V).
+    let mut sim = on_load(90.0, 300.0);
+    let before = sim.snapshot();
+    sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+    advance(&mut sim, 0.10);
+    let during = sim.snapshot();
+    let summary = grid_side_summary(&during);
+    assert_eq!(during[snap::BREAKER_CLOSED], 1.0, "{summary}");
+    assert!((during[snap::PHASE_B_VOLTAGE_V] - 0.73 * PHASE_VOLT).abs() < 1.0e-9, "{summary}");
+    // Not inputs: the unbalance of the bus, the negative-sequence current it drives, the
+    // three unequal phase currents, the heat, and which functions have picked up.
+    assert!((during[snap::VOLTAGE_UNBALANCE_PCT] - 100.0 * 0.09 / 0.91).abs() < 1.0e-9, "{summary}");
+    assert!(
+        during[snap::NEGATIVE_SEQUENCE_CURRENT_PCT] > 30.0
+            && during[snap::NEGATIVE_SEQUENCE_CURRENT_PCT] < 38.0,
+        "{summary}"
+    );
+    let currents = [
+        during[snap::PHASE_A_CURRENT_A],
+        during[snap::PHASE_B_CURRENT_A],
+        during[snap::PHASE_C_CURRENT_A],
+    ];
+    let largest = currents.iter().copied().fold(0.0, f64::max);
+    let smallest = currents.iter().copied().fold(f64::INFINITY, f64::min);
+    assert!(largest - smallest > 500.0, "{summary}");
+    assert!(during[snap::NEGATIVE_SEQUENCE_LOSS_KW] > 5.0, "{summary}");
+    let pickup = during[snap::PROTECTION_PICKUP_BITS] as u32;
+    for function in [
+        protection::UNDERVOLTAGE,
+        protection::VOLTAGE_UNBALANCE,
+        protection::NEGATIVE_SEQUENCE,
+    ] {
+        assert_ne!(pickup & (1 << function), 0, "function {function} picked up; {summary}");
+    }
+
+    advance(&mut sim, 0.10);
+    let after = sim.snapshot();
+    let summary = grid_side_summary(&after);
+    assert_eq!(after[snap::BREAKER_CLOSED], 0.0, "{summary}");
+    // Which function, on which phase, at what value, and when.
+    let trips = events_of(&sim, event_kind::PROTECTION);
+    assert_eq!(trips.len(), 1, "{trips:?}");
+    let (time, code, value) = trips[0];
+    assert_eq!(code, 10 * protection::UNDERVOLTAGE + 2, "under-voltage on phase b");
+    assert!((value - 0.73 * PHASE_VOLT).abs() < 1.0e-6, "tripped at {value} V");
+    let delay = time - before[snap::TIME_S];
+    assert!((delay - 0.15).abs() < 0.011, "tripped {delay} s after the phase fell");
+    assert_eq!(after[snap::PROTECTION_TRIPPED_BITS] as u32, 1 << protection::UNDERVOLTAGE);
+    assert_eq!(after[snap::ALARM_BITS] as u32, alarm::GRID_UNDERVOLTAGE);
+    // The engine is not stopped: off the bus, at speed, burning its no-load gas.
+    assert_eq!(after[snap::STATE_CODE], 2.0, "{summary}");
+    assert_eq!(after[snap::WAITING_FOR_GRID], 1.0);
+    advance(&mut sim, 20.0);
+    let idling = sim.snapshot();
+    assert!((idling[snap::SPEED_RPM] - 1_500.0).abs() < 1.0, "{}", grid_side_summary(&idling));
+    assert!(idling[snap::FUEL_POWER_KW] > 300.0 && idling[snap::FUEL_POWER_KW] < 450.0);
+    assert!(ledger_relative_residual(&idling) < 1.0e-9);
+
+    // All three phases at 0.73 instead: the same function, and no unbalance at all.
+    let mut sim = on_load(90.0, 300.0);
+    sim.set_grid_phase_voltages_pu(0.73, 0.73, 0.73);
+    advance(&mut sim, 0.10);
+    let during = sim.snapshot();
+    assert_eq!(during[snap::VOLTAGE_UNBALANCE_PCT], 0.0);
+    assert_eq!(during[snap::NEGATIVE_SEQUENCE_CURRENT_PCT], 0.0);
+    assert_eq!(during[snap::PROTECTION_PICKUP_BITS] as u32, 1 << protection::UNDERVOLTAGE);
+    advance(&mut sim, 0.10);
+    let trips = events_of(&sim, event_kind::PROTECTION);
+    assert_eq!(trips.len(), 1);
+    assert_eq!(trips[0].1 / 10, protection::UNDERVOLTAGE);
+    assert_eq!(sim.snapshot()[snap::BREAKER_CLOSED], 0.0);
+}
+
+#[test]
+fn unbalance_without_low_voltage_trips_on_the_rotor_limit_sooner_the_deeper_it_is() {
+    // One phase low, but above the under-voltage level and below the unbalance level:
+    // only the negative-sequence current's thermal replica can trip, and its time comes
+    // out of the integral (I2 / I_rated)^2 t = 20 s.
+    let mut times = Vec::new();
+    for low in [0.88, 0.86] {
+        let mut sim = on_load(80.0, 300.0);
+        let start = sim.snapshot()[snap::TIME_S];
+        sim.set_grid_phase_voltages_pu(1.0, 1.0, low);
+        advance(&mut sim, 5.0);
+        let s = sim.snapshot();
+        let summary = grid_side_summary(&s);
+        assert_eq!(s[snap::BREAKER_CLOSED], 1.0, "{summary}");
+        assert_eq!(
+            s[snap::PROTECTION_PICKUP_BITS] as u32,
+            1 << protection::NEGATIVE_SEQUENCE,
+            "{summary}"
+        );
+        let negative_pu = s[snap::NEGATIVE_SEQUENCE_CURRENT_PCT] / 100.0;
+        let expected = 20.0 / (negative_pu * negative_pu);
+        let to_trip =
+            advance_until(&mut sim, 1_500.0, "rotor limit", |x| x[snap::BREAKER_CLOSED] == 0.0);
+        let trips = events_of(&sim, event_kind::PROTECTION);
+        assert_eq!(trips.len(), 1, "{trips:?}");
+        assert_eq!(trips[0].1, 10 * protection::NEGATIVE_SEQUENCE);
+        assert!((trips[0].2 - 100.0 * negative_pu).abs() < 1.0e-6);
+        let time = trips[0].0 - start;
+        assert!(
+            (time - expected).abs() < 0.01 * expected,
+            "tripped after {time} s (waited {to_trip} s); the integral gives {expected} s; {summary}"
+        );
+        advance(&mut sim, 0.05);
+        assert_eq!(sim.snapshot()[snap::ALARM_BITS] as u32, alarm::NEGATIVE_SEQUENCE);
+        times.push((negative_pu, time));
+    }
+    assert!(times[1].0 > times[0].0 && times[1].1 < times[0].1, "{times:?}");
+
+    // A stronger unbalance with every phase inside the voltage limits: the unbalance
+    // function trips after its own delay, long before the rotor's replica would.
+    let mut sim = on_load(80.0, 300.0);
+    let start = sim.snapshot()[snap::TIME_S];
+    sim.set_grid_phase_voltages_pu(1.1, 1.0, 0.88);
+    advance_until(&mut sim, 60.0, "unbalance trip", |x| x[snap::BREAKER_CLOSED] == 0.0);
+    let trips = events_of(&sim, event_kind::PROTECTION);
+    assert_eq!(trips.len(), 1, "{trips:?}");
+    assert_eq!(trips[0].1, 10 * protection::VOLTAGE_UNBALANCE);
+    assert!(trips[0].2 > 5.0 && trips[0].2 < 8.0, "unbalance at the trip {} %", trips[0].2);
+    assert!((trips[0].0 - start - 5.0).abs() < 0.011);
+    advance(&mut sim, 0.05);
+    let s = sim.snapshot();
+    assert!(s[snap::ROTOR_THERMAL_USED_FRAC] > 0.0 && s[snap::ROTOR_THERMAL_USED_FRAC] < 0.05);
+    assert_eq!(s[snap::ALARM_BITS] as u32, alarm::VOLTAGE_UNBALANCE);
+}
+
+#[test]
+fn a_small_unbalance_inside_the_settings_runs_on_with_unequal_currents_and_extra_heat() {
+    let gas = FuelGasCard::STATION;
+    let mut sim = on_load(80.0, 300.0);
+    let balanced = sim.snapshot();
+    sim.set_grid_phase_voltages_pu(1.0, 1.0, 0.94);
+    advance(&mut sim, 300.0);
+    let s = sim.snapshot();
+    let summary = grid_side_summary(&s);
+    assert_eq!(s[snap::STATE_CODE], 3.0, "{summary}");
+    assert_eq!(s[snap::BREAKER_CLOSED], 1.0, "{summary}");
+    assert_eq!(s[snap::ALARM_BITS], 0.0, "{summary}");
+    assert_eq!(s[snap::PROTECTION_PICKUP_BITS], 0.0, "{summary}");
+    assert_eq!(s[snap::ROTOR_THERMAL_USED_FRAC], 0.0, "{summary}");
+    assert!((s[snap::VOLTAGE_UNBALANCE_PCT] - 100.0 * 0.02 / 0.98).abs() < 1.0e-9, "{summary}");
+    // Not inputs: the governor still holds the power; the three currents differ; the
+    // negative sequence leaves heat that was not there on the balanced bus.
+    assert!((s[snap::ELECTRIC_POWER_KW] - 800.0).abs() < 0.5, "{summary}");
+    let currents = [
+        s[snap::PHASE_A_CURRENT_A],
+        s[snap::PHASE_B_CURRENT_A],
+        s[snap::PHASE_C_CURRENT_A],
+    ];
+    let largest = currents.iter().copied().fold(0.0, f64::max);
+    let smallest = currents.iter().copied().fold(f64::INFINITY, f64::min);
+    assert!(largest - smallest > 100.0, "{summary}");
+    assert!(
+        s[snap::NEGATIVE_SEQUENCE_CURRENT_PCT] > 6.0 && s[snap::NEGATIVE_SEQUENCE_CURRENT_PCT] < 8.0,
+        "{summary}"
+    );
+    let extra = s[snap::NEGATIVE_SEQUENCE_LOSS_KW];
+    assert!(extra > 0.3 && extra < 1.0, "negative-sequence heat {extra} kW; {summary}");
+    assert!(
+        s[snap::GENERATOR_LOSS_KW] > balanced[snap::GENERATOR_LOSS_KW] + 0.9 * extra,
+        "generator loss {} kW against {} kW balanced",
+        s[snap::GENERATOR_LOSS_KW],
+        balanced[snap::GENERATOR_LOSS_KW]
+    );
+    // The fuel still closes on everything that leaves, the extra heat included.
+    let mass_flow = s[snap::GAS_FLOW_STD_M3_H] / 3_600.0 * gas.standard_density_kg_m3();
+    let sensible_kw = mass_flow * gas.cp_j_kg_k * (288.15 - 293.15) * 1.0e-3;
+    let leaving = s[snap::ELECTRIC_POWER_KW]
+        + s[snap::GENERATOR_LOSS_KW]
+        + s[snap::JACKET_HEAT_KW]
+        + s[snap::EXHAUST_RECOVERED_KW]
+        + s[snap::EXHAUST_LOSS_KW]
+        + s[snap::RADIATION_LOSS_KW];
+    assert!((s[snap::FUEL_POWER_KW] + sensible_kw - leaving).abs() < 1.0e-3, "{summary}");
+    assert!(ledger_relative_residual(&s) < 1.0e-9, "{summary}");
+}
+
+#[test]
+fn automatic_restoration_returns_the_unit_after_the_healthy_grid_delay_without_a_command() {
+    let restore = RestorationCard::DEFAULT;
+    let mut sim = on_load(50.0, 300.0);
+    sim.set_restoration_mode(1);
+    sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+    advance(&mut sim, 2.0);
+    let off = sim.snapshot();
+    assert_eq!(off[snap::BREAKER_CLOSED], 0.0, "{}", grid_side_summary(&off));
+    assert_eq!(off[snap::WAITING_FOR_GRID], 1.0);
+    assert_eq!(off[snap::RESTORATION_MODE], 1.0);
+    // While the grid is unhealthy the countdown stands at the whole delay.
+    assert_eq!(off[snap::GRID_HEALTHY_COUNTDOWN_S], restore.healthy_delay_s);
+
+    sim.set_grid_voltage_pu(1.0);
+    let healthy_at = sim.snapshot()[snap::TIME_S];
+    let gas_at = sim.snapshot()[snap::GAS_STD_M3];
+    advance(&mut sim, 30.0);
+    let counting = sim.snapshot();
+    assert_eq!(counting[snap::BREAKER_CLOSED], 0.0);
+    assert!((counting[snap::GRID_HEALTHY_COUNTDOWN_S] - 30.0).abs() < 0.02);
+    assert_eq!(counting[snap::ALARM_BITS] as u32, alarm::GRID_UNDERVOLTAGE);
+
+    // No command from here on.
+    let to_bus = 30.0
+        + advance_until(&mut sim, 200.0, "back on the bus", |s| s[snap::BREAKER_CLOSED] == 1.0);
+    let closed = sim.snapshot();
+    let summary = grid_side_summary(&closed);
+    // Not an input: the healthy-grid delay, then what the synchroniser needs for the phase.
+    assert!(
+        to_bus > restore.healthy_delay_s && to_bus < restore.healthy_delay_s + 22.0,
+        "back on the bus {to_bus} s after the grid recovered; {summary}"
+    );
+    assert_eq!(closed[snap::ALARM_BITS], 0.0, "the automation cleared its own alarm; {summary}");
+    assert_eq!(closed[snap::RESTORATION_ATTEMPTS], 1.0, "{summary}");
+    assert_eq!(closed[snap::PROTECTION_TRIPPED_BITS], 0.0, "{summary}");
+    // The gas burned unloaded while waiting is on the meter: about 374 kW for the wait.
+    let burned = closed[snap::GAS_STD_M3] - gas_at;
+    let no_load = 374.0e3 * to_bus / 33.5e6;
+    assert!(
+        (burned - no_load).abs() < 0.1 * no_load,
+        "{burned} m3 burned waiting {to_bus} s; 374 kW would be {no_load} m3"
+    );
+
+    // And up to the load setpoint again, at the controller's ramp.
+    let to_load = advance_until(&mut sim, 120.0, "load back", |s| {
+        (s[snap::LOAD_REFERENCE_PCT] - 50.0).abs() < 1.0e-9
+    });
+    assert!((to_load - 10.0).abs() < 0.2, "ramp to 50 % at 300 %/min took {to_load} s");
+    advance(&mut sim, 30.0);
+    let s = sim.snapshot();
+    assert!((s[snap::ELECTRIC_POWER_KW] - 500.0).abs() < 0.5, "{}", grid_side_summary(&s));
+    assert_eq!(s[snap::STATE_CODE], 3.0);
+    assert!(ledger_relative_residual(&s) < 1.0e-9);
+    let _ = healthy_at;
+}
+
+#[test]
+fn automatic_restoration_gives_up_after_the_longest_wait_and_stops_the_unit_normally() {
+    let restore = RestorationCard::DEFAULT;
+    let mut sim = on_load(50.0, 300.0);
+    sim.set_restoration_mode(1);
+    sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+    advance(&mut sim, 1.0);
+    assert_eq!(sim.snapshot()[snap::WAITING_FOR_GRID], 1.0);
+    // The disturbance stays. No reclosing while it does.
+    advance(&mut sim, restore.longest_wait_s - 10.0);
+    let waiting = sim.snapshot();
+    assert_eq!(waiting[snap::WAITING_FOR_GRID], 1.0, "{}", grid_side_summary(&waiting));
+    assert_eq!(waiting[snap::BREAKER_CLOSED], 0.0);
+    assert_eq!(waiting[snap::RESTORATION_ATTEMPTS], 0.0);
+    assert!(waiting[snap::FUEL_POWER_KW] > 300.0, "still running unloaded");
+    // After the longest wait: the normal stop, with its cool-down.
+    advance(&mut sim, 15.0);
+    let stopping = sim.snapshot();
+    assert_eq!(stopping[snap::STATE_CODE], 4.0, "{}", grid_side_summary(&stopping));
+    assert_eq!(stopping[snap::SEQUENCE_STEP], f64::from(Sequence::CoolDown.index()));
+    advance_until(&mut sim, 400.0, "ready", |s| s[snap::STATE_CODE] == 0.0);
+    assert_eq!(events_of(&sim, event_kind::BREAKER).len(), 2, "closed once, opened once");
+    // What the grid event latched is still there, and blocks a start until acknowledged.
+    assert_eq!(sim.snapshot()[snap::ALARM_BITS] as u32, alarm::GRID_UNDERVOLTAGE);
+    sim.cmd_start();
+    advance(&mut sim, 1.0);
+    assert_eq!(sim.snapshot()[snap::STATE_CODE], 0.0);
+    sim.cmd_ack();
+    advance(&mut sim, 0.05);
+    assert_eq!(sim.snapshot()[snap::ALARM_BITS], 0.0);
+}
+
+#[test]
+fn a_flickering_grid_blocks_the_automatic_return_after_its_attempts() {
+    let restore = RestorationCard::DEFAULT;
+    let mut sim = on_load(30.0, 300.0);
+    sim.set_restoration_mode(1);
+    let flicker = |sim: &mut KguSim| {
+        sim.set_grid_phase_voltages_pu(0.73, 1.0, 1.0);
+        advance(sim, 1.0);
+        assert_eq!(sim.snapshot()[snap::BREAKER_CLOSED], 0.0, "{}", grid_side_summary(&sim.snapshot()));
+        sim.set_grid_voltage_pu(1.0);
+    };
+    // Three automatic returns are allowed.
+    for attempt in 1..=restore.largest_attempts {
+        flicker(&mut sim);
+        advance_until(&mut sim, 200.0, "back on the bus", |s| s[snap::BREAKER_CLOSED] == 1.0);
+        let s = sim.snapshot();
+        assert_eq!(s[snap::RESTORATION_ATTEMPTS], f64::from(attempt), "{}", grid_side_summary(&s));
+        assert_eq!(s[snap::ALARM_BITS], 0.0);
+        advance(&mut sim, 5.0);
+    }
+    // The next trip inside the window blocks the automation, healthy grid or not.
+    flicker(&mut sim);
+    let blocked = sim.snapshot();
+    assert_eq!(
+        blocked[snap::ALARM_BITS] as u32,
+        alarm::GRID_UNDERVOLTAGE | alarm::RESTORATION_LOCKOUT,
+        "{}",
+        grid_side_summary(&blocked)
+    );
+    assert!(blocked[snap::GRID_HEALTHY_COUNTDOWN_S].is_nan(), "no countdown while blocked");
+    advance(&mut sim, restore.healthy_delay_s + 60.0);
+    let still = sim.snapshot();
+    assert_eq!(still[snap::BREAKER_CLOSED], 0.0, "{}", grid_side_summary(&still));
+    assert_eq!(still[snap::WAITING_FOR_GRID], 1.0);
+    assert!(still[snap::FUEL_POWER_KW] > 300.0);
+    // An acknowledgement releases it. The grid has been healthy for longer than the delay
+    // by now, so the automation goes straight back to the synchroniser.
+    sim.cmd_ack();
+    advance(&mut sim, 0.05);
+    let released = sim.snapshot();
+    assert_eq!(released[snap::ALARM_BITS], 0.0, "{}", grid_side_summary(&released));
+    assert_eq!(released[snap::SEQUENCE_STEP], f64::from(Sequence::Synchronising.index()));
+    advance_until(&mut sim, 30.0, "back on the bus", |s| s[snap::BREAKER_CLOSED] == 1.0);
+    assert_eq!(sim.snapshot()[snap::RESTORATION_ATTEMPTS], 1.0);
+    assert_eq!(events_of(&sim, event_kind::PROTECTION).len(), 4);
+}
+
+#[test]
+fn manual_restoration_leaves_the_unit_off_the_bus_until_the_operator_acknowledges_and_closes() {
+    let mut sim = on_load(50.0, 300.0);
+    assert_eq!(sim.snapshot()[snap::RESTORATION_MODE], 0.0, "manual is the default");
+    sim.set_grid_phase_voltages_pu(1.0, 1.0, 0.73);
+    advance(&mut sim, 1.0);
+    sim.set_grid_voltage_pu(1.0);
+    let gas_at = sim.snapshot()[snap::GAS_STD_M3];
+    // The grid is healthy again, and nothing happens by itself.
+    advance(&mut sim, 300.0);
+    let waiting = sim.snapshot();
+    let summary = grid_side_summary(&waiting);
+    assert_eq!(waiting[snap::BREAKER_CLOSED], 0.0, "{summary}");
+    assert_eq!(waiting[snap::WAITING_FOR_GRID], 1.0, "{summary}");
+    assert_eq!(waiting[snap::ALARM_BITS] as u32, alarm::GRID_UNDERVOLTAGE, "{summary}");
+    assert!(waiting[snap::GRID_HEALTHY_COUNTDOWN_S].is_nan(), "no countdown in manual");
+    assert!((waiting[snap::SPEED_RPM] - 1_500.0).abs() < 1.0, "{summary}");
+    // The gas burned unloaded over those 300 s is on the meter (374 kW: 3.35 m3).
+    let burned = waiting[snap::GAS_STD_M3] - gas_at;
+    assert!(burned > 3.0 && burned < 3.7, "{burned} m3 burned waiting; {summary}");
+    assert!(ledger_relative_residual(&waiting) < 1.0e-9);
+
+    // A close request before the acknowledgement is refused: a trip is latched.
+    let refused = sim.cmd_breaker_close();
+    assert_ne!(refused & refusal::TRIP_LATCHED, 0, "refusal bits {refused}");
+    advance(&mut sim, 1.0);
+    assert_eq!(sim.snapshot()[snap::BREAKER_CLOSED], 0.0);
+
+    // Acknowledged: at the synchroniser, which does not close by itself after a trip.
+    sim.cmd_ack();
+    advance(&mut sim, 0.05);
+    let acknowledged = sim.snapshot();
+    assert_eq!(acknowledged[snap::ALARM_BITS], 0.0, "{}", grid_side_summary(&acknowledged));
+    assert_eq!(acknowledged[snap::SEQUENCE_STEP], f64::from(Sequence::Synchronising.index()));
+    advance(&mut sim, 40.0);
+    assert_eq!(sim.snapshot()[snap::BREAKER_CLOSED], 0.0, "waits for the operator's request");
+    let mut waited = 0.0;
+    while sim.snapshot()[snap::SYNC_PERMITTED] != 1.0 {
+        advance(&mut sim, 0.01);
+        waited += 0.01;
+        assert!(waited < 30.0);
+    }
+    assert_eq!(sim.cmd_breaker_close(), 0);
+    advance(&mut sim, 0.02);
+    assert_eq!(sim.snapshot()[snap::BREAKER_CLOSED], 1.0);
+    advance(&mut sim, 60.0);
+    let s = sim.snapshot();
+    assert!((s[snap::ELECTRIC_POWER_KW] - 500.0).abs() < 0.5, "{}", grid_side_summary(&s));
+
+    // Or the operator stops instead: the normal cool-down from the wait.
+    let mut sim = on_load(50.0, 300.0);
+    sim.set_grid_phase_voltages_pu(1.0, 1.0, 0.73);
+    advance(&mut sim, 1.0);
+    sim.cmd_stop();
+    advance(&mut sim, 1.0);
+    assert_eq!(sim.snapshot()[snap::SEQUENCE_STEP], f64::from(Sequence::CoolDown.index()));
+}
+
+#[test]
+fn a_cabinet_overcurrent_stops_the_engine_like_a_unit_fault() {
+    // Over-current is not a grid event in this model: no bus voltage drives it. With a
+    // weak field the machine draws a heavy reactive current at full load; the cabinet's
+    // time-delayed stage answers, and the unit is stopped and waits for acknowledgement.
+    let mut sim = on_load(100.0, 300.0);
+    sim.set_excitation_pu(0.5);
+    let start = sim.snapshot()[snap::TIME_S];
+    advance(&mut sim, 5.0);
+    let s = sim.snapshot();
+    let summary = grid_side_summary(&s);
+    let limit = sim.limits()[crate::LIMIT_FIELDS.iter().position(|n| *n == "OVERCURRENT_A").unwrap()];
+    assert!(s[snap::STATOR_CURRENT_A] > limit, "{} A against {limit} A; {summary}", s[snap::STATOR_CURRENT_A]);
+    assert_eq!(s[snap::BREAKER_CLOSED], 1.0, "inside the 10 s delay; {summary}");
+    advance_until(&mut sim, 20.0, "over-current trip", |x| x[snap::BREAKER_CLOSED] == 0.0);
+    let trips = events_of(&sim, event_kind::PROTECTION);
+    assert_eq!(trips.len(), 1, "{trips:?}");
+    assert_eq!(trips[0].1 / 10, protection::OVERCURRENT);
+    assert!((trips[0].0 - start - 10.0).abs() < 0.1, "tripped after {} s", trips[0].0 - start);
+    advance(&mut sim, 0.05);
+    let tripped = sim.snapshot();
+    assert_eq!(tripped[snap::STATE_CODE], 5.0, "{}", grid_side_summary(&tripped));
+    assert_eq!(tripped[snap::ALARM_BITS] as u32, alarm::OVERCURRENT);
+    assert_eq!(tripped[snap::FUEL_POWER_KW], 0.0);
+}
+
+#[test]
+fn the_analyser_records_a_dip_the_protection_rides_through_and_keeps_its_own_clock() {
+    // A dip shorter than the protection's delay: one event in the analyser's record, on
+    // that phase, with the measured duration and residual voltage; the breaker stays in.
+    let mut sim = on_load(50.0, 300.0);
+    sim.set_grid_phase_voltages_pu(1.0, 1.0, 0.80);
+    advance(&mut sim, 0.10);
+    assert_eq!(sim.snapshot()[snap::ANALYSER_OPEN_EVENTS], 1.0);
+    assert!(sim.analyser_events().is_empty(), "the event is recorded when the voltage is back");
+    sim.set_grid_voltage_pu(1.0);
+    advance(&mut sim, 1.0);
+    let s = sim.snapshot();
+    assert_eq!(s[snap::BREAKER_CLOSED], 1.0, "{}", grid_side_summary(&s));
+    assert!(events_of(&sim, event_kind::PROTECTION).is_empty());
+    let record = quality_events(&sim);
+    assert_eq!(record.len(), 1, "{record:?}");
+    let (kind, phase, _, duration, residual) = record[0];
+    assert_eq!((kind, phase), (quality_kind::DIP, 3));
+    assert!((duration - 0.10).abs() < 0.011, "duration {duration} s");
+    assert!((residual - 0.80 * PHASE_VOLT).abs() < 1.0e-9, "residual {residual} V");
+    assert_eq!(s[snap::ANALYSER_OPEN_EVENTS], 0.0);
+    assert_eq!(s[snap::ANALYSER_RECORDED_EVENTS], 1.0);
+
+    // A dip the protection does answer, seen by an analyser whose clock is an hour ahead
+    // and by one in step with the model. The protection's event stays in model time.
+    let run = |offset_s: f64| {
+        let mut sim = on_load(50.0, 300.0);
+        sim.set_analyser_clock_offset_s(offset_s);
+        let fell_at = sim.snapshot()[snap::TIME_S];
+        sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+        advance(&mut sim, 0.50);
+        sim.set_grid_voltage_pu(1.0);
+        advance(&mut sim, 1.0);
+        let record = quality_events(&sim);
+        assert_eq!(record.len(), 1, "{record:?}");
+        let protection = events_of(&sim, event_kind::PROTECTION);
+        assert_eq!(protection.len(), 1);
+        assert_eq!(sim.snapshot()[snap::BREAKER_CLOSED], 0.0);
+        let clock = sim.snapshot()[snap::ANALYSER_CLOCK_S] - sim.snapshot()[snap::TIME_S];
+        (fell_at, record[0], protection[0], clock)
+    };
+    let (fell_at, in_step, trip, clock) = run(0.0);
+    let (_, ahead, trip_ahead, clock_ahead) = run(3_600.0);
+    assert_eq!((in_step.0, in_step.1), (quality_kind::DIP, 2));
+    assert!((in_step.3 - 0.50).abs() < 0.011, "duration {} s", in_step.3);
+    assert!((in_step.4 - 0.73 * PHASE_VOLT).abs() < 1.0e-9, "residual {} V", in_step.4);
+    // In step: the dip starts when the voltage fell, the protection trips its delay later.
+    assert!((in_step.2 - fell_at).abs() < 1.0e-6, "dip start {} against {fell_at}", in_step.2);
+    assert!((trip.0 - in_step.2 - 0.15).abs() < 0.011);
+    // An hour ahead: the same dip is stamped exactly an hour later; the protection's
+    // event has not moved, so the two logs now disagree by the clock's offset.
+    assert!((ahead.2 - in_step.2 - 3_600.0).abs() < 1.0e-6, "{} against {}", ahead.2, in_step.2);
+    assert_eq!(trip_ahead.0.to_bits(), trip.0.to_bits());
+    assert_eq!(ahead.3.to_bits(), in_step.3.to_bits());
+    assert!(clock.abs() < 1.0e-9 && (clock_ahead - 3_600.0).abs() < 1.0e-9);
+
+    // An interruption and a swell are told apart from a dip.
+    let mut sim = KguSim::new();
+    sim.set_grid_phase_voltages_pu(0.02, 1.0, 1.15);
+    advance(&mut sim, 0.30);
+    sim.set_grid_voltage_pu(1.0);
+    advance(&mut sim, 0.10);
+    let record = quality_events(&sim);
+    assert_eq!(record.len(), 2, "{record:?}");
+    assert!(record.iter().any(|e| e.0 == quality_kind::INTERRUPTION && e.1 == 1));
+    assert!(record.iter().any(|e| e.0 == quality_kind::SWELL && e.1 == 3));
+    sim.clear_analyser_events();
+    assert!(sim.analyser_events().is_empty());
 }

@@ -8,6 +8,17 @@ export class KguSim {
     free(): void;
     [Symbol.dispose](): void;
     /**
+     * The power-quality analyser's record of closed voltage events, oldest
+     * first, five values per event: kind (1 dip, 2 swell, 3 interruption),
+     * phase (1, 2, 3 for a, b, c), start by the analyser's own clock [s],
+     * duration [s], residual or highest voltage [V, phase to neutral].
+     */
+    analyser_events(): Float64Array;
+    /**
+     * Empty the analyser's record. Events still open stay open.
+     */
+    clear_analyser_events(): void;
+    /**
      * Empty the event log.
      */
     clear_events(): void;
@@ -43,7 +54,9 @@ export class KguSim {
     /**
      * The event log, oldest first, four values per event: time [s], kind
      * (1 state, 2 breaker, 3 alarm raised, 4 alarm cleared, 5 command
-     * refused, 6 sequence step), code, value.
+     * refused, 6 sequence step, 7 cabinet protection trip), code, value.
+     * For a protection trip the code is ten times the function's index plus
+     * the phase (1 to 3, or 0), and the value is what it tripped at.
      */
     events(): Float64Array;
     /**
@@ -69,6 +82,12 @@ export class KguSim {
      * A unit at standstill, cold and ready to start, on a healthy bus.
      */
     constructor();
+    /**
+     * How far the power-quality analyser's clock is ahead of the model's
+     * time [s]. The controller's and the protection's events stay in model
+     * time.
+     */
+    set_analyser_clock_offset_s(offset_s: number): void;
     /**
      * Atmospheric pressure [kPa]; default 101.325.
      */
@@ -103,7 +122,19 @@ export class KguSim {
      */
     set_grid_freq_hz(hz: number): void;
     /**
-     * Bus voltage [pu of 10 kV].
+     * How far each phase voltage is turned from its nominal position
+     * [degrees], phases a, b, c; zero for a grid with its phases a third of
+     * a turn apart.
+     */
+    set_grid_phase_angles_deg(a: number, b: number, c: number): void;
+    /**
+     * Magnitudes of the three phase voltages of the bus [pu of the rated
+     * phase voltage], phases a, b, c. A grid disturbance is a circumstance
+     * of the scenario: any phase, any depth.
+     */
+    set_grid_phase_voltages_pu(a: number, b: number, c: number): void;
+    /**
+     * Bus voltage [pu]: all three phases at this magnitude.
      */
     set_grid_voltage_pu(pu: number): void;
     /**
@@ -129,6 +160,13 @@ export class KguSim {
      */
     set_oil_pressure_low(low: boolean): void;
     /**
+     * How the unit comes back after the cabinet's protection has opened the
+     * breaker on a grid event: `0` manual (people acknowledge and close),
+     * `1` automatic (the automation waits for a healthy grid, synchronises
+     * and loads the unit by itself). Default manual.
+     */
+    set_restoration_mode(mode: number): void;
+    /**
      * The flat snapshot; slot indices are [`snap`], names
      * [`Self::snapshot_field_names`].
      */
@@ -153,6 +191,8 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_kgusim_free: (a: number, b: number) => void;
+    readonly kgusim_analyser_events: (a: number) => [number, number];
+    readonly kgusim_clear_analyser_events: (a: number) => void;
     readonly kgusim_clear_events: (a: number) => void;
     readonly kgusim_cmd_ack: (a: number) => void;
     readonly kgusim_cmd_breaker_close: (a: number) => number;
@@ -166,6 +206,7 @@ export interface InitOutput {
     readonly kgusim_limits: (a: number) => [number, number];
     readonly kgusim_machine_facts: (a: number) => [number, number];
     readonly kgusim_new: () => number;
+    readonly kgusim_set_analyser_clock_offset_s: (a: number, b: number) => void;
     readonly kgusim_set_atm_pressure_kpa: (a: number, b: number) => void;
     readonly kgusim_set_auto_sync: (a: number, b: number) => void;
     readonly kgusim_set_condition_factor: (a: number, b: number) => void;
@@ -174,12 +215,15 @@ export interface InitOutput {
     readonly kgusim_set_gas_gauge_kpa: (a: number, b: number) => void;
     readonly kgusim_set_gas_temp_c: (a: number, b: number) => void;
     readonly kgusim_set_grid_freq_hz: (a: number, b: number) => void;
+    readonly kgusim_set_grid_phase_angles_deg: (a: number, b: number, c: number, d: number) => void;
+    readonly kgusim_set_grid_phase_voltages_pu: (a: number, b: number, c: number, d: number) => void;
     readonly kgusim_set_grid_voltage_pu: (a: number, b: number) => void;
     readonly kgusim_set_heat_demand_frac: (a: number, b: number) => void;
     readonly kgusim_set_load_ramp_pct_per_min: (a: number, b: number) => void;
     readonly kgusim_set_load_setpoint_pct: (a: number, b: number) => void;
     readonly kgusim_set_network_return_temp_c: (a: number, b: number) => void;
     readonly kgusim_set_oil_pressure_low: (a: number, b: number) => void;
+    readonly kgusim_set_restoration_mode: (a: number, b: number) => void;
     readonly kgusim_snapshot: (a: number) => [number, number];
     readonly kgusim_snapshot_field_names: (a: number) => [number, number];
     readonly kgusim_step: (a: number, b: number) => number;

@@ -8,7 +8,10 @@
 //!                                                         |  common flow (shaft speed)
 //!        starter (battery boundary) ----------------------+-- shaft (kernel Mass)
 //!        generator (bus boundary) ------------------------+
-//! controller --signals--> starter, gas_valve, engine, generator
+//! controller --signals--> starter, gas_valve, engine, cabinet
+//! cabinet (protection) --signal--> generator breaker
+//! bus (boundary): three phase voltages -> positive sequence to the generator's
+//!                 grid port, negative sequence to its unbalance port
 //!
 //! engine jacket ----------+
 //! exhaust_hx (coolant) ---+-- common effort (coolant temperature)
@@ -34,12 +37,16 @@ use fs_ports::PortKind;
 use fs_system::elements::{Conductance, HeatCapacity, Mass, Motion};
 use fs_system::{NodeId, RouteTemperature, SolveConfig, System, SystemBuilder, heat_sink};
 
+use crate::analyser::PowerQualityAnalyser;
+use crate::cabinet::{
+    BreakerCabinetComponent, CabinetState, MEASURE_WIDTH, Sequences, sequence_components,
+};
 use crate::cards::{
-    BUS_VOLTAGE_V, CombustionLimitsCard, ControllerSetpoints, CoolantCard,
+    BUS_VOLTAGE_V, BreakerCabinetCard, CombustionLimitsCard, ControllerSetpoints, CoolantCard,
     DEFAULT_CONDITION_FACTOR, DumpCoolerCard, ExhaustExchangerCard, ExhaustGasCard, FuelGasCard,
     GasValveCard, GeneratorCard, HeatSplitCard, IndicatedWorkCard, NOMINAL_FREQUENCY_HZ,
-    NetworkExchangerCard, PassportCard, RATED_ELECTRIC_W, RATED_OMEGA_RAD_S, SHAFT_INERTIA_KG_M2,
-    StarterCard, SynchronisationWindowCard,
+    NetworkExchangerCard, PassportCard, PowerQualityCard, RATED_ELECTRIC_W, RATED_OMEGA_RAD_S,
+    RestorationCard, SHAFT_INERTIA_KG_M2, StarterCard, SynchronisationWindowCard,
 };
 use crate::components::{
     GasControlValveComponent, GasEngineComponent, GasEngineState, GasValveState, GeneratorState,
@@ -105,8 +112,13 @@ pub struct OperatorInputs {
     pub gas_temperature_k: f64,
     /// Atmospheric pressure [Pa].
     pub atmospheric_pa: f64,
-    /// Bus voltage [pu of 10 kV].
-    pub grid_voltage_pu: f64,
+    /// Magnitudes of the three phase voltages of the bus [pu of the rated
+    /// phase voltage], phases a, b, c.
+    pub grid_phase_voltage_pu: [f64; 3],
+    /// How far each phase voltage is turned from its nominal position [rad].
+    pub grid_phase_angle_rad: [f64; 3],
+    /// Whether the unit returns to the bus by itself after a grid event.
+    pub restoration_auto: bool,
     /// Bus frequency [Hz].
     pub grid_frequency_hz: f64,
     /// Machine-condition factor [-].
@@ -141,7 +153,9 @@ impl Default for OperatorInputs {
             gas_gauge_pa: GasValveCard::SIZING_GAUGE_PA,
             gas_temperature_k: GasValveCard::SIZING_TEMPERATURE_K,
             atmospheric_pa: FuelGasCard::STATION.standard_pressure_pa,
-            grid_voltage_pu: 1.0,
+            grid_phase_voltage_pu: [1.0; 3],
+            grid_phase_angle_rad: [0.0; 3],
+            restoration_auto: false,
             grid_frequency_hz: NOMINAL_FREQUENCY_HZ,
             condition_factor: DEFAULT_CONDITION_FACTOR,
             fan_failed: false,
@@ -153,6 +167,14 @@ impl Default for OperatorInputs {
             breaker_close: false,
             breaker_open: false,
         }
+    }
+}
+
+impl OperatorInputs {
+    /// Positive and negative sequence of the bus's phase voltages [pu].
+    #[must_use]
+    pub fn grid_sequences(&self) -> Sequences {
+        sequence_components(self.grid_phase_voltage_pu, self.grid_phase_angle_rad)
     }
 }
 
@@ -171,6 +193,16 @@ pub struct Sensed {
     pub out_of_step: bool,
     /// Coolant temperature at the engine outlet [K].
     pub coolant_k: f64,
+    /// Generator phase currents [A].
+    pub phase_current_a: [f64; 3],
+    /// Generator negative-sequence current [A].
+    pub negative_sequence_current_a: f64,
+    /// The cabinet's trip count.
+    pub cabinet_trips: u32,
+    /// The cabinet's tripped functions, one bit each.
+    pub cabinet_tripped: u32,
+    /// Whether the cabinet's protection finds the grid healthy.
+    pub grid_healthy: bool,
 }
 
 struct Shared {
@@ -207,6 +239,13 @@ pub mod event_kind {
     pub const REFUSED: u32 = 5;
     /// The sequence step changed; `code` is the new step index.
     pub const SEQUENCE: u32 = 6;
+    /// A protection function of the breaker cabinet tripped. `code` is ten
+    /// times the function's index (`cabinet::protection`) plus the phase (1,
+    /// 2, 3 for a, b, c; 0 when the function is not about one phase); `value`
+    /// is what it tripped at, in the function's unit: phase voltage [V],
+    /// unbalance [%], negative-sequence current [% of rated], phase current
+    /// [A], frequency [Hz], reverse power [kW].
+    pub const PROTECTION: u32 = 7;
 }
 
 /// Handles of the plant's nodes.
@@ -232,6 +271,8 @@ pub struct KguNodes {
     pub network_hx: NodeId,
     /// Emergency cooler.
     pub dump_cooler: NodeId,
+    /// Generator breaker cabinet (protection device).
+    pub cabinet: NodeId,
 }
 
 /// The sealed plant with its operator registers and event log.
@@ -242,6 +283,12 @@ pub struct KguPlant {
     pub nodes: KguNodes,
     shared: Rc<RefCell<Shared>>,
     events: Vec<Event>,
+    /// The cabinet's power-quality analyser.
+    pub analyser: PowerQualityAnalyser,
+    /// The cabinet's protection settings.
+    pub cabinet_card: BreakerCabinetCard,
+    /// The restoration settings.
+    pub restoration_card: RestorationCard,
     /// The coolant circuit's card.
     pub coolant_card: CoolantCard,
     /// The exhaust exchanger's card, with its fitted tube length.
@@ -344,10 +391,18 @@ impl KguPlant {
         let shaft_c = Mass::in_domain(PortKind::RotationalTorqueAngularVelocity, SHAFT_INERTIA_KG_M2)
             .expect("shaft inertia");
         let starter_c = StarterMotorComponent::new(StarterCard::ASSUMED);
+        let cabinet_card = BreakerCabinetCard::DEFAULT;
+        let restoration_card = RestorationCard::DEFAULT;
+        let cabinet_c = BreakerCabinetComponent::new(
+            cabinet_card,
+            restoration_card,
+            generator_card.rated_current_a(),
+        );
         let new_controller = || {
             GensetControllerComponent::new(
                 setpoints,
                 window,
+                restoration_card,
                 generator_card.pole_pairs,
                 generator_card.excitation_range_pu,
                 no_load_torque_nm,
@@ -364,6 +419,11 @@ impl KguPlant {
                 electric_power_w: 0.0,
                 out_of_step: false,
                 coolant_k: coolant_card.standby_k,
+                phase_current_a: [0.0; 3],
+                negative_sequence_current_a: 0.0,
+                cabinet_trips: 0,
+                cabinet_tripped: 0,
+                grid_healthy: false,
             },
         }));
 
@@ -408,6 +468,9 @@ impl KguPlant {
         let dump_cooler = b
             .add("dump_cooler", dump_cooler_c, DumpCoolerState::default())
             .expect("add dump_cooler");
+        let cabinet = b
+            .add("cabinet", cabinet_c, CabinetState::open())
+            .expect("add cabinet");
 
         let port = |b: &SystemBuilder, node: NodeId, id: &str| b.port(node, id).expect("known port");
         let valve_inlet = port(&b, gas_valve, "inlet");
@@ -441,19 +504,31 @@ impl KguPlant {
         b.common_flow(shaft_p, &[engine_shaft, starter_shaft, generator_shaft])
             .expect("shaft junction");
 
-        // --- Controller outputs: [starter, gas shut-off, ignition, valve demand, breaker].
-        b.signal_map(controller_actuators, starter_engage, vec![1.0, 0.0, 0.0, 0.0, 0.0])
+        // --- Controller outputs: [starter, gas shut-off, ignition, valve demand, breaker
+        //     close request, cabinet reset]. The close request goes to the cabinet, whose
+        //     protection decides what the breaker receives.
+        let cabinet_command = port(&b, cabinet, "command");
+        let cabinet_measure = port(&b, cabinet, "measure");
+        let cabinet_breaker = port(&b, cabinet, "breaker");
+        let generator_unbalance = port(&b, generator, "unbalance");
+        b.signal_map(controller_actuators, starter_engage, vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
             .expect("starter command");
         b.signal_map(
             controller_actuators,
             valve_command,
-            vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
         )
         .expect("valve command");
-        b.signal_map(controller_actuators, engine_ignition, vec![0.0, 0.0, 1.0, 0.0, 0.0])
+        b.signal_map(controller_actuators, engine_ignition, vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
             .expect("ignition command");
-        b.signal_map(controller_actuators, generator_breaker, vec![0.0, 0.0, 0.0, 0.0, 1.0])
-            .expect("breaker command");
+        b.signal_map(
+            controller_actuators,
+            cabinet_command,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        )
+        .expect("cabinet command");
+        b.signal(cabinet_breaker, generator_breaker)
+            .expect("breaker close path");
 
         // --- Heat recovery: one coolant temperature (the kernel's heat capacity sets it);
         //     the engine's jacket, the three exchangers and the block's loss exchange heat
@@ -569,11 +644,49 @@ impl KguPlant {
             b.boundary(
                 generator_grid,
                 Box::new(move |_t0, _dt, values| {
-                    // The 10 kV bus referred to the generator side through the ideal ratio.
-                    values[0] = shared.borrow().operator.grid_voltage_pu * rated_voltage;
+                    // The 10 kV bus referred to the generator side through the ideal ratio:
+                    // the positive sequence of its three phase voltages, as a line voltage.
+                    let sequences = shared.borrow().operator.grid_sequences();
+                    values[0] = sequences.positive_magnitude() * rated_voltage;
                 }),
             )
             .expect("bus boundary");
+        }
+        {
+            let shared = Rc::clone(&shared);
+            let rated_phase_voltage = generator_card.rated_phase_voltage_v();
+            b.boundary(
+                generator_unbalance,
+                Box::new(move |_t0, _dt, values| {
+                    // The negative sequence [V per phase] against the positive one, and
+                    // the positive sequence's own angle.
+                    let sequences = shared.borrow().operator.grid_sequences();
+                    let negative = sequences.negative_against_positive();
+                    values[0] = negative[0] * rated_phase_voltage;
+                    values[1] = negative[1] * rated_phase_voltage;
+                    values[2] = sequences.positive_angle();
+                }),
+            )
+            .expect("unbalance boundary");
+        }
+        {
+            let shared = Rc::clone(&shared);
+            b.boundary(
+                cabinet_measure,
+                Box::new(move |_t0, _dt, values| {
+                    debug_assert_eq!(values.len(), MEASURE_WIDTH);
+                    let shared = shared.borrow();
+                    let (operator, sensed) = (&shared.operator, &shared.sensed);
+                    values[0..3].copy_from_slice(&operator.grid_phase_voltage_pu);
+                    values[3..6].copy_from_slice(&operator.grid_phase_angle_rad);
+                    values[6..9].copy_from_slice(&sensed.phase_current_a);
+                    values[9] = sensed.negative_sequence_current_a;
+                    values[10] = operator.grid_frequency_hz;
+                    values[11] = sensed.electric_power_w;
+                    values[12] = if sensed.breaker_closed { 1.0 } else { 0.0 };
+                }),
+            )
+            .expect("cabinet measure boundary");
         }
         {
             let shared = Rc::clone(&shared);
@@ -592,14 +705,20 @@ impl KguPlant {
             b.boundary(
                 controller_sense,
                 Box::new(move |_t0, _dt, values| {
-                    let sensed = shared.borrow().sensed;
+                    let shared = shared.borrow();
+                    let sensed = shared.sensed;
                     let flag = |on: bool| if on { 1.0 } else { 0.0 };
                     values[0] = sensed.omega_rad_s;
-                    values[1] = sensed.load_angle_rad;
+                    // The synchroniser compares against the positive-sequence voltage.
+                    values[1] =
+                        sensed.load_angle_rad - shared.operator.grid_sequences().positive_angle();
                     values[2] = flag(sensed.breaker_closed);
                     values[3] = sensed.electric_power_w;
                     values[4] = flag(sensed.out_of_step);
                     values[5] = sensed.coolant_k;
+                    values[6] = f64::from(sensed.cabinet_trips);
+                    values[7] = f64::from(sensed.cabinet_tripped);
+                    values[8] = flag(sensed.grid_healthy);
                     debug_assert_eq!(values.len(), SENSE_WIDTH);
                 }),
             )
@@ -651,7 +770,14 @@ impl KguPlant {
                 exhaust_hx,
                 network_hx,
                 dump_cooler,
+                cabinet,
             },
+            analyser: PowerQualityAnalyser::new(
+                PowerQualityCard::DEFAULT,
+                generator_card.rated_phase_voltage_v(),
+            ),
+            cabinet_card,
+            restoration_card,
             coolant_card,
             exhaust_card,
             shared,
@@ -691,11 +817,12 @@ impl KguPlant {
     #[must_use]
     pub fn synchro_check(&self) -> SynchroCheck {
         let shared = self.shared.borrow();
+        let sequences = shared.operator.grid_sequences();
         self.check_controller.check(
             shared.sensed.omega_rad_s,
-            shared.sensed.load_angle_rad,
+            shared.sensed.load_angle_rad - sequences.positive_angle(),
             shared.operator.excitation_pu,
-            shared.operator.grid_voltage_pu,
+            sequences.positive_magnitude(),
             shared.operator.grid_frequency_hz,
         )
     }
@@ -728,6 +855,7 @@ impl KguPlant {
     fn sub_step(&mut self, cx: &Cx<'_>) -> Result<(), String> {
         let before_controller = self.controller_state();
         let before_generator = self.generator_state();
+        let before_cabinet = self.cabinet_state();
 
         // `System::step` takes one step of at most the sub-step; a component may shorten it.
         let mut remaining = SUB_STEP_S;
@@ -745,10 +873,14 @@ impl KguPlant {
                 .map_err(|error| format!("fs_system::System::step refused: {error}"))?;
             remaining -= report.dt_s;
             self.last_iterations = report.iterations;
+            // The analyser reads the bus voltages that held over the step just taken.
+            let voltages = self.operator().grid_phase_voltage_pu;
+            let step_start_s = self.system.time_s() - report.dt_s;
+            self.analyser.observe(step_start_s, report.dt_s, voltages);
             self.sample();
         }
 
-        self.log_changes(&before_controller, &before_generator);
+        self.log_changes(&before_controller, &before_generator, &before_cabinet);
         Ok(())
     }
 
@@ -756,6 +888,7 @@ impl KguPlant {
     fn sample(&mut self) {
         let shaft = self.shaft_state();
         let generator = self.generator_state();
+        let cabinet = self.cabinet_state();
         let coolant_k = self.coolant_k();
         let mut shared = self.shared.borrow_mut();
         shared.sensed = Sensed {
@@ -765,6 +898,11 @@ impl KguPlant {
             electric_power_w: generator.electric_power_w,
             out_of_step: generator.out_of_step,
             coolant_k,
+            phase_current_a: generator.phase_current_a,
+            negative_sequence_current_a: generator.negative_sequence_current_a,
+            cabinet_trips: cabinet.trips,
+            cabinet_tripped: cabinet.tripped,
+            grid_healthy: cabinet.grid_healthy,
         };
         let operator = &mut shared.operator;
         operator.start = false;
@@ -787,10 +925,36 @@ impl KguPlant {
         });
     }
 
-    fn log_changes(&mut self, before: &ControllerState, before_generator: &GeneratorState) {
+    fn log_changes(
+        &mut self,
+        before: &ControllerState,
+        before_generator: &GeneratorState,
+        before_cabinet: &CabinetState,
+    ) {
         let after = self.controller_state();
         let generator = self.generator_state();
+        let cabinet = self.cabinet_state();
         let rpm = self.shaft_state().velocity_m_s * 30.0 / core::f64::consts::PI;
+        if cabinet.trips != before_cabinet.trips {
+            // The protection's own account of its trip, in the units an operator reads.
+            use crate::cabinet::protection as p;
+            let value = match cabinet.last_function {
+                p::UNDERVOLTAGE | p::OVERVOLTAGE => {
+                    cabinet.last_value * self.generator_card.rated_phase_voltage_v()
+                }
+                p::VOLTAGE_UNBALANCE | p::NEGATIVE_SEQUENCE => 100.0 * cabinet.last_value,
+                p::OVERCURRENT | p::OVERCURRENT_HIGH => {
+                    cabinet.last_value * self.generator_card.rated_current_a()
+                }
+                p::REVERSE_POWER => cabinet.last_value * 1.0e-3,
+                _ => cabinet.last_value,
+            };
+            self.push_event(
+                event_kind::PROTECTION,
+                10 * cabinet.last_function + cabinet.last_phase,
+                value,
+            );
+        }
         if after.sequence != before.sequence {
             self.push_event(event_kind::SEQUENCE, after.sequence.index(), rpm);
         }
@@ -891,6 +1055,15 @@ impl KguPlant {
             .expect("controller state")
     }
 
+    /// Accepted state of the breaker cabinet's protection device.
+    #[must_use]
+    pub fn cabinet_state(&self) -> CabinetState {
+        *self
+            .system
+            .state::<CabinetState>(self.nodes.cabinet)
+            .expect("cabinet state")
+    }
+
     /// Coolant temperature at the engine outlet [K]: the coolant node's state.
     #[must_use]
     pub fn coolant_k(&self) -> f64 {
@@ -976,7 +1149,7 @@ impl KguPlant {
     /// Bus voltage [V] on the 10 kV side.
     #[must_use]
     pub fn bus_voltage_v(&self) -> f64 {
-        self.operator().grid_voltage_pu * BUS_VOLTAGE_V
+        self.operator().grid_sequences().positive_magnitude() * BUS_VOLTAGE_V
     }
 }
 
@@ -992,10 +1165,12 @@ fn operator_signals(operator: &OperatorInputs) -> OperatorSignals {
         auto_synchronise: operator.auto_synchronise,
         gas_gauge_pa: operator.gas_gauge_pa,
         oil_pressure_low: operator.oil_pressure_low,
-        grid_voltage_pu: operator.grid_voltage_pu,
+        // The synchroniser's voltage is the positive sequence of the bus.
+        grid_voltage_pu: operator.grid_sequences().positive_magnitude(),
         grid_frequency_hz: operator.grid_frequency_hz,
         excitation_pu: operator.excitation_pu,
         fan_failed: operator.fan_failed,
         load_ramp_per_s: operator.load_ramp_per_s,
+        restoration_auto: operator.restoration_auto,
     }
 }

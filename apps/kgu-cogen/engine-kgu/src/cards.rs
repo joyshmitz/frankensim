@@ -570,6 +570,16 @@ pub struct GeneratorCard {
     pub damping_pu: f64,
     /// Smallest and largest excitation the field system accepts [pu].
     pub excitation_range_pu: (f64, f64),
+    /// Negative-sequence reactance of the generator alone [pu] (**assumed**:
+    /// the order of a sub-transient reactance of a salient-pole machine with
+    /// a damper cage). The transformer's reactance adds to it towards the bus.
+    pub negative_sequence_reactance_pu: f64,
+    /// Negative-sequence resistance of the generator [pu] (**assumed**). It is
+    /// the stator's resistance plus half of what the rotor's circuits show at
+    /// twice the line frequency: of the heat a negative-sequence current
+    /// leaves in the rotor, half arrives through the stator from the bus and
+    /// half through the shaft as a braking torque.
+    pub negative_sequence_resistance_pu: f64,
 }
 
 impl GeneratorCard {
@@ -587,12 +597,33 @@ impl GeneratorCard {
         rated_core_loss_w: 14_000.0,
         damping_pu: 15.0,
         excitation_range_pu: (0.5, 1.5),
+        negative_sequence_reactance_pu: 0.20,
+        negative_sequence_resistance_pu: 0.05,
     };
 
     /// Base impedance [ohm].
     #[must_use]
     pub fn base_impedance_ohm(&self) -> f64 {
         self.rated_voltage_v * self.rated_voltage_v / self.rated_va
+    }
+
+    /// Rated line current [A, RMS].
+    #[must_use]
+    pub fn rated_current_a(&self) -> f64 {
+        self.rated_va / (3.0_f64.sqrt() * self.rated_voltage_v)
+    }
+
+    /// Rated phase-to-neutral voltage [V, RMS].
+    #[must_use]
+    pub fn rated_phase_voltage_v(&self) -> f64 {
+        self.rated_voltage_v / 3.0_f64.sqrt()
+    }
+
+    /// Resistance the rotor's circuits show a negative-sequence current [pu]:
+    /// twice the excess of the negative-sequence resistance over the stator's.
+    #[must_use]
+    pub fn rotor_negative_sequence_resistance_pu(&self) -> f64 {
+        2.0 * (self.negative_sequence_resistance_pu - self.loss_resistance_pu)
     }
 
     /// Synchronous electrical angular frequency at nominal frequency [rad/s].
@@ -702,10 +733,6 @@ pub struct ControllerSetpoints {
     pub standstill_rad_s: f64,
     /// Over-speed trip [rad/s].
     pub overspeed_trip_rad_s: f64,
-    /// Bus voltage below which the mains protection opens the breaker [pu].
-    pub undervoltage_trip_pu: f64,
-    /// Time the bus voltage must stay below it [s].
-    pub undervoltage_delay_s: f64,
     /// Gas supply gauge pressure below which the gas pressure switch warns
     /// and a power shortfall is attributed to the gas supply [Pa].
     pub gas_low_pressure_pa: f64,
@@ -750,8 +777,6 @@ impl ControllerSetpoints {
         cool_down_time_s: 300.0,
         standstill_rad_s: 0.5,
         overspeed_trip_rad_s: 1.15 * RATED_OMEGA_RAD_S,
-        undervoltage_trip_pu: 0.85,
-        undervoltage_delay_s: 0.15,
         gas_low_pressure_pa: 30_000.0,
         valve_saturated_demand: 0.98,
         power_shortfall_w: 0.03 * RATED_ELECTRIC_W,
@@ -759,6 +784,177 @@ impl ControllerSetpoints {
         oil_pressure_delay_s: 2.0,
         coolant_warning_k: 273.15 + 95.0,
         coolant_trip_k: 273.15 + 98.0,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Generator breaker cabinet: protection, restoration, power-quality analyser
+// ---------------------------------------------------------------------------
+
+/// A protection function that trips after its condition has held for a set
+/// time: a pick-up level and a delay.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DefiniteTimeCard {
+    /// Level at which the function picks up, in the function's own unit.
+    pub pickup: f64,
+    /// Time the condition must hold before the trip [s].
+    pub delay_s: f64,
+}
+
+/// Settings of the protection device in the generator breaker cabinet.
+///
+/// Origin: **setpoint**. Every number here is a setting of a relay, chosen as
+/// a plausible commissioning value and **to be verified against the cabinet
+/// documentation and the grid code**. The under-voltage level and delay are
+/// the ones the genset controller carried before this protection moved into
+/// the cabinet. No standard is quoted.
+///
+/// Voltages are per unit of the rated phase voltage, currents per unit of the
+/// generator's rated current.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BreakerCabinetCard {
+    /// Under-voltage, per phase: any phase below the level [pu].
+    pub undervoltage: DefiniteTimeCard,
+    /// Over-voltage, per phase: any phase above the level [pu].
+    pub overvoltage: DefiniteTimeCard,
+    /// Voltage unbalance: negative- over positive-sequence voltage above the
+    /// level [-].
+    pub voltage_unbalance: DefiniteTimeCard,
+    /// Negative-sequence current above which the rotor's thermal replica
+    /// integrates [pu]: the current the machine is taken to carry
+    /// continuously.
+    pub negative_sequence_pickup_pu: f64,
+    /// Thermal limit of the rotor, `(I2 / I_rated)^2 * t` [s].
+    pub negative_sequence_limit_s: f64,
+    /// Time constant with which the replica cools while the current is below
+    /// the pick-up [s].
+    pub negative_sequence_cooling_s: f64,
+    /// Over-current, per phase, time-delayed stage [pu].
+    pub overcurrent: DefiniteTimeCard,
+    /// Over-current, per phase, high-set stage [pu].
+    pub overcurrent_high: DefiniteTimeCard,
+    /// Under-frequency [Hz].
+    pub underfrequency: DefiniteTimeCard,
+    /// Over-frequency [Hz].
+    pub overfrequency: DefiniteTimeCard,
+    /// Reverse power: power drawn from the bus above the level [W].
+    pub reverse_power: DefiniteTimeCard,
+}
+
+impl BreakerCabinetCard {
+    /// The model's settings.
+    pub const DEFAULT: Self = Self {
+        undervoltage: DefiniteTimeCard {
+            pickup: 0.85,
+            delay_s: 0.15,
+        },
+        overvoltage: DefiniteTimeCard {
+            pickup: 1.15,
+            delay_s: 0.5,
+        },
+        voltage_unbalance: DefiniteTimeCard {
+            pickup: 0.05,
+            delay_s: 5.0,
+        },
+        negative_sequence_pickup_pu: 0.08,
+        negative_sequence_limit_s: 20.0,
+        negative_sequence_cooling_s: 300.0,
+        overcurrent: DefiniteTimeCard {
+            pickup: 1.20,
+            delay_s: 10.0,
+        },
+        overcurrent_high: DefiniteTimeCard {
+            pickup: 2.5,
+            delay_s: 0.10,
+        },
+        underfrequency: DefiniteTimeCard {
+            pickup: 47.5,
+            delay_s: 0.5,
+        },
+        overfrequency: DefiniteTimeCard {
+            pickup: 51.5,
+            delay_s: 0.5,
+        },
+        reverse_power: DefiniteTimeCard {
+            pickup: 0.05 * RATED_ELECTRIC_W,
+            delay_s: 5.0,
+        },
+    };
+}
+
+/// How the unit comes back after the cabinet's protection has opened the
+/// breaker on a grid event, and what counts as a healthy grid.
+///
+/// Origin: **setpoint**, **to be verified against the grid code and the
+/// plant's automation design**. In the manual mode none of the timers act:
+/// people bring the unit back.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RestorationCard {
+    /// Lowest phase voltage of a healthy grid [pu].
+    pub healthy_voltage_low_pu: f64,
+    /// Highest phase voltage of a healthy grid [pu].
+    pub healthy_voltage_high_pu: f64,
+    /// Largest voltage unbalance of a healthy grid [-].
+    pub healthy_unbalance: f64,
+    /// Lowest frequency of a healthy grid [Hz].
+    pub healthy_frequency_low_hz: f64,
+    /// Highest frequency of a healthy grid [Hz].
+    pub healthy_frequency_high_hz: f64,
+    /// Time the grid must stay healthy without a break before the automation
+    /// synchronises again [s].
+    pub healthy_delay_s: f64,
+    /// Longest wait at no load for the grid [s]; after it the unit makes a
+    /// normal stop with its cool-down.
+    pub longest_wait_s: f64,
+    /// Largest number of automatic returns within `attempt_window_s`; the
+    /// next grid trip inside the window blocks the automation until it is
+    /// acknowledged.
+    pub largest_attempts: u32,
+    /// Window over which the automatic returns are counted [s].
+    pub attempt_window_s: f64,
+}
+
+impl RestorationCard {
+    /// The model's settings.
+    pub const DEFAULT: Self = Self {
+        healthy_voltage_low_pu: 0.90,
+        healthy_voltage_high_pu: 1.10,
+        healthy_unbalance: 0.03,
+        healthy_frequency_low_hz: 49.0,
+        healthy_frequency_high_hz: 51.0,
+        healthy_delay_s: 60.0,
+        longest_wait_s: 600.0,
+        largest_attempts: 3,
+        attempt_window_s: 1_800.0,
+    };
+}
+
+/// Thresholds of the power-quality analyser in the cabinet.
+///
+/// Origin: **setpoint**, typical defaults of such an instrument, **to be
+/// verified against the current edition of the power-quality standard** the
+/// plant is measured under. No clause is quoted. Levels are per unit of the
+/// rated phase voltage.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PowerQualityCard {
+    /// A dip starts when a phase falls below this [pu].
+    pub dip_pu: f64,
+    /// A swell starts when a phase rises above this [pu].
+    pub swell_pu: f64,
+    /// A dip whose lowest voltage is below this is an interruption [pu].
+    pub interruption_pu: f64,
+    /// Margin by which the voltage must come back past a threshold before
+    /// the event is closed [pu].
+    pub hysteresis_pu: f64,
+}
+
+impl PowerQualityCard {
+    /// The model's settings.
+    pub const DEFAULT: Self = Self {
+        dip_pu: 0.90,
+        swell_pu: 1.10,
+        interruption_pu: 0.05,
+        hysteresis_pu: 0.02,
     };
 }
 

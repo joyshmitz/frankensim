@@ -15,12 +15,17 @@ import {
   EVENT_KIND,
   LIMIT,
   LIMIT_FIELDS,
+  PROTECTION,
+  QUALITY_KIND,
+  RESTORATION,
   SEQUENCE,
   SNAP,
   SNAPSHOT_FIELDS,
   SNAPSHOT_LAYOUT_VERSION,
   STATE,
+  decodeAnalyserEvents,
   decodeEvents,
+  decodeProtectionCode,
 } from "../snapshotLayout.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -77,6 +82,14 @@ test("snapshotLayout.mjs agrees with the engine's own layout", () => {
   assert.ok(Math.abs(limits[LIMIT.OVERSPEED_TRIP_RPM] - 1725) < 1e-9);
   assert.ok(Math.abs(limits[LIMIT.COOLANT_TRIP_C] - 98) < 1e-9);
   assert.equal(sim.sub_step_s(), 0.01);
+  // The cabinet's settings are in the limits, in operator units.
+  assert.ok(Math.abs(limits[LIMIT.RATED_PHASE_VOLTAGE_V] - 400 / Math.sqrt(3)) < 1e-9);
+  assert.ok(Math.abs(limits[LIMIT.RATED_CURRENT_A] - 1.25e6 / (Math.sqrt(3) * 400)) < 1e-9);
+  assert.equal(limits[LIMIT.PHASE_UNDERVOLTAGE_PU], limits[LIMIT.GRID_UNDERVOLTAGE_PU]);
+  assert.equal(limits[LIMIT.PHASE_UNDERVOLTAGE_DELAY_S], 0.15);
+  assert.ok(limits[LIMIT.HEALTHY_GRID_DELAY_S] > 0 && limits[LIMIT.LONGEST_GRID_WAIT_S] > 0);
+  assert.ok(limits[LIMIT.ANALYSER_DIP_PU] < 1 && limits[LIMIT.ANALYSER_SWELL_PU] > 1);
+  assert.equal(s[SNAP.RESTORATION_MODE], RESTORATION.MANUAL, "manual is the default");
   sim.free();
 });
 
@@ -368,4 +381,374 @@ test("two runs of the same commands agree to the bit", () => {
   for (let i = 0; i < a.length; i++) {
     assert.ok(Object.is(a[i], b[i]), `slot ${SNAPSHOT_FIELDS[i]} differs: ${a[i]} against ${b[i]}`);
   }
+
+  // And through an unbalanced bus, a protection trip, the wait and the automatic return.
+  const disturbed = () => {
+    const sim = onLoad(60);
+    sim.set_restoration_mode(RESTORATION.AUTOMATIC);
+    sim.set_grid_phase_voltages_pu(1.0, 1.0, 0.94);
+    advance(sim, 20);
+    sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+    advance(sim, 2);
+    sim.set_grid_voltage_pu(1.0);
+    advance(sim, 100);
+    const out = [Array.from(sim.snapshot()), Array.from(sim.events()), Array.from(sim.analyser_events())];
+    sim.free();
+    return out;
+  };
+  const [c, d] = [disturbed(), disturbed()];
+  assert.equal(c[0][SNAP.BREAKER_CLOSED], 1);
+  assert.equal(c[0][SNAP.RESTORATION_ATTEMPTS], 1);
+  for (const part of [0, 1, 2]) {
+    assert.equal(c[part].length, d[part].length);
+    for (let i = 0; i < c[part].length; i++) {
+      assert.ok(Object.is(c[part][i], d[part][i]), `part ${part}, value ${i}: ${c[part][i]} against ${d[part][i]}`);
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Three-phase grid, breaker cabinet, restoration, power-quality analyser
+// ---------------------------------------------------------------------------
+
+const PHASE_VOLT = 400 / Math.sqrt(3);
+
+const gridSide = (s) =>
+  `t ${s[SNAP.TIME_S].toFixed(2)} s, state ${s[SNAP.STATE_CODE]} step ${s[SNAP.SEQUENCE_STEP]}, ` +
+  `breaker ${s[SNAP.BREAKER_CLOSED]}, P ${s[SNAP.ELECTRIC_POWER_KW].toFixed(1)} kW, ` +
+  `phases ${s[SNAP.PHASE_A_VOLTAGE_V].toFixed(1)}/${s[SNAP.PHASE_B_VOLTAGE_V].toFixed(1)}/${s[SNAP.PHASE_C_VOLTAGE_V].toFixed(1)} V, ` +
+  `currents ${s[SNAP.PHASE_A_CURRENT_A].toFixed(0)}/${s[SNAP.PHASE_B_CURRENT_A].toFixed(0)}/${s[SNAP.PHASE_C_CURRENT_A].toFixed(0)} A, ` +
+  `U2/U1 ${s[SNAP.VOLTAGE_UNBALANCE_PCT].toFixed(2)} %, I2 ${s[SNAP.NEGATIVE_SEQUENCE_CURRENT_PCT].toFixed(2)} %, ` +
+  `rotor ${s[SNAP.ROTOR_THERMAL_USED_FRAC].toFixed(3)}, pickup ${s[SNAP.PROTECTION_PICKUP_BITS]}, ` +
+  `tripped ${s[SNAP.PROTECTION_TRIPPED_BITS]}, alarms ${s[SNAP.ALARM_BITS]}, attempts ${s[SNAP.RESTORATION_ATTEMPTS]}`;
+
+const phaseCurrents = (s) => [s[SNAP.PHASE_A_CURRENT_A], s[SNAP.PHASE_B_CURRENT_A], s[SNAP.PHASE_C_CURRENT_A]];
+const protectionTrips = (sim) =>
+  eventsOf(sim, EVENT_KIND.PROTECTION).map((e) => ({ ...e, ...decodeProtectionCode(e.code) }));
+
+test("a balanced grid reproduces the numbers recorded before the bus had three phases", () => {
+  // Recorded on this package for slice 1b (2026-11-25): default ramp, 100 % setpoint,
+  // 1 200 s after the breaker closed.
+  const sim = new KguSim();
+  sim.set_load_setpoint_pct(100);
+  sim.cmd_start();
+  while (sim.snapshot()[SNAP.BREAKER_CLOSED] !== 1) {
+    advance(sim, 0.1);
+    assert.ok(sim.snapshot()[SNAP.TIME_S] < 200);
+  }
+  const atBus = sim.snapshot();
+  const near = (value, recorded) => Math.abs(value - recorded) <= 1e-12 * Math.abs(recorded);
+  assert.ok(Math.abs(atBus[SNAP.TIME_S] - 91.0) < 1e-6, `to the bus in ${atBus[SNAP.TIME_S]} s`);
+  assert.ok(near(atBus[SNAP.GAS_STD_M3], 0.6229275942155623), `gas ${atBus[SNAP.GAS_STD_M3]} m3`);
+  advance(sim, 1200);
+  const s = sim.snapshot();
+  for (const [slot, recorded] of [
+    ["ELECTRIC_POWER_KW", 1000.0000010635003],
+    ["REACTIVE_POWER_KVAR", -193.70427017551341],
+    ["ELECTRIC_EFFICIENCY_PCT", 38.2000000587074],
+    ["THERMAL_EFFICIENCY_PCT", 42.75154668529072],
+    ["COOLANT_SUPPLY_C", 88.3156340915915],
+    ["COOLANT_RETURN_C", 68.17457035344671],
+    ["EXHAUST_TEMPERATURE_C", 484.76666993389915],
+    ["STACK_TEMPERATURE_C", 214.8341702904337],
+  ]) {
+    assert.ok(near(s[SNAP[slot]], recorded), `${slot}: ${s[SNAP[slot]]} against the recorded ${recorded}`);
+  }
+  assert.equal(s[SNAP.VOLTAGE_UNBALANCE_PCT], 0);
+  assert.equal(s[SNAP.NEGATIVE_SEQUENCE_CURRENT_PCT], 0);
+  assert.equal(s[SNAP.NEGATIVE_SEQUENCE_LOSS_KW], 0);
+  assert.equal(s[SNAP.PROTECTION_PICKUP_BITS], 0);
+  for (const current of phaseCurrents(s)) {
+    assert.ok(Math.abs(current - s[SNAP.STATOR_CURRENT_A]) < 1e-9 * s[SNAP.STATOR_CURRENT_A]);
+  }
+  assert.ok(Math.abs(s[SNAP.PHASE_B_VOLTAGE_V] - PHASE_VOLT) < 1e-9);
+  // A healthy balanced grid leaves both records empty.
+  assert.equal(sim.analyser_events().length, 0);
+  assert.equal(eventsOf(sim, EVENT_KIND.PROTECTION).length, 0);
+  sim.free();
+});
+
+test("one phase at 0.73 pu while exporting: the phase under-voltage trips first, the engine runs on", () => {
+  const sim = onLoad(90);
+  const fellAt = sim.snapshot()[SNAP.TIME_S];
+  sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+  advance(sim, 0.1);
+  const during = sim.snapshot();
+  assert.equal(during[SNAP.BREAKER_CLOSED], 1, gridSide(during));
+  assert.ok(Math.abs(during[SNAP.PHASE_B_VOLTAGE_V] - 0.73 * PHASE_VOLT) < 1e-9, gridSide(during));
+  // Not inputs: the unbalance, the negative-sequence current it drives, the unequal
+  // phase currents, the extra heat, and which functions have picked up.
+  assert.ok(Math.abs(during[SNAP.VOLTAGE_UNBALANCE_PCT] - (100 * 0.09) / 0.91) < 1e-9, gridSide(during));
+  assert.ok(
+    during[SNAP.NEGATIVE_SEQUENCE_CURRENT_PCT] > 30 && during[SNAP.NEGATIVE_SEQUENCE_CURRENT_PCT] < 38,
+    gridSide(during),
+  );
+  const currents = phaseCurrents(during);
+  assert.ok(Math.max(...currents) - Math.min(...currents) > 500, gridSide(during));
+  assert.ok(during[SNAP.NEGATIVE_SEQUENCE_LOSS_KW] > 5, gridSide(during));
+  for (const fn of [PROTECTION.UNDERVOLTAGE, PROTECTION.VOLTAGE_UNBALANCE, PROTECTION.NEGATIVE_SEQUENCE]) {
+    assert.notEqual(during[SNAP.PROTECTION_PICKUP_BITS] & (1 << fn), 0, `function ${fn} picked up`);
+  }
+
+  advance(sim, 0.1);
+  const after = sim.snapshot();
+  assert.equal(after[SNAP.BREAKER_CLOSED], 0, gridSide(after));
+  const trips = protectionTrips(sim);
+  assert.equal(trips.length, 1);
+  assert.equal(trips[0].protection, PROTECTION.UNDERVOLTAGE);
+  assert.equal(trips[0].phase, 2, "phase b");
+  assert.ok(Math.abs(trips[0].value - 0.73 * PHASE_VOLT) < 1e-6, `tripped at ${trips[0].value} V`);
+  const delay = trips[0].timeS - fellAt;
+  assert.ok(Math.abs(delay - sim.limits()[LIMIT.PHASE_UNDERVOLTAGE_DELAY_S]) < 0.011, `tripped after ${delay} s`);
+  assert.equal(after[SNAP.PROTECTION_TRIPPED_BITS], 1 << PROTECTION.UNDERVOLTAGE);
+  assert.equal(after[SNAP.ALARM_BITS], ALARM.GRID_UNDERVOLTAGE);
+  // Off the bus, not stopped: at speed, burning its no-load gas.
+  assert.equal(after[SNAP.STATE_CODE], STATE.SYNCHRONIZING);
+  assert.equal(after[SNAP.SEQUENCE_STEP], SEQUENCE.GRID_WAIT);
+  assert.equal(after[SNAP.WAITING_FOR_GRID], 1);
+  advance(sim, 20);
+  const idling = sim.snapshot();
+  assert.ok(Math.abs(idling[SNAP.SPEED_RPM] - 1500) < 1, gridSide(idling));
+  assert.ok(idling[SNAP.FUEL_POWER_KW] > 300 && idling[SNAP.FUEL_POWER_KW] < 450);
+  assert.ok(relativeResidual(idling) < 1e-9);
+  sim.free();
+
+  // All three phases at 0.73 instead: the same function, and no unbalance at all.
+  const all = onLoad(90);
+  all.set_grid_phase_voltages_pu(0.73, 0.73, 0.73);
+  advance(all, 0.1);
+  assert.equal(all.snapshot()[SNAP.VOLTAGE_UNBALANCE_PCT], 0);
+  assert.equal(all.snapshot()[SNAP.NEGATIVE_SEQUENCE_CURRENT_PCT], 0);
+  assert.equal(all.snapshot()[SNAP.PROTECTION_PICKUP_BITS], 1 << PROTECTION.UNDERVOLTAGE);
+  advance(all, 0.1);
+  assert.equal(all.snapshot()[SNAP.BREAKER_CLOSED], 0);
+  assert.equal(protectionTrips(all)[0].protection, PROTECTION.UNDERVOLTAGE);
+  all.free();
+});
+
+test("unbalance without low voltage: the rotor's limit trips, sooner the deeper the unbalance", () => {
+  const times = [];
+  for (const low of [0.88, 0.86]) {
+    const sim = onLoad(80);
+    const start = sim.snapshot()[SNAP.TIME_S];
+    sim.set_grid_phase_voltages_pu(1.0, 1.0, low);
+    advance(sim, 5);
+    const s = sim.snapshot();
+    assert.equal(s[SNAP.BREAKER_CLOSED], 1, gridSide(s));
+    assert.equal(s[SNAP.PROTECTION_PICKUP_BITS], 1 << PROTECTION.NEGATIVE_SEQUENCE, gridSide(s));
+    // The time is not a setting: it comes out of the integral (I2 / I_rated)^2 t.
+    const negativePu = s[SNAP.NEGATIVE_SEQUENCE_CURRENT_PCT] / 100;
+    const expected = sim.limits()[LIMIT.NEGATIVE_SEQUENCE_LIMIT_S] / negativePu ** 2;
+    advanceUntil(sim, 1500, "rotor limit", (x) => x[SNAP.BREAKER_CLOSED] === 0);
+    const trips = protectionTrips(sim);
+    assert.equal(trips.length, 1);
+    assert.equal(trips[0].protection, PROTECTION.NEGATIVE_SEQUENCE);
+    assert.equal(trips[0].phase, 0);
+    const time = trips[0].timeS - start;
+    assert.ok(Math.abs(time - expected) < 0.01 * expected, `tripped after ${time} s; the integral gives ${expected} s`);
+    advance(sim, 0.05);
+    assert.equal(sim.snapshot()[SNAP.ALARM_BITS], ALARM.NEGATIVE_SEQUENCE);
+    times.push({ negativePu, time });
+    sim.free();
+  }
+  assert.ok(times[1].negativePu > times[0].negativePu && times[1].time < times[0].time, JSON.stringify(times));
+});
+
+test("a small unbalance inside the settings: runs on, unequal currents, extra heat in the balance", () => {
+  const sim = onLoad(80);
+  const balanced = sim.snapshot();
+  sim.set_grid_phase_voltages_pu(1.0, 1.0, 0.94);
+  advance(sim, 300);
+  const s = sim.snapshot();
+  assert.equal(s[SNAP.STATE_CODE], STATE.RUNNING, gridSide(s));
+  assert.equal(s[SNAP.ALARM_BITS], 0, gridSide(s));
+  assert.equal(s[SNAP.PROTECTION_PICKUP_BITS], 0, gridSide(s));
+  assert.ok(Math.abs(s[SNAP.VOLTAGE_UNBALANCE_PCT] - (100 * 0.02) / 0.98) < 1e-9, gridSide(s));
+  assert.ok(Math.abs(s[SNAP.ELECTRIC_POWER_KW] - 800) < 0.5, gridSide(s));
+  const currents = phaseCurrents(s);
+  assert.ok(Math.max(...currents) - Math.min(...currents) > 100, gridSide(s));
+  const extra = s[SNAP.NEGATIVE_SEQUENCE_LOSS_KW];
+  assert.ok(extra > 0.3 && extra < 1.0, `negative-sequence heat ${extra} kW`);
+  assert.ok(s[SNAP.GENERATOR_LOSS_KW] > balanced[SNAP.GENERATOR_LOSS_KW] + 0.9 * extra);
+  const sensibleKw = (((s[SNAP.GAS_FLOW_STD_M3_H] / 3600) * 101325 * 16.043e-3) / (8.314462618 * 293.15)) * 2.2 * -5;
+  const leaving =
+    s[SNAP.ELECTRIC_POWER_KW] +
+    s[SNAP.GENERATOR_LOSS_KW] +
+    s[SNAP.JACKET_HEAT_KW] +
+    s[SNAP.EXHAUST_RECOVERED_KW] +
+    s[SNAP.EXHAUST_LOSS_KW] +
+    s[SNAP.RADIATION_LOSS_KW];
+  assert.ok(Math.abs(s[SNAP.FUEL_POWER_KW] + sensibleKw - leaving) < 1e-3, `fuel against ${leaving} kW leaving`);
+  assert.ok(relativeResidual(s) < 1e-9);
+  sim.free();
+});
+
+test("automatic restoration: back on the bus and at the setpoint with no command", () => {
+  const sim = onLoad(50);
+  const limits = sim.limits();
+  sim.set_restoration_mode(RESTORATION.AUTOMATIC);
+  sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+  advance(sim, 2);
+  const off = sim.snapshot();
+  assert.equal(off[SNAP.BREAKER_CLOSED], 0, gridSide(off));
+  assert.equal(off[SNAP.WAITING_FOR_GRID], 1);
+  assert.equal(off[SNAP.GRID_HEALTHY_COUNTDOWN_S], limits[LIMIT.HEALTHY_GRID_DELAY_S]);
+
+  sim.set_grid_voltage_pu(1.0);
+  const gasAt = sim.snapshot()[SNAP.GAS_STD_M3];
+  // No command from here on.
+  const toBus = advanceUntil(sim, 200, "back on the bus", (s) => s[SNAP.BREAKER_CLOSED] === 1);
+  const closed = sim.snapshot();
+  // Not an input: the healthy-grid delay plus what the synchroniser needs for the phase.
+  assert.ok(
+    toBus > limits[LIMIT.HEALTHY_GRID_DELAY_S] && toBus < limits[LIMIT.HEALTHY_GRID_DELAY_S] + 22,
+    `back on the bus after ${toBus} s; ${gridSide(closed)}`,
+  );
+  assert.equal(closed[SNAP.ALARM_BITS], 0, gridSide(closed));
+  assert.equal(closed[SNAP.RESTORATION_ATTEMPTS], 1);
+  // The gas burned unloaded while waiting is on the meter.
+  const burned = closed[SNAP.GAS_STD_M3] - gasAt;
+  const noLoad = (374e3 * toBus) / 33.5e6;
+  assert.ok(Math.abs(burned - noLoad) < 0.1 * noLoad, `${burned} m3 burned waiting ${toBus} s`);
+  const toLoad = advanceUntil(sim, 120, "load back", (s) => Math.abs(s[SNAP.LOAD_REFERENCE_PCT] - 50) < 1e-9);
+  assert.ok(Math.abs(toLoad - 10) < 0.2, `ramp to 50 % at 300 %/min took ${toLoad} s`);
+  advance(sim, 30);
+  const s = sim.snapshot();
+  assert.ok(Math.abs(s[SNAP.ELECTRIC_POWER_KW] - 500) < 0.5, gridSide(s));
+  assert.equal(s[SNAP.STATE_CODE], STATE.RUNNING);
+  assert.ok(relativeResidual(s) < 1e-9);
+  sim.free();
+});
+
+test("automatic restoration: a lasting disturbance ends in a normal stop after the longest wait", () => {
+  const sim = onLoad(50);
+  const longest = sim.limits()[LIMIT.LONGEST_GRID_WAIT_S];
+  sim.set_restoration_mode(RESTORATION.AUTOMATIC);
+  sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+  advance(sim, 1);
+  advance(sim, longest - 10);
+  const waiting = sim.snapshot();
+  assert.equal(waiting[SNAP.WAITING_FOR_GRID], 1, gridSide(waiting));
+  assert.equal(waiting[SNAP.BREAKER_CLOSED], 0);
+  assert.equal(waiting[SNAP.RESTORATION_ATTEMPTS], 0);
+  assert.ok(waiting[SNAP.FUEL_POWER_KW] > 300, "still running unloaded");
+  advance(sim, 15);
+  const stopping = sim.snapshot();
+  assert.equal(stopping[SNAP.STATE_CODE], STATE.STOPPING, gridSide(stopping));
+  assert.equal(stopping[SNAP.SEQUENCE_STEP], SEQUENCE.COOL_DOWN);
+  advanceUntil(sim, 400, "ready", (s) => s[SNAP.STATE_CODE] === STATE.READY);
+  assert.equal(eventsOf(sim, EVENT_KIND.BREAKER).length, 2, "closed once, opened once");
+  assert.equal(sim.snapshot()[SNAP.ALARM_BITS], ALARM.GRID_UNDERVOLTAGE, "still latched");
+  sim.free();
+});
+
+test("automatic restoration: a flickering grid blocks the return after the allowed attempts", () => {
+  const sim = onLoad(30);
+  const limits = sim.limits();
+  sim.set_restoration_mode(RESTORATION.AUTOMATIC);
+  const flicker = () => {
+    sim.set_grid_phase_voltages_pu(0.73, 1.0, 1.0);
+    advance(sim, 1);
+    assert.equal(sim.snapshot()[SNAP.BREAKER_CLOSED], 0, gridSide(sim.snapshot()));
+    sim.set_grid_voltage_pu(1.0);
+  };
+  for (let attempt = 1; attempt <= limits[LIMIT.LARGEST_AUTO_ATTEMPTS]; attempt++) {
+    flicker();
+    advanceUntil(sim, 200, "back on the bus", (s) => s[SNAP.BREAKER_CLOSED] === 1);
+    assert.equal(sim.snapshot()[SNAP.RESTORATION_ATTEMPTS], attempt, gridSide(sim.snapshot()));
+    advance(sim, 5);
+  }
+  flicker();
+  const blocked = sim.snapshot();
+  assert.equal(blocked[SNAP.ALARM_BITS], ALARM.GRID_UNDERVOLTAGE | ALARM.RESTORATION_LOCKOUT, gridSide(blocked));
+  advance(sim, limits[LIMIT.HEALTHY_GRID_DELAY_S] + 60);
+  const still = sim.snapshot();
+  assert.equal(still[SNAP.BREAKER_CLOSED], 0, gridSide(still));
+  assert.equal(still[SNAP.WAITING_FOR_GRID], 1);
+  // An acknowledgement releases it.
+  sim.cmd_ack();
+  advanceUntil(sim, 30, "back on the bus", (s) => s[SNAP.BREAKER_CLOSED] === 1);
+  assert.equal(protectionTrips(sim).length, 4);
+  sim.free();
+});
+
+test("manual restoration: off the bus until the operator acknowledges and closes", () => {
+  const sim = onLoad(50);
+  sim.set_grid_phase_voltages_pu(1.0, 1.0, 0.73);
+  advance(sim, 1);
+  sim.set_grid_voltage_pu(1.0);
+  const gasAt = sim.snapshot()[SNAP.GAS_STD_M3];
+  advance(sim, 300);
+  const waiting = sim.snapshot();
+  assert.equal(waiting[SNAP.BREAKER_CLOSED], 0, gridSide(waiting));
+  assert.equal(waiting[SNAP.WAITING_FOR_GRID], 1, gridSide(waiting));
+  assert.equal(waiting[SNAP.ALARM_BITS], ALARM.GRID_UNDERVOLTAGE);
+  assert.ok(Number.isNaN(waiting[SNAP.GRID_HEALTHY_COUNTDOWN_S]), "no countdown in manual");
+  const burned = waiting[SNAP.GAS_STD_M3] - gasAt;
+  assert.ok(burned > 3.0 && burned < 3.7, `${burned} m3 burned unloaded in 300 s`);
+  assert.ok(relativeResidual(waiting) < 1e-9);
+
+  assert.notEqual(sim.cmd_breaker_close() & CLOSE_REFUSAL.TRIP_LATCHED, 0, "refused before the acknowledgement");
+  sim.cmd_ack();
+  advance(sim, 40);
+  assert.equal(sim.snapshot()[SNAP.ALARM_BITS], 0);
+  assert.equal(sim.snapshot()[SNAP.BREAKER_CLOSED], 0, "waits for the operator's request");
+  let waited = 0;
+  while (sim.snapshot()[SNAP.SYNC_PERMITTED] !== 1) {
+    advance(sim, 0.01);
+    waited += 0.01;
+    assert.ok(waited < 30, "the phase never came into the window");
+  }
+  assert.equal(sim.cmd_breaker_close(), 0);
+  advance(sim, 60);
+  const s = sim.snapshot();
+  assert.equal(s[SNAP.BREAKER_CLOSED], 1);
+  assert.ok(Math.abs(s[SNAP.ELECTRIC_POWER_KW] - 500) < 0.5, gridSide(s));
+  sim.free();
+});
+
+test("the analyser records a dip the protection rides through, and keeps its own clock", () => {
+  // Shorter than the protection's delay: one analyser event, breaker closed.
+  const sim = onLoad(50);
+  sim.set_grid_phase_voltages_pu(1.0, 1.0, 0.8);
+  advance(sim, 0.1);
+  assert.equal(sim.snapshot()[SNAP.ANALYSER_OPEN_EVENTS], 1);
+  sim.set_grid_voltage_pu(1.0);
+  advance(sim, 1);
+  assert.equal(sim.snapshot()[SNAP.BREAKER_CLOSED], 1, gridSide(sim.snapshot()));
+  assert.equal(protectionTrips(sim).length, 0);
+  const record = decodeAnalyserEvents(sim.analyser_events());
+  assert.equal(record.length, 1);
+  assert.equal(record[0].kind, QUALITY_KIND.DIP);
+  assert.equal(record[0].phase, 3);
+  assert.ok(Math.abs(record[0].durationS - 0.1) < 0.011, `duration ${record[0].durationS} s`);
+  assert.ok(Math.abs(record[0].extremeV - 0.8 * PHASE_VOLT) < 1e-9, `residual ${record[0].extremeV} V`);
+  assert.equal(sim.snapshot()[SNAP.ANALYSER_RECORDED_EVENTS], 1);
+  sim.clear_analyser_events();
+  assert.equal(sim.analyser_events().length, 0);
+  sim.free();
+
+  // The analyser's clock an hour ahead: its event moves by the hour, the protection's
+  // event stays in model time.
+  const run = (offsetS) => {
+    const unit = onLoad(50);
+    unit.set_analyser_clock_offset_s(offsetS);
+    unit.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+    advance(unit, 0.5);
+    unit.set_grid_voltage_pu(1.0);
+    advance(unit, 1);
+    const out = { dip: decodeAnalyserEvents(unit.analyser_events()), trip: protectionTrips(unit) };
+    unit.free();
+    return out;
+  };
+  const inStep = run(0);
+  const ahead = run(3600);
+  assert.equal(inStep.dip.length, 1);
+  assert.equal(inStep.trip.length, 1);
+  assert.equal(inStep.dip[0].phase, 2);
+  assert.ok(Math.abs(inStep.dip[0].durationS - 0.5) < 0.011);
+  assert.ok(Math.abs(inStep.trip[0].timeS - inStep.dip[0].startS - 0.15) < 0.011);
+  assert.ok(Math.abs(ahead.dip[0].startS - inStep.dip[0].startS - 3600) < 1e-6);
+  assert.ok(Object.is(ahead.trip[0].timeS, inStep.trip[0].timeS));
+  assert.ok(Math.abs(ahead.dip[0].startS - ahead.trip[0].timeS - (3600 - 0.15)) < 0.011);
 });

@@ -15,6 +15,25 @@ export class KguSim {
         wasm.__wbg_kgusim_free(ptr, 0);
     }
     /**
+     * The power-quality analyser's record of closed voltage events, oldest
+     * first, five values per event: kind (1 dip, 2 swell, 3 interruption),
+     * phase (1, 2, 3 for a, b, c), start by the analyser's own clock [s],
+     * duration [s], residual or highest voltage [V, phase to neutral].
+     * @returns {Float64Array}
+     */
+    analyser_events() {
+        const ret = wasm.kgusim_analyser_events(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Empty the analyser's record. Events still open stay open.
+     */
+    clear_analyser_events() {
+        wasm.kgusim_clear_analyser_events(this.__wbg_ptr);
+    }
+    /**
      * Empty the event log.
      */
     clear_events() {
@@ -66,7 +85,9 @@ export class KguSim {
     /**
      * The event log, oldest first, four values per event: time [s], kind
      * (1 state, 2 breaker, 3 alarm raised, 4 alarm cleared, 5 command
-     * refused, 6 sequence step), code, value.
+     * refused, 6 sequence step, 7 cabinet protection trip), code, value.
+     * For a protection trip the code is ten times the function's index plus
+     * the phase (1 to 3, or 0), and the value is what it tripped at.
      * @returns {Float64Array}
      */
     events() {
@@ -140,6 +161,15 @@ export class KguSim {
         return this;
     }
     /**
+     * How far the power-quality analyser's clock is ahead of the model's
+     * time [s]. The controller's and the protection's events stay in model
+     * time.
+     * @param {number} offset_s
+     */
+    set_analyser_clock_offset_s(offset_s) {
+        wasm.kgusim_set_analyser_clock_offset_s(this.__wbg_ptr, offset_s);
+    }
+    /**
      * Atmospheric pressure [kPa]; default 101.325.
      * @param {number} kpa
      */
@@ -197,7 +227,29 @@ export class KguSim {
         wasm.kgusim_set_grid_freq_hz(this.__wbg_ptr, hz);
     }
     /**
-     * Bus voltage [pu of 10 kV].
+     * How far each phase voltage is turned from its nominal position
+     * [degrees], phases a, b, c; zero for a grid with its phases a third of
+     * a turn apart.
+     * @param {number} a
+     * @param {number} b
+     * @param {number} c
+     */
+    set_grid_phase_angles_deg(a, b, c) {
+        wasm.kgusim_set_grid_phase_angles_deg(this.__wbg_ptr, a, b, c);
+    }
+    /**
+     * Magnitudes of the three phase voltages of the bus [pu of the rated
+     * phase voltage], phases a, b, c. A grid disturbance is a circumstance
+     * of the scenario: any phase, any depth.
+     * @param {number} a
+     * @param {number} b
+     * @param {number} c
+     */
+    set_grid_phase_voltages_pu(a, b, c) {
+        wasm.kgusim_set_grid_phase_voltages_pu(this.__wbg_ptr, a, b, c);
+    }
+    /**
+     * Bus voltage [pu]: all three phases at this magnitude.
      * @param {number} pu
      */
     set_grid_voltage_pu(pu) {
@@ -239,6 +291,16 @@ export class KguSim {
      */
     set_oil_pressure_low(low) {
         wasm.kgusim_set_oil_pressure_low(this.__wbg_ptr, low);
+    }
+    /**
+     * How the unit comes back after the cabinet's protection has opened the
+     * breaker on a grid event: `0` manual (people acknowledge and close),
+     * `1` automatic (the automation waits for a healthy grid, synchronises
+     * and loads the unit by itself). Default manual.
+     * @param {number} mode
+     */
+    set_restoration_mode(mode) {
+        wasm.kgusim_set_restoration_mode(this.__wbg_ptr, mode);
     }
     /**
      * The flat snapshot; slot indices are [`snap`], names

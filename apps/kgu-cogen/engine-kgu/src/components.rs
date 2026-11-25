@@ -670,13 +670,24 @@ const PHS_ROTOR_INERTIA_KG_M2: f64 = 1.0;
 /// coefficient on the slip. A pole slip (`|delta| > pi`) opens the breaker
 /// and latches until the breaker command is withdrawn.
 ///
-/// Ports: `shaft`; `grid` (electrical: bus voltage in, current out; the pair
-/// is an accounting pair whose product is the active power, not a phasor);
-/// `cooler_heat` (copper, core and damper losses); `breaker` (signal `0/1`:
-/// the controller's close command); `field` (signal: excitation [pu], grid
-/// frequency [Hz]).
+/// The bus has three phase voltages. Their positive sequence is the bus
+/// voltage of the equations above. Their negative sequence meets no EMF in
+/// the machine and drives a current through the negative-sequence impedance
+/// of the card, `I2 = V2 / (R2 + j X2)`: computed here, in the app, from
+/// assumed values, because the `fs-phs` machine has no rotor circuit for the
+/// double-frequency currents that this is about. It adds to the phase
+/// currents, heats stator and rotor, and brakes the shaft by half the rotor's
+/// share. The 100 Hz ripple of torque that goes with it is not modelled.
+///
+/// Ports: `shaft`; `grid` (electrical: positive-sequence bus voltage in,
+/// current out; the pair is an accounting pair whose product is the active
+/// power, not a phasor); `cooler_heat` (all of the machine's losses);
+/// `breaker` (signal `0/1`: the close request as the cabinet passes it);
+/// `field` (signal: excitation [pu], grid frequency [Hz]); `unbalance`
+/// (signal: negative-sequence phase voltage [V], real and imaginary against
+/// the positive sequence, and the positive sequence's angle [rad]).
 pub struct SynchronousGeneratorComponent {
-    ports: [PortSpec; 5],
+    ports: [PortSpec; 6],
     card: GeneratorCard,
     /// fs-phs machine for the last field linkage used; rebuilt when it changes.
     machine: RefCell<Option<(u64, SynchronousMotor)>>,
@@ -708,6 +719,15 @@ pub struct GeneratorState {
     pub damper_loss_w: f64,
     /// Total torque on the shaft [N m] (negative while generating).
     pub torque_nm: f64,
+    /// Currents of phases a, b, c [A, RMS]: positive and negative sequence
+    /// together.
+    pub phase_current_a: [f64; 3],
+    /// Negative-sequence current [A, RMS per phase].
+    pub negative_sequence_current_a: f64,
+    /// Heat the negative-sequence current leaves in the stator [W].
+    pub negative_sequence_stator_loss_w: f64,
+    /// Heat the negative-sequence current leaves in the rotor [W].
+    pub negative_sequence_rotor_loss_w: f64,
 }
 
 impl GeneratorState {
@@ -726,7 +746,21 @@ impl GeneratorState {
             core_loss_w: 0.0,
             damper_loss_w: 0.0,
             torque_nm: 0.0,
+            phase_current_a: [0.0; 3],
+            negative_sequence_current_a: 0.0,
+            negative_sequence_stator_loss_w: 0.0,
+            negative_sequence_rotor_loss_w: 0.0,
         }
+    }
+
+    /// All heat the generator releases [W].
+    #[must_use]
+    pub fn total_loss_w(&self) -> f64 {
+        self.copper_loss_w
+            + self.core_loss_w
+            + self.damper_loss_w
+            + self.negative_sequence_stator_loss_w
+            + self.negative_sequence_rotor_loss_w
     }
 
     /// Power factor at the bus, or NaN when no power flows.
@@ -781,6 +815,7 @@ impl SynchronousGeneratorComponent {
                     .expect("generator cooler port"),
                 PortSpec::signal_in(sid("breaker"), nz(1)),
                 PortSpec::signal_in(sid("field"), nz(2)),
+                PortSpec::signal_in(sid("unbalance"), nz(3)),
             ],
             card,
             machine: RefCell::new(None),
@@ -956,8 +991,11 @@ impl Component for SynchronousGeneratorComponent {
     ) -> Result<Proposal, Self::Error> {
         check_cx(cx)?;
         all_finite(inputs, "generator inputs must be finite")?;
-        // Inputs: shaft -omega (0), bus voltage (1), cooler temperature (2), breaker command (3),
-        // field [excitation, grid frequency] (4..6).
+        // Inputs: shaft -omega (0), positive-sequence bus voltage, line to line (1), cooler
+        // temperature (2), breaker command (3), field [excitation, grid frequency] (4..6),
+        // unbalance [negative-sequence phase voltage, real and imaginary against the
+        // positive-sequence voltage; angle of the positive-sequence voltage] (6..9).
+        let (v2_re, v2_im, v1_angle) = (inputs[6], inputs[7], inputs[8]);
         let omega_in = inputs[0];
         let omega_shaft = -omega_in;
         let v_bus = inputs[1].max(0.0);
@@ -982,16 +1020,43 @@ impl Component for SynchronousGeneratorComponent {
         let core_heat = core_loss;
 
         let latched = close_command && old.out_of_step;
-        let connected = close_command && !latched && omega_shaft > 0.0 && v_bus > 0.0;
+        let connected =
+            close_command && !latched && omega_shaft > 0.0 && v_bus > 0.0 && grid_omega > 0.0;
         let state = if connected {
-            let delta_mid = 0.5 * (old.load_angle_rad + delta_new);
+            // The load angle is against the positive-sequence voltage.
+            let delta_mid = 0.5 * (old.load_angle_rad + delta_new) - v1_angle;
             let solution = self.solve_stator(delta_mid, omega_shaft, v_bus, excitation)?;
             let slip_m = slip_e / pole_pairs;
             let damping = self.damping_nm_s_per_rad();
             let damper_torque = -damping * slip_m;
             let damper_loss = damping * slip_m * slip_m;
-            let torque = solution.torque_nm + damper_torque + core_torque;
-            let heat = solution.copper_loss_w + core_heat + damper_loss;
+
+            // Negative sequence. The machine has no EMF of that sequence, so the bus drives
+            // the current through the negative-sequence impedance: I2 = V2 / (R2 + j X2).
+            // The stator's resistance turns its share into heat; the rotor's circuits, which
+            // see it at twice the line frequency, turn `R_rotor I2^2` into heat, half of it
+            // drawn through the shaft as a braking torque at synchronous speed.
+            let base = self.card.base_impedance_ohm();
+            let r2 = self.card.negative_sequence_resistance_pu * base;
+            let x2 = (self.card.negative_sequence_reactance_pu
+                + self.card.transformer_reactance_pu)
+                * base
+                * grid_omega
+                / self.card.nominal_electrical_omega();
+            let z2_squared = r2 * r2 + x2 * x2;
+            let i2 = [
+                (v2_re * r2 + v2_im * x2) / z2_squared,
+                (v2_im * r2 - v2_re * x2) / z2_squared,
+            ];
+            let i2_squared = i2[0] * i2[0] + i2[1] * i2[1];
+            let stator_loss_2 = 3.0 * self.card.loss_resistance_pu * base * i2_squared;
+            let rotor_loss_2 =
+                3.0 * self.card.rotor_negative_sequence_resistance_pu() * base * i2_squared;
+            let brake_torque = -0.5 * rotor_loss_2 * pole_pairs / grid_omega;
+
+            let torque = solution.torque_nm + damper_torque + core_torque + brake_torque;
+            let heat =
+                solution.copper_loss_w + core_heat + damper_loss + stator_loss_2 + rotor_loss_2;
             let shaft_power_in = omega_in * torque;
             let export = shaft_power_in - heat;
             let [id, iq] = solution.current_dq_a;
@@ -1002,7 +1067,25 @@ impl Component for SynchronousGeneratorComponent {
                 * self.card.base_impedance_ohm()
                 / self.card.nominal_electrical_omega();
             let terminal = (vd + x_transformer * iq).hypot(vq - x_transformer * id);
-            let slipped = delta_new.abs() > PI;
+            let slipped = (delta_new - v1_angle).abs() > PI;
+            // Phase currents: the positive-sequence current as a phasor against the
+            // positive-sequence voltage, (i_d + j i_q) e^{-j (pi/2 - delta)} / sqrt 3, with the
+            // negative-sequence phasor added in each phase's own rotation.
+            let (sin_delta, cos_delta) = delta_mid.sin_cos();
+            let root_3 = 3.0_f64.sqrt();
+            let i1 = [
+                (id * sin_delta + iq * cos_delta) / root_3,
+                (iq * sin_delta - id * cos_delta) / root_3,
+            ];
+            let rotate = |phasor: [f64; 2], thirds: i32| -> [f64; 2] {
+                let (sin, cos) = (f64::from(thirds) * 2.0 * PI / 3.0).sin_cos();
+                [phasor[0] * cos - phasor[1] * sin, phasor[0] * sin + phasor[1] * cos]
+            };
+            let phase = |positive_thirds: i32| -> f64 {
+                let positive = rotate(i1, positive_thirds);
+                let negative = rotate(i2, -positive_thirds);
+                (positive[0] + negative[0]).hypot(positive[1] + negative[1])
+            };
             outputs[0] = torque;
             outputs[1] = -export / v_bus;
             outputs[2] = -heat;
@@ -1018,6 +1101,11 @@ impl Component for SynchronousGeneratorComponent {
                 core_loss_w: core_heat,
                 damper_loss_w: damper_loss,
                 torque_nm: torque,
+                // Phase b lags phase a by a third of a turn, phase c leads it.
+                phase_current_a: [phase(0), phase(-1), phase(1)],
+                negative_sequence_current_a: i2_squared.sqrt(),
+                negative_sequence_stator_loss_w: stator_loss_2,
+                negative_sequence_rotor_loss_w: rotor_loss_2,
             }
         } else {
             // Breaker open: no stator current; the excited rotor still drags its core loss.
@@ -1037,11 +1125,15 @@ impl Component for SynchronousGeneratorComponent {
                 core_loss_w: core_heat,
                 damper_loss_w: 0.0,
                 torque_nm: core_torque,
+                phase_current_a: [0.0; 3],
+                negative_sequence_current_a: 0.0,
+                negative_sequence_stator_loss_w: 0.0,
+                negative_sequence_rotor_loss_w: 0.0,
             }
         };
         *new = state;
 
-        let heat = state.copper_loss_w + state.core_loss_w + state.damper_loss_w;
+        let heat = state.total_loss_w();
         let scale = dt_s * ((omega_in * state.torque_nm).abs() + state.electric_power_w.abs() + heat);
         Ok(Proposal::Step(Receipt {
             stored_change_j: 0.0,

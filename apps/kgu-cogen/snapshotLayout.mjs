@@ -79,6 +79,26 @@ export const SNAPSHOT_FIELDS = Object.freeze([
   "BLOCK_LOSS_KW",
   "THERMAL_EFFICIENCY_PCT",
   "ENERGY_DUMPED_KWH",
+  // Slice 1c: the bus's three phases, the breaker cabinet, restoration, the analyser.
+  "PHASE_A_VOLTAGE_V",
+  "PHASE_B_VOLTAGE_V",
+  "PHASE_C_VOLTAGE_V",
+  "PHASE_A_CURRENT_A",
+  "PHASE_B_CURRENT_A",
+  "PHASE_C_CURRENT_A",
+  "VOLTAGE_UNBALANCE_PCT",
+  "NEGATIVE_SEQUENCE_CURRENT_PCT",
+  "ROTOR_THERMAL_USED_FRAC",
+  "PROTECTION_PICKUP_BITS",
+  "PROTECTION_TRIPPED_BITS",
+  "NEGATIVE_SEQUENCE_LOSS_KW",
+  "RESTORATION_MODE",
+  "GRID_HEALTHY_COUNTDOWN_S",
+  "RESTORATION_ATTEMPTS",
+  "WAITING_FOR_GRID",
+  "ANALYSER_CLOCK_S",
+  "ANALYSER_OPEN_EVENTS",
+  "ANALYSER_RECORDED_EVENTS",
 ]);
 
 /** Index of every snapshot slot by name: `snapshot[SNAP.SPEED_RPM]`. */
@@ -111,6 +131,7 @@ export const SEQUENCE = Object.freeze({
   COOL_DOWN: 8,
   COAST_DOWN: 9,
   TRIPPED: 10,
+  GRID_WAIT: 11, // off the bus after a grid event, engine running unloaded; STATE is SYNCHRONIZING
 });
 
 /**
@@ -130,7 +151,46 @@ export const ALARM = Object.freeze({
   COOLER_FAN: 1 << 8, // W-118, warning
   COOLANT_WARNING: 1 << 9, // warning
   GAS_PRESSURE_WARNING: 1 << 10, // warning
+  // Raised by the breaker cabinet's protection. Grid events open the breaker and leave
+  // the engine running unloaded; unit faults stop it.
+  VOLTAGE_UNBALANCE: 1 << 11, // grid event
+  NEGATIVE_SEQUENCE: 1 << 12, // grid event: rotor thermal limit, (I2/In)^2 t
+  OVERCURRENT: 1 << 13, // unit fault, trip
+  OVERVOLTAGE: 1 << 14, // grid event
+  FREQUENCY: 1 << 15, // grid event
+  REVERSE_POWER: 1 << 16, // unit fault, trip
+  RESTORATION_LOCKOUT: 1 << 17, // too many automatic returns; latched until cmd_ack()
 });
+
+/**
+ * Protection functions of the breaker cabinet: the index is the function, and
+ * `1 << index` its bit in `PROTECTION_PICKUP_BITS` and `PROTECTION_TRIPPED_BITS`.
+ */
+export const PROTECTION = Object.freeze({
+  UNDERVOLTAGE: 0, // per phase
+  OVERVOLTAGE: 1, // per phase
+  VOLTAGE_UNBALANCE: 2, // U2/U1
+  NEGATIVE_SEQUENCE: 3, // rotor thermal limit
+  OVERCURRENT: 4, // per phase, time-delayed
+  OVERCURRENT_HIGH: 5, // per phase, high-set
+  UNDERFREQUENCY: 6,
+  OVERFREQUENCY: 7,
+  REVERSE_POWER: 8,
+});
+
+/** `RESTORATION_MODE` and the argument of `set_restoration_mode()`. */
+export const RESTORATION = Object.freeze({ MANUAL: 0, AUTOMATIC: 1 });
+
+/**
+ * Decode the `code` of a `PROTECTION` event: which function tripped and on which
+ * phase (1, 2, 3 for a, b, c; 0 when the function is not about one phase). The
+ * event's `value` is what it tripped at: phase voltage in V, unbalance in %,
+ * negative-sequence current in % of rated, phase current in A, frequency in Hz,
+ * reverse power in kW.
+ */
+export function decodeProtectionCode(code) {
+  return { protection: Math.floor(code / 10), phase: code % 10 };
+}
 
 /** Bits returned by `cmd_breaker_close()`; zero means accepted. */
 export const CLOSE_REFUSAL = Object.freeze({
@@ -163,6 +223,43 @@ export const LIMIT_FIELDS = Object.freeze([
   "PRE_LUBRICATION_TIME_S",
   "PURGE_TIME_S",
   "WARM_UP_TIME_S",
+  // The breaker cabinet's protection settings.
+  "RATED_CURRENT_A",
+  "RATED_PHASE_VOLTAGE_V",
+  "PHASE_UNDERVOLTAGE_PU",
+  "PHASE_UNDERVOLTAGE_DELAY_S",
+  "PHASE_OVERVOLTAGE_PU",
+  "PHASE_OVERVOLTAGE_DELAY_S",
+  "VOLTAGE_UNBALANCE_TRIP_PCT",
+  "VOLTAGE_UNBALANCE_DELAY_S",
+  "NEGATIVE_SEQUENCE_PICKUP_PCT",
+  "NEGATIVE_SEQUENCE_LIMIT_S",
+  "NEGATIVE_SEQUENCE_COOLING_S",
+  "OVERCURRENT_A",
+  "OVERCURRENT_DELAY_S",
+  "OVERCURRENT_HIGH_A",
+  "OVERCURRENT_HIGH_DELAY_S",
+  "UNDERFREQUENCY_HZ",
+  "UNDERFREQUENCY_DELAY_S",
+  "OVERFREQUENCY_HZ",
+  "OVERFREQUENCY_DELAY_S",
+  "REVERSE_POWER_KW",
+  "REVERSE_POWER_DELAY_S",
+  // Restoration after a grid event.
+  "HEALTHY_VOLTAGE_LOW_PU",
+  "HEALTHY_VOLTAGE_HIGH_PU",
+  "HEALTHY_UNBALANCE_PCT",
+  "HEALTHY_FREQUENCY_LOW_HZ",
+  "HEALTHY_FREQUENCY_HIGH_HZ",
+  "HEALTHY_GRID_DELAY_S",
+  "LONGEST_GRID_WAIT_S",
+  "LARGEST_AUTO_ATTEMPTS",
+  "ATTEMPT_WINDOW_S",
+  // The power-quality analyser's thresholds.
+  "ANALYSER_DIP_PU",
+  "ANALYSER_SWELL_PU",
+  "ANALYSER_INTERRUPTION_PU",
+  "ANALYSER_HYSTERESIS_PU",
 ]);
 
 /** Index of every entry of `limits()` by name. */
@@ -180,7 +277,36 @@ export const EVENT_KIND = Object.freeze({
   ALARM_CLEARED: 4, // code: bit index of ALARM
   REFUSED: 5, // code: CLOSE_REFUSAL bits, or 0 for a refused start
   SEQUENCE: 6, // code: new SEQUENCE; value: shaft speed, rpm
+  PROTECTION: 7, // cabinet protection trip; code: see decodeProtectionCode; value: what it tripped at
 });
+
+/**
+ * `analyser_events()` is a flat array of `[kind, phase, start_s, duration_s,
+ * extreme_v]` per closed event. `start_s` is by the analyser's OWN clock
+ * (`set_analyser_clock_offset_s`), not model time; `events()` is in model time.
+ */
+export const QUALITY_EVENT_STRIDE = 5;
+
+export const QUALITY_KIND = Object.freeze({
+  DIP: 1, // extreme_v: residual (lowest) voltage
+  SWELL: 2, // extreme_v: highest voltage
+  INTERRUPTION: 3, // extreme_v: residual voltage
+});
+
+/** Decode `analyser_events()` into objects. */
+export function decodeAnalyserEvents(flat) {
+  const events = [];
+  for (let i = 0; i + QUALITY_EVENT_STRIDE <= flat.length; i += QUALITY_EVENT_STRIDE) {
+    events.push({
+      kind: flat[i],
+      phase: flat[i + 1],
+      startS: flat[i + 2],
+      durationS: flat[i + 3],
+      extremeV: flat[i + 4],
+    });
+  }
+  return events;
+}
 
 /** Decode `events()` into objects. */
 export function decodeEvents(flat) {
