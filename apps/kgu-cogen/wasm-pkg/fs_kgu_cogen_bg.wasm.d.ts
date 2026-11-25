@@ -1,0 +1,38 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const __wbg_kgusim_free: (a: number, b: number) => void;
+export const kgusim_clear_events: (a: number) => void;
+export const kgusim_cmd_ack: (a: number) => void;
+export const kgusim_cmd_breaker_close: (a: number) => number;
+export const kgusim_cmd_breaker_open: (a: number) => void;
+export const kgusim_cmd_emergency_stop: (a: number) => void;
+export const kgusim_cmd_start: (a: number) => void;
+export const kgusim_cmd_stop: (a: number) => void;
+export const kgusim_events: (a: number) => [number, number];
+export const kgusim_last_error: (a: number) => [number, number];
+export const kgusim_limit_field_names: (a: number) => [number, number];
+export const kgusim_limits: (a: number) => [number, number];
+export const kgusim_machine_facts: (a: number) => [number, number];
+export const kgusim_new: () => number;
+export const kgusim_set_atm_pressure_kpa: (a: number, b: number) => void;
+export const kgusim_set_auto_sync: (a: number, b: number) => void;
+export const kgusim_set_condition_factor: (a: number, b: number) => void;
+export const kgusim_set_excitation_pu: (a: number, b: number) => void;
+export const kgusim_set_fan_failed: (a: number, b: number) => void;
+export const kgusim_set_gas_gauge_kpa: (a: number, b: number) => void;
+export const kgusim_set_gas_temp_c: (a: number, b: number) => void;
+export const kgusim_set_grid_freq_hz: (a: number, b: number) => void;
+export const kgusim_set_grid_voltage_pu: (a: number, b: number) => void;
+export const kgusim_set_heat_demand_frac: (a: number, b: number) => void;
+export const kgusim_set_load_ramp_pct_per_min: (a: number, b: number) => void;
+export const kgusim_set_load_setpoint_pct: (a: number, b: number) => void;
+export const kgusim_set_network_return_temp_c: (a: number, b: number) => void;
+export const kgusim_set_oil_pressure_low: (a: number, b: number) => void;
+export const kgusim_snapshot: (a: number) => [number, number];
+export const kgusim_snapshot_field_names: (a: number) => [number, number];
+export const kgusim_step: (a: number, b: number) => number;
+export const kgusim_sub_step_s: (a: number) => number;
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __wbindgen_start: () => void;

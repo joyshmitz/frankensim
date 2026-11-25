@@ -1,0 +1,49 @@
+[package]
+name = "fs-kgu-cogen"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "FrankenSim gas-piston cogeneration unit (1 000 kW CHP genset), stage 1: gas admission, engine (fitted cards), shaft, synchronous generator on an infinite bus, genset controller and heat recovery, composed on fs-ports and fs-system (Component contract v0)."
+
+[workspace]
+
+[lib]
+name = "fs_kgu_cogen"
+crate-type = ["cdylib", "rlib"]
+
+[package.metadata.frankensim]
+layer = "L6"
+
+[dependencies]
+# Substrate and execution context
+fs-alloc = { path = "../../../crates/fs-alloc" }
+fs-exec = { path = "../../../crates/fs-exec" }
+
+# Convergence composition kernel
+fs-ports = { path = "../../../crates/fs-ports" }
+fs-system = { path = "../../../crates/fs-system" }
+
+# Synchronous machine law, sampled speed control, convection correlations
+fs-phs = { path = "../../../crates/fs-phs" }
+fs-control = { path = "../../../crates/fs-control" }
+fs-convection = { path = "../../../crates/fs-convection" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.128"
+asupersync = { path = "../../../../asupersync", default-features = false, features = ["wasm-browser-prod"] }
+getrandom = { version = "0.4", features = ["wasm_js"] }
+
+# FrankenSQLite reaches asupersync through crates.io; inside the constellation
+# that dependency is the sibling checkout (same rule as the root manifest).
+[patch.crates-io]
+asupersync = { path = "../../../../asupersync" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = false
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -1,0 +1,11 @@
+{
+  "name": "kgu-cogen",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Gas-piston cogeneration unit (1 000 kW CHP genset) on the FrankenSim composition kernel: WebAssembly engine package and its Node tests.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/kguEngine.test.mjs",
+    "wasm:bindgen": "wasm-bindgen --target web --out-dir wasm-pkg ${KGU_WASM:-../../target/wasm32-unknown-unknown/release/fs_kgu_cogen.wasm}"
+  }
+}
