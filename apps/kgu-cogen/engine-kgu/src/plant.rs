@@ -30,6 +30,7 @@
 //! sub-steps.
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use fs_exec::Cx;
@@ -38,7 +39,8 @@ use fs_system::{NodeId, RouteTemperature, SolveConfig, System, SystemBuilder, he
 
 use crate::analyser::PowerQualityAnalyser;
 use crate::cabinet::{
-    BreakerCabinetComponent, CabinetState, MEASURE_WIDTH, Sequences, sequence_components,
+    BreakerCabinetComponent, CabinetState, MEASURE_WIDTH, Sequences, bus_is_fit,
+    sequence_components,
 };
 use crate::cards::{
     BUS_VOLTAGE_V, BreakerCabinetCard, CombustionLimitsCard, ControllerSetpoints, CoolantCard,
@@ -59,7 +61,7 @@ use crate::heat::{
 };
 use crate::controller::{
     ControllerState, GensetControllerComponent, OPERATOR_WIDTH, OperatorSignals, SENSE_WIDTH,
-    SynchroCheck, close_refusal, synchronise_refusal,
+    SynchroCheck, close_refusal, command, refusal, synchronise_refusal,
 };
 
 /// The plant's fixed sub-step [s]: the governor's sample period. The
@@ -210,6 +212,9 @@ pub struct Sensed {
     pub cabinet_tripped: u32,
     /// Whether the cabinet's protection finds the grid healthy.
     pub grid_healthy: bool,
+    /// Torque the machines put on the shaft to drive it [N m]: the engine's
+    /// indicated torque, the starter's, the generator's when it motors.
+    pub drive_torque_nm: f64,
 }
 
 struct Shared {
@@ -260,6 +265,18 @@ pub mod event_kind {
     /// the automation's own (automatic start or automatic return) or a
     /// manual close request.
     pub const SYNCHRONISE_COMMAND: u32 = 8;
+    /// The controller processed a command of the operator. `code` is the
+    /// command (`controller::command`: 1 start, 2 stop, 3 emergency stop,
+    /// 4 acknowledge, 5 breaker close, 6 breaker open, 7 synchronise);
+    /// `value` is zero when it was carried out, else the reasons it was
+    /// refused (`controller::refusal` bits). Every command given gets one.
+    pub const COMMAND: u32 = 9;
+    /// The unit stood at the synchroniser for its time limit and was stopped.
+    /// `code` holds what kept the breaker out (`controller::refusal` bits:
+    /// voltage, frequency, phase, dead bus, bus unfit, latched trip; zero
+    /// when nothing did and nobody asked for the closing); `value` is the
+    /// time it stood there [s].
+    pub const SYNCHRONISING_TIMEOUT: u32 = 10;
 }
 
 /// Handles of the plant's nodes.
@@ -328,6 +345,8 @@ pub struct KguPlant {
     check_controller: GensetControllerComponent,
     meter_valve: GasControlValveComponent,
     time_debt_s: f64,
+    /// The operator's commands not yet handed to the controller, oldest first.
+    commands: VecDeque<u32>,
 }
 
 /// Longest event log kept; older entries are dropped.
@@ -443,6 +462,7 @@ impl KguPlant {
                 cabinet_trips: 0,
                 cabinet_tripped: 0,
                 grid_healthy: false,
+                drive_torque_nm: 0.0,
             },
         }));
 
@@ -504,7 +524,8 @@ impl KguPlant {
         let engine_conditions = port(&b, engine, "conditions");
         let shaft_p = port(&b, shaft, "p");
         let shaft_heat = port(&b, shaft, "friction_heat");
-        let shaft_drive = port(&b, shaft, "drive");
+        let shaft_starter = port(&b, shaft, "starter");
+        let shaft_drive_torque = port(&b, shaft, "drive_torque");
         let starter_shaft = port(&b, starter, "shaft");
         let starter_battery = port(&b, starter, "battery");
         let starter_heat = port(&b, starter, "heat");
@@ -542,13 +563,20 @@ impl KguPlant {
         .expect("valve command");
         b.signal_map(controller_actuators, engine_ignition, vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
             .expect("ignition command");
-        // The shaft is told whether anything is commanded to drive it: starter, ignition.
-        b.signal_map(
-            controller_actuators,
-            shaft_drive,
-            vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
-        )
-        .expect("shaft drive commands");
+        // The shaft is told whether the starter is engaged in this step; what the machines
+        // did to it in the last accepted step it is told at its own boundary.
+        b.signal_map(controller_actuators, shaft_starter, vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            .expect("shaft starter command");
+        {
+            let shared = Rc::clone(&shared);
+            b.boundary(
+                shaft_drive_torque,
+                Box::new(move |_t0, _dt, values| {
+                    values[0] = shared.borrow().sensed.drive_torque_nm;
+                }),
+            )
+            .expect("shaft drive torque boundary");
+        }
         b.signal_map(
             controller_actuators,
             cabinet_command,
@@ -712,7 +740,6 @@ impl KguPlant {
                     values[9] = sensed.negative_sequence_current_a;
                     values[10] = operator.grid_frequency_hz;
                     values[11] = sensed.electric_power_w;
-                    values[12] = if sensed.breaker_closed { 1.0 } else { 0.0 };
                 }),
             )
             .expect("cabinet measure boundary");
@@ -737,10 +764,10 @@ impl KguPlant {
                     let shared = shared.borrow();
                     let sensed = shared.sensed;
                     let flag = |on: bool| if on { 1.0 } else { 0.0 };
+                    let sequences = shared.operator.grid_sequences();
                     values[0] = sensed.omega_rad_s;
                     // The synchroniser compares against the positive-sequence voltage.
-                    values[1] =
-                        sensed.load_angle_rad - shared.operator.grid_sequences().positive_angle();
+                    values[1] = sensed.load_angle_rad - sequences.positive_angle();
                     values[2] = flag(sensed.breaker_closed);
                     values[3] = sensed.electric_power_w;
                     values[4] = flag(sensed.out_of_step);
@@ -748,6 +775,8 @@ impl KguPlant {
                     values[6] = f64::from(sensed.cabinet_trips);
                     values[7] = f64::from(sensed.cabinet_tripped);
                     values[8] = flag(sensed.grid_healthy);
+                    // The bus as it is in this step, against the cabinet's settings.
+                    values[9] = flag(bus_fit(&cabinet_card, &shared.operator, &sequences));
                     debug_assert_eq!(values.len(), SENSE_WIDTH);
                 }),
             )
@@ -823,6 +852,7 @@ impl KguPlant {
             check_controller: new_controller(),
             meter_valve: GasControlValveComponent::new(gas, valve_card),
             time_debt_s: 0.0,
+            commands: VecDeque::new(),
         }
     }
 
@@ -855,15 +885,64 @@ impl KguPlant {
             shared.operator.excitation_pu,
             sequences.positive_magnitude(),
             shared.operator.grid_frequency_hz,
+            bus_fit(&self.cabinet_card, &shared.operator, &sequences),
         )
     }
 
     /// Reasons a breaker close request would be refused now; zero when the
-    /// controller will accept it at the next sub-step.
+    /// controller would accept it in a sub-step taken from this state. The
+    /// controller takes the same permission again in the sub-step in which
+    /// it closes; if an input is changed in between, its answer may differ,
+    /// and is then logged.
     #[must_use]
     pub fn close_refusal(&self) -> u32 {
         let controller = self.controller_state();
-        close_refusal(controller.sequence, controller.alarms, &self.synchro_check())
+        close_refusal(
+            controller.sequence,
+            controller.alarms,
+            &self.synchro_check(),
+            self.cabinet_state().tripped != 0,
+        )
+    }
+
+    /// Hand a command of the operator ([`crate::controller::command`]) to the
+    /// controller: it is processed in a sub-step of its own, in the order the
+    /// commands were given, and the log gets its outcome. An emergency stop
+    /// goes first.
+    pub fn command(&mut self, id: u32) {
+        if self.commands.len() >= COMMAND_QUEUE_CAPACITY {
+            self.push_event(event_kind::COMMAND, id, f64::from(refusal::QUEUE_FULL));
+        } else if id == command::EMERGENCY_STOP {
+            self.commands.push_front(id);
+        } else {
+            self.commands.push_back(id);
+        }
+    }
+
+    /// Commands waiting to be processed.
+    #[must_use]
+    pub fn pending_commands(&self) -> usize {
+        self.commands.len()
+    }
+
+    /// Record a command that was refused before it reached the controller.
+    pub fn log_refused_command(&mut self, id: u32, bits: u32) {
+        self.push_event(event_kind::COMMAND, id, f64::from(bits));
+    }
+
+    /// Present the oldest waiting command to the controller as this
+    /// sub-step's pulse.
+    fn present_command(&mut self) {
+        let front = self.commands.front().copied();
+        let mut shared = self.shared.borrow_mut();
+        let operator = &mut shared.operator;
+        operator.start = front == Some(command::START);
+        operator.stop = front == Some(command::STOP);
+        operator.emergency_stop = front == Some(command::EMERGENCY_STOP);
+        operator.acknowledge = front == Some(command::ACKNOWLEDGE);
+        operator.breaker_close = front == Some(command::BREAKER_CLOSE);
+        operator.breaker_open = front == Some(command::BREAKER_OPEN);
+        operator.synchronise = front == Some(command::SYNCHRONISE);
     }
 
     /// Reasons a command to synchronise would be refused now; zero when the
@@ -871,7 +950,12 @@ impl KguPlant {
     #[must_use]
     pub fn synchronise_refusal(&self) -> u32 {
         let controller = self.controller_state();
-        synchronise_refusal(controller.sequence, controller.alarms)
+        synchronise_refusal(
+            controller.sequence,
+            controller.alarms,
+            &self.synchro_check(),
+            self.cabinet_state().tripped != 0,
+        )
     }
 
     /// Advance by `dt_s`, in whole sub-steps of [`SUB_STEP_S`]. Time that
@@ -881,7 +965,11 @@ impl KguPlant {
     /// The kernel's refusal of a sub-step, as text.
     pub fn step(&mut self, dt_s: f64, cx: &Cx<'_>) -> Result<(), String> {
         self.time_debt_s += dt_s;
-        while self.time_debt_s >= SUB_STEP_S * (1.0 - 1.0e-9) {
+        // The number of whole sub-steps owed, counted once: taking the sub-step off the
+        // debt one at a time would let a long call drift by a sub-step against the same
+        // time asked for in parts.
+        let whole = (self.time_debt_s / SUB_STEP_S + 1.0e-9).floor();
+        for _ in 0..whole as u64 {
             if let Err(refusal) = self.sub_step(cx) {
                 // The kernel's step is atomic: the system stands at its last accepted
                 // state. The time this call still owed is dropped with the refusal, so the
@@ -889,11 +977,8 @@ impl KguPlant {
                 self.time_debt_s = 0.0;
                 return Err(refusal);
             }
-            self.time_debt_s -= SUB_STEP_S;
         }
-        if self.time_debt_s < 0.0 {
-            self.time_debt_s = 0.0;
-        }
+        self.time_debt_s = (self.time_debt_s - whole * SUB_STEP_S).max(0.0);
         Ok(())
     }
 
@@ -913,11 +998,25 @@ impl KguPlant {
                 ));
             }
             let grid_energy_before_j = self.boundary_energy_in_j("generator.grid");
+            // One command of the operator per step, the oldest first.
+            self.present_command();
+            let handled_before = self.controller_state().commands_handled;
             let report = self
                 .system
                 .step(remaining, cx)
                 .map_err(|error| format!("fs_system::System::step refused: {error}"))?;
             remaining -= report.dt_s;
+            let controller = self.controller_state();
+            if controller.commands_handled != handled_before {
+                // The controller has taken it up: it leaves the queue, and the log gets
+                // what became of it.
+                self.commands.pop_front();
+                self.push_event(
+                    event_kind::COMMAND,
+                    controller.last_command,
+                    f64::from(controller.last_command_refusal),
+                );
+            }
             self.last_iterations = report.iterations;
             // The analyser reads the bus voltages that held over the step just taken.
             let voltages = self.operator().grid_phase_voltage_pu;
@@ -942,11 +1041,17 @@ impl KguPlant {
         let generator = self.generator_state();
         let cabinet = self.cabinet_state();
         let coolant_k = self.coolant_k();
+        // What drove the shaft in this step: the engine's indicated torque, the starter's
+        // torque, and the generator's when it motored.
+        let drive_torque_nm = self.engine_state().indicated_torque_nm.max(0.0)
+            + self.starter_state().torque_nm.max(0.0)
+            + generator.torque_nm.max(0.0);
         let mut shared = self.shared.borrow_mut();
         shared.sensed = Sensed {
             omega_rad_s: shaft.velocity_m_s,
             load_angle_rad: generator.load_angle_rad,
-            breaker_closed: generator.breaker_closed,
+            // The position of the contacts is the cabinet's state.
+            breaker_closed: cabinet.closed,
             electric_power_w: generator.electric_power_w,
             out_of_step: generator.out_of_step,
             coolant_k,
@@ -955,6 +1060,7 @@ impl KguPlant {
             cabinet_trips: cabinet.trips,
             cabinet_tripped: cabinet.tripped,
             grid_healthy: cabinet.grid_healthy,
+            drive_torque_nm,
         };
         let operator = &mut shared.operator;
         operator.start = false;
@@ -985,28 +1091,34 @@ impl KguPlant {
         before_cabinet: &CabinetState,
     ) {
         let after = self.controller_state();
-        let generator = self.generator_state();
         let cabinet = self.cabinet_state();
         let rpm = self.shaft_state().velocity_m_s * 30.0 / core::f64::consts::PI;
         if cabinet.trips != before_cabinet.trips {
-            // The protection's own account of its trip, in the units an operator reads.
+            // The protection's own account of its trip, in the units an operator reads:
+            // one entry for every function that tripped in that step.
             use crate::cabinet::protection as p;
-            let value = match cabinet.last_function {
-                p::UNDERVOLTAGE | p::OVERVOLTAGE => {
-                    cabinet.last_value * self.generator_card.rated_phase_voltage_v()
+            for function in 0..p::COUNT as u32 {
+                if cabinet.trip_bits & (1 << function) == 0 {
+                    continue;
                 }
-                p::VOLTAGE_UNBALANCE | p::NEGATIVE_SEQUENCE => 100.0 * cabinet.last_value,
-                p::OVERCURRENT | p::OVERCURRENT_HIGH => {
-                    cabinet.last_value * self.generator_card.rated_current_a()
-                }
-                p::REVERSE_POWER => cabinet.last_value * 1.0e-3,
-                _ => cabinet.last_value,
-            };
-            self.push_event(
-                event_kind::PROTECTION,
-                10 * cabinet.last_function + cabinet.last_phase,
-                value,
-            );
+                let raw = cabinet.trip_value[function as usize];
+                let value = match function {
+                    p::UNDERVOLTAGE | p::OVERVOLTAGE => {
+                        raw * self.generator_card.rated_phase_voltage_v()
+                    }
+                    p::VOLTAGE_UNBALANCE | p::NEGATIVE_SEQUENCE => 100.0 * raw,
+                    p::OVERCURRENT | p::OVERCURRENT_HIGH => {
+                        raw * self.generator_card.rated_current_a()
+                    }
+                    p::REVERSE_POWER => raw * 1.0e-3,
+                    _ => raw,
+                };
+                self.push_event(
+                    event_kind::PROTECTION,
+                    10 * function + cabinet.trip_phase[function as usize],
+                    value,
+                );
+            }
         }
         if after.sequence != before.sequence {
             self.push_event(event_kind::SEQUENCE, after.sequence.index(), rpm);
@@ -1014,11 +1126,20 @@ impl KguPlant {
         if after.sequence.state_code() != before.sequence.state_code() {
             self.push_event(event_kind::STATE, after.sequence.state_code(), rpm);
         }
-        if generator.breaker_closed != before_generator.breaker_closed {
+        // The breaker: the position of the cabinet's contacts.
+        if cabinet.closed != before_cabinet.closed {
             self.push_event(
                 event_kind::BREAKER,
-                u32::from(generator.breaker_closed),
+                u32::from(cabinet.closed),
                 before_generator.electric_power_w * 1.0e-3,
+            );
+        }
+        let timed_out = crate::controller::alarm::SYNCHRONISING_TIMEOUT;
+        if after.alarms & timed_out != 0 && before.alarms & timed_out == 0 {
+            self.push_event(
+                event_kind::SYNCHRONISING_TIMEOUT,
+                after.synchronising_timeout_reasons,
+                before.step_time_s + SUB_STEP_S,
             );
         }
         let (old_bits, new_bits) = (before.alarms | before.warnings, after.alarms | after.warnings);
@@ -1211,6 +1332,20 @@ impl KguPlant {
     pub fn bus_voltage_v(&self) -> f64 {
         self.operator().grid_sequences().positive_magnitude() * BUS_VOLTAGE_V
     }
+}
+
+/// Commands that may wait to be processed; one more is refused.
+const COMMAND_QUEUE_CAPACITY: usize = 32;
+
+/// Whether the bus the operator's inputs describe is fit to close onto, by
+/// the cabinet's settings.
+fn bus_fit(card: &BreakerCabinetCard, operator: &OperatorInputs, sequences: &Sequences) -> bool {
+    bus_is_fit(
+        card,
+        operator.grid_phase_voltage_pu,
+        sequences.unbalance(),
+        operator.grid_frequency_hz,
+    )
 }
 
 fn operator_signals(operator: &OperatorInputs) -> OperatorSignals {

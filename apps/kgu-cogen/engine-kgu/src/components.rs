@@ -688,7 +688,7 @@ const PHS_ROTOR_INERTIA_KG_M2: f64 = 1.0;
 /// Ports: `shaft`; `grid` (electrical: positive-sequence bus voltage in,
 /// current out; the pair is an accounting pair whose product is the active
 /// power, not a phasor); `cooler_heat` (all of the machine's losses);
-/// `breaker` (signal `0/1`: the close request as the cabinet passes it);
+/// `breaker` (signal `0/1`: the position of the cabinet's contacts);
 /// `field` (signal: excitation [pu], grid frequency [Hz]); `unbalance`
 /// (signal: negative-sequence phase voltage [V], real and imaginary against
 /// the positive sequence, and the positive sequence's angle [rad]).
@@ -705,9 +705,12 @@ pub struct GeneratorState {
     /// Angle of the EMF ahead of the bus voltage [rad, electrical]. With the
     /// breaker open it is wrapped to `(-pi, pi]`.
     pub load_angle_rad: f64,
-    /// Whether the breaker is closed.
+    /// Whether the machine carries the bus: the breaker's contacts are
+    /// closed (the cabinet's state, told by signal) and the bus has a
+    /// voltage. On a bus without voltage the contacts may be closed and
+    /// this false. The position of the contacts is the cabinet's.
     pub breaker_closed: bool,
-    /// Latched by a pole slip; cleared when the close command is withdrawn.
+    /// Latched by a pole slip; cleared when the contacts open.
     pub out_of_step: bool,
     /// Active power delivered to the bus [W].
     pub electric_power_w: f64,
@@ -1100,7 +1103,9 @@ impl Component for SynchronousGeneratorComponent {
                 breaker_closed: !slipped,
                 out_of_step: slipped,
                 electric_power_w: export,
-                reactive_power_var: vd * iq - vq * id,
+                // Delivered to the bus: the positive sequence's, less what the
+                // negative-sequence current absorbs in its reactance, 3 X2 I2^2.
+                reactive_power_var: vd * iq - vq * id - 3.0 * x2 * i2_squared,
                 line_current_a: id.hypot(iq) / 3.0_f64.sqrt(),
                 terminal_voltage_v: terminal,
                 copper_loss_w: solution.copper_loss_w,
@@ -1159,17 +1164,19 @@ impl Component for SynchronousGeneratorComponent {
 
 /// The shaft line's inertia with a state of rest.
 ///
-/// While the shaft turns, or anything is commanded to drive it, this is the
-/// kernel's [`Mass`] and nothing else: its `propose` is called and its
-/// outputs passed on unchanged.
+/// While the shaft turns, or anything drives it, this is the kernel's
+/// [`Mass`] and nothing else: its `propose` is called and its outputs passed
+/// on unchanged.
 ///
 /// The engine's friction law is regularised through zero speed, so below its
 /// speed scale it is viscous and by itself never stops the shaft: the speed
 /// decays for ever, into numbers the kernel can no longer difference. Static
 /// friction ([`StandstillCard`]) ends that. A step in which
 ///
-/// * neither the starter nor the ignition is commanded (signals, held over
-///   the step), and
+/// * nothing drives the shaft: the starter is not engaged (its command, held
+///   over the step) and the torque the machines put on the shaft in the last
+///   accepted step (the engine's indicated torque, the starter's, the
+///   generator's when it motors) is no more than the static friction, and
 /// * the speed at the start of the step is no more than the static friction
 ///   torque would remove within the step, `|omega| <= T_static dt / J`,
 ///
@@ -1178,22 +1185,24 @@ impl Component for SynchronousGeneratorComponent {
 /// kinetic energy that was left, with the work those machines did on the
 /// shaft in the step, leaves as heat through `friction_heat`. A shaft at rest
 /// meets the same two conditions and stays at rest, releasing nothing, until
-/// the starter is commanded.
+/// the starter is engaged.
 ///
-/// The decision is taken on the accepted state and on commands, never on the
-/// torque of the step itself: that torque is what the block solve iterates
-/// on, and a law that switched on it would leave the solve no slope. So this
-/// is not a breakaway law: a torque that nothing commanded would not move a
-/// resting shaft here. The plant has no such torque.
+/// Whether the engine drives is taken from what it did, not from the
+/// ignition's command: an engine with its ignition on and no gas does not
+/// drive, and its shaft comes to rest like any other. The decision uses the
+/// torque of the last accepted step, never that of the step itself: that is
+/// what the block solve iterates on, and a law that switched on it would
+/// leave the solve no slope. So this is not a breakaway law within a step.
 ///
 /// Ports: `p` (the kernel inertia's own: net torque in, mean speed of the
-/// step out), `friction_heat` (heat of the stop), `drive` (signal: starter
-/// engaged, ignition on).
+/// step out), `friction_heat` (heat of the stop), `starter` (signal: starter
+/// engaged), `drive_torque` (signal: driving torque on the shaft in the last
+/// accepted step [N m]).
 pub struct ShaftComponent {
     inertia: Mass,
     inertia_kg_m2: f64,
     card: StandstillCard,
-    ports: [PortSpec; 3],
+    ports: [PortSpec; 4],
 }
 
 impl ShaftComponent {
@@ -1215,7 +1224,8 @@ impl ShaftComponent {
                 power,
                 PortSpec::heat(sid("friction_heat"), PortRole::EffortIn)
                     .expect("shaft friction heat port"),
-                PortSpec::signal_in(sid("drive"), nz(2)),
+                PortSpec::signal_in(sid("starter"), nz(1)),
+                PortSpec::signal_in(sid("drive_torque"), nz(1)),
             ],
         }
     }
@@ -1228,7 +1238,7 @@ impl ShaftComponent {
 
     /// Whether a step of `dt_s` from `old` under `inputs` ends at rest.
     fn comes_to_rest(&self, old: &Motion, dt_s: f64, inputs: &[f64]) -> bool {
-        let driven = inputs[2] >= 0.5 || inputs[3] >= 0.5;
+        let driven = inputs[2] >= 0.5 || inputs[3] > self.card.static_friction_torque_nm;
         !driven && old.velocity_m_s.abs() <= self.card.rest_speed_rad_s(self.inertia_kg_m2, dt_s)
     }
 }
@@ -1262,8 +1272,9 @@ impl Component for ShaftComponent {
     ) -> Result<Proposal, Self::Error> {
         check_cx(cx)?;
         all_finite(inputs, "shaft inputs must be finite")?;
-        // Inputs: net torque (0), temperature the friction heat is released at (1), drive
-        // [starter engaged, ignition on] (2..4). Outputs: mean speed of the step (0), heat (1).
+        // Inputs: net torque (0), temperature the friction heat is released at (1), starter
+        // engaged (2), driving torque of the last accepted step (3). Outputs: mean speed of
+        // the step (0), heat (1).
         let (torque, temperature) = (inputs[0], inputs[1]);
         if !(temperature > 0.0) {
             return Err(KguError::Invalid("shaft heat port needs a positive temperature"));

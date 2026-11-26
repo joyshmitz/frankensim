@@ -23,7 +23,7 @@ use crate::components::{
     ShaftComponent, StarterMotorComponent, StarterState, SynchronousGeneratorComponent,
 };
 use crate::controller::{
-    ControllerState, GensetControllerComponent, OperatorSignals, Sequence, alarm, refusal,
+    ControllerState, GensetControllerComponent, OperatorSignals, Sequence, alarm, command, refusal,
 };
 use crate::meter::{METER_EVENT_STRIDE, journal};
 use crate::plant::event_kind;
@@ -222,20 +222,22 @@ fn shaft_conforms_turning_stopping_and_at_rest_and_stops_at_exactly_zero() {
     };
     let stale = at(1.0);
 
-    // Inputs: net torque, room temperature, starter engaged, ignition on.
-    for (velocity, torque, starter, ignition) in [
+    // Inputs: net torque, room temperature, starter engaged, the driving torque of the
+    // last accepted step (against 583 N m of static friction).
+    for (velocity, torque, starter, drive) in [
         (RATED_OMEGA_RAD_S, -900.0, 0.0, 0.0),
-        (RATED_OMEGA_RAD_S, 300.0, 0.0, 1.0),
+        (RATED_OMEGA_RAD_S, 300.0, 0.0, 6_000.0),
         (1.0, -400.0, 0.0, 0.0),
         (0.5 * rest_speed, -20.0, 0.0, 0.0),
         (-0.5 * rest_speed, 20.0, 0.0, 0.0),
         (0.5 * rest_speed, 2_000.0, 1.0, 0.0),
-        (0.5 * rest_speed, 40.0, 0.0, 1.0),
+        (0.5 * rest_speed, 40.0, 0.0, 900.0),
+        (0.5 * rest_speed, 40.0, 0.0, 100.0),
         (0.0, 0.0, 0.0, 0.0),
         (0.0, 2_500.0, 1.0, 0.0),
         (1.0e-300, 0.0, 0.0, 0.0),
     ] {
-        let inputs = [torque, 303.15, starter, ignition];
+        let inputs = [torque, 303.15, starter, drive];
         with_clock_free_cx(|cx| {
             check_component(
                 &shaft,
@@ -375,6 +377,13 @@ fn negative_sequence_voltage_gives_unequal_phase_currents_and_books_its_heat() {
     let (balanced, balanced_out) = step([0.0, 0.0, 0.0]);
     let (unbalanced, unbalanced_out) = step([20.8, 0.0, 0.0]);
 
+    // The negative-sequence current absorbs reactive power in its reactance, 3 X2 I2^2
+    // with X2 = 0.20 + 0.06 pu: the reactive power delivered to the bus falls by that.
+    let i2 = 20.8 / (card.base_impedance_ohm() * 0.05_f64.hypot(0.26));
+    let absorbed = 3.0 * 0.26 * card.base_impedance_ohm() * i2 * i2;
+    let fall = balanced.reactive_power_var - unbalanced.reactive_power_var;
+    assert!((fall - absorbed).abs() < 1.0e-9 * absorbed, "Q fell by {fall} var, 3 X2 I2^2 is {absorbed}");
+
     // Balanced: three equal currents, each the positive-sequence current.
     for current in balanced.phase_current_a {
         assert!((current - balanced.line_current_a).abs() < 1.0e-9 * balanced.line_current_a);
@@ -452,7 +461,7 @@ fn cabinet_measure(
 ) -> [f64; MEASURE_WIDTH] {
     [
         voltage[0], voltage[1], voltage[2], 0.0, 0.0, 0.0, current[0], current[1], current[2],
-        negative_a, hz, power_w, 1.0,
+        negative_a, hz, power_w,
     ]
 }
 
@@ -687,16 +696,18 @@ fn controller_conforms_in_every_step_of_its_sequence() {
             (RATED_OMEGA_RAD_S, false, [1.0, 1.0, 0.0]),
             (RATED_OMEGA_RAD_S, false, [1.0, 16.0, 1.0]),
         ] {
-            let mut inputs = [0.0; 26];
+            let mut inputs = [0.0; 27];
             inputs[..6].copy_from_slice(&[omega, 0.05, 0.0, 0.0, 0.0, 360.0]);
             inputs[6..9].copy_from_slice(&cabinet);
+            // The bus is fit to close onto where the grid is healthy.
+            inputs[9] = cabinet[2];
             // Where there is no start pulse there is a command to synchronise.
             OperatorSignals {
                 start,
                 synchronise: !start,
                 ..operator
             }
-            .write(&mut inputs[9..]);
+            .write(&mut inputs[10..]);
             with_clock_free_cx(|cx| {
                 check_component(
                     &controller,
@@ -1121,7 +1132,9 @@ fn normal_stop_burns_idle_gas_while_cooling_down_and_none_while_coasting() {
     assert_eq!(shut[snap::FUEL_POWER_KW], 0.0);
     assert!(shut[snap::SPEED_RPM] > 1_400.0, "still turning: {} rpm", shut[snap::SPEED_RPM]);
     let to_rest = advance_until(&mut sim, 300.0, "ready", |s| s[snap::STATE_CODE] == 0.0);
-    assert!(to_rest > 5.0 && to_rest < 60.0, "coast-down took {to_rest} s");
+    // Measured 11.8 s: 60 kg m2 at 157 rad/s against 583 to 972 N m of friction. A
+    // quarter more inertia or less friction takes it out of this band.
+    assert!(to_rest > 11.0 && to_rest < 12.6, "coast-down took {to_rest} s");
     let rest = sim.snapshot();
     assert!(rest[snap::SPEED_RPM] < 5.0);
     assert_eq!(
@@ -1288,9 +1301,9 @@ fn the_controller_trips_on_overspeed() {
         synchronise: false,
     };
     for (share, trips) in [(1.14, false), (1.15, true)] {
-        let mut inputs = [0.0; 26];
+        let mut inputs = [0.0; 27];
         inputs[..6].copy_from_slice(&[share * RATED_OMEGA_RAD_S, 0.0, 0.0, 0.0, 0.0, 360.0]);
-        operator.write(&mut inputs[9..]);
+        operator.write(&mut inputs[10..]);
         let mut next = running;
         let mut outputs = [0.0; 6];
         with_clock_free_cx(|cx| {
@@ -1491,7 +1504,9 @@ fn without_heat_demand_and_with_the_fans_failed_the_coolant_climbs_to_the_a105_t
     let summary = heat_side_summary(&s);
     // Not inputs: that it trips, and when. The time follows from the heat that cannot
     // leave and the coolant node's capacity (about 1 MW into 3.1 MJ/K over 10 K).
-    assert!(to_trip > 10.0 && to_trip < 120.0, "time to the trip {to_trip} s; {summary}");
+    // Measured 28 s from 88 C. The band is narrow enough that a coolant capacity or a
+    // dump-cooler capacity out by a half fails it.
+    assert!(to_trip > 22.0 && to_trip < 35.0, "time to the trip {to_trip} s; {summary}");
     assert_eq!(s[snap::ALARM_BITS] as u32 & alarm::COOLANT_TEMPERATURE, alarm::COOLANT_TEMPERATURE);
     assert!(hottest >= trip_c - 0.05, "coolant {hottest} C at the trip, limit {trip_c} C; {summary}");
     assert_eq!(s[snap::BREAKER_CLOSED], 0.0);
@@ -1608,7 +1623,10 @@ fn a_balanced_grid_reproduces_the_numbers_of_the_single_voltage_model() {
         (snap::ELECTRIC_EFFICIENCY_PCT, 38.200_000_058_707_4),
         (snap::THERMAL_EFFICIENCY_PCT, 42.751_546_685_290_72),
         (snap::COOLANT_SUPPLY_C, 88.315_634_091_591_5),
-        (snap::COOLANT_RETURN_C, 68.174_570_353_446_71),
+        // Changed on 2026-11-26 with its definition (it was 68.174 570 353 446 71): the
+        // return line is now the supply less the heat the consumers take, not less the
+        // heat the engine puts in. Every other number here is as recorded before.
+        (snap::COOLANT_RETURN_C, 68.330_804_872_699_1),
         (snap::EXHAUST_TEMPERATURE_C, 484.766_669_933_899_15),
         (snap::STACK_TEMPERATURE_C, 214.834_170_290_433_7),
     ] {
@@ -1964,9 +1982,16 @@ fn a_flickering_grid_blocks_the_automatic_return_after_its_attempts() {
     sim.cmd_ack();
     advance(&mut sim, 0.05);
     let released = sim.snapshot();
-    assert_eq!(released[snap::ALARM_BITS], 0.0, "{}", grid_side_summary(&released));
+    // The lock-out is gone; the grid event's own latch stays until the breaker is in.
+    assert_eq!(
+        released[snap::ALARM_BITS] as u32,
+        alarm::GRID_UNDERVOLTAGE,
+        "{}",
+        grid_side_summary(&released)
+    );
     assert_eq!(released[snap::SEQUENCE_STEP], f64::from(Sequence::Synchronising.index()));
     advance_until(&mut sim, 30.0, "back on the bus", |s| s[snap::BREAKER_CLOSED] == 1.0);
+    assert_eq!(sim.snapshot()[snap::ALARM_BITS], 0.0);
     assert_eq!(sim.snapshot()[snap::RESTORATION_ATTEMPTS], 1.0);
     assert_eq!(events_of(&sim, event_kind::PROTECTION).len(), 4);
 }
@@ -2118,8 +2143,10 @@ fn the_analyser_records_a_dip_the_protection_rides_through_and_keeps_its_own_clo
     sim.set_grid_voltage_pu(1.0);
     advance(&mut sim, 0.10);
     let record = quality_events(&sim);
-    assert_eq!(record.len(), 2, "{record:?}");
+    // The phase without voltage leaves a dip and an interruption; the high one a swell.
+    assert_eq!(record.len(), 3, "{record:?}");
     assert!(record.iter().any(|e| e.0 == quality_kind::INTERRUPTION && e.1 == 1));
+    assert!(record.iter().any(|e| e.0 == quality_kind::DIP && e.1 == 1));
     assert!(record.iter().any(|e| e.0 == quality_kind::SWELL && e.1 == 3));
     sim.clear_analyser_events();
     assert!(sim.analyser_events().is_empty());
@@ -2204,8 +2231,9 @@ fn the_share_of_sample_phases_that_catch_a_130_ms_dip_is_its_share_of_the_second
         caught += records.len();
         assert_eq!(quality_events(&sim).len(), 1, "the analyser sees every one of them");
     }
-    let share = caught as f64 / 100.0;
-    assert!((share - 0.13).abs() < 0.011, "caught at {caught} of 100 sample phases");
+    // Thirteen sub-steps of the dip, a hundred places for the look, each inside one
+    // sub-step: exactly thirteen catch it.
+    assert_eq!(caught, 13, "caught at {caught} of 100 sample phases");
 }
 
 #[test]
@@ -2321,6 +2349,8 @@ fn the_meters_registers_follow_the_direction_of_active_and_reactive_power() {
     let (r0, r1) = (registers(&before), registers(&after));
     let engine = after[snap::ENERGY_ELECTRIC_KWH] - before[snap::ENERGY_ELECTRIC_KWH];
     let exported = r1[0] - r0[0];
+    // A check of the transfer, not of the physics: the meter's active registers and the
+    // engine's counter both take the kernel ledger's energy at the bus port.
     assert!((exported - engine).abs() < 1.0e-9 * engine, "meter {exported} kWh, engine {engine} kWh");
     assert!((exported - 250.0).abs() < 0.25, "1 000 kW for a quarter of an hour: {exported} kWh");
     assert_eq!(r1[1].to_bits(), r0[1].to_bits(), "no active import while exporting");
@@ -2337,7 +2367,11 @@ fn the_meters_registers_follow_the_direction_of_active_and_reactive_power() {
     advance(&mut sim, 300.0);
     let after = sim.snapshot();
     let (r0, r1) = (registers(&before), registers(&after));
-    assert!(r1[2] - r0[2] > 5.0, "reactive export {} kvarh", r1[2] - r0[2]);
+    // The register against the reactive power the snapshot showed over those 300 s.
+    let delivered = r1[2] - r0[2];
+    let expected =
+        300.0 / 3_600.0 * 0.5 * (before[snap::REACTIVE_POWER_KVAR] + after[snap::REACTIVE_POWER_KVAR]);
+    assert!((delivered - expected).abs() < 0.02 * expected, "{delivered} kvarh against {expected}");
     assert_eq!(r1[3].to_bits(), r0[3].to_bits(), "no reactive import while over-excited");
     assert_eq!(r1[1].to_bits(), r0[1].to_bits());
     // From the start of the model: the two active registers are the engine's counter.
@@ -2649,4 +2683,836 @@ fn a_refused_step_leaves_the_last_accepted_state_and_the_next_step_goes_on() {
     let s = sim.snapshot();
     assert!((s[snap::ELECTRIC_POWER_KW] - 500.0).abs() < 0.5, "{}", grid_side_summary(&s));
     assert!(ledger_relative_residual(&s) < 1.0e-9);
+}
+
+// ---------------------------------------------------------------------------
+// Round 3 of the review: each test here failed before its fix
+// ---------------------------------------------------------------------------
+
+/// The outcomes of the operator's commands as `(command, refusal bits)`.
+fn command_outcomes(sim: &KguSim) -> Vec<(u32, u32)> {
+    events_of(sim, event_kind::COMMAND)
+        .into_iter()
+        .map(|(_, code, value)| (code, value as u32))
+        .collect()
+}
+
+fn sequence_of(sim: &KguSim) -> f64 {
+    sim.snapshot()[snap::SEQUENCE_STEP]
+}
+
+fn step_index(sequence: Sequence) -> f64 {
+    f64::from(sequence.index())
+}
+
+#[test]
+fn an_engine_with_its_ignition_on_and_no_gas_stalls_is_tripped_and_stands() {
+    // Waiting for the grid, ignition on, and the gas goes.
+    let mut sim = on_load(60.0, 300.0);
+    sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+    advance(&mut sim, 1.0);
+    assert_eq!(sequence_of(&sim), step_index(Sequence::GridWait));
+    sim.set_gas_gauge_kpa(0.0);
+    // Not inputs: that it stalls, when (the coast-down to the firing speed), and that
+    // the stall has its own alarm.
+    let to_trip = advance_until(&mut sim, 60.0, "stall", |s| s[snap::STATE_CODE] == 5.0);
+    assert!(to_trip > 8.0 && to_trip < 13.0, "stalled {to_trip} s after the gas went");
+    let tripped = sim.snapshot();
+    assert_eq!(
+        tripped[snap::ALARM_BITS] as u32 & alarm::ENGINE_STALL,
+        alarm::ENGINE_STALL,
+        "{}",
+        grid_side_summary(&tripped)
+    );
+    advance_until(&mut sim, 5.0, "rest", |s| s[snap::SPEED_RPM] == 0.0);
+    let hours = sim.snapshot()[snap::ENGINE_HOURS];
+    stand(&mut sim, 900.0);
+    assert_eq!(sim.snapshot()[snap::ENGINE_HOURS].to_bits(), hours.to_bits(), "no hours at rest");
+    assert!(ledger_relative_residual(&sim.snapshot()) < 1.0e-9);
+    // Gas back, acknowledged: it starts.
+    sim.set_grid_voltage_pu(1.0);
+    sim.set_gas_gauge_kpa(50.0);
+    sim.cmd_ack();
+    start_and_load(&mut sim, 50.0);
+
+    // The same in the cool-down of a normal stop, and at the synchroniser.
+    for at_synchroniser in [false, true] {
+        let mut sim = on_load(60.0, 300.0);
+        if at_synchroniser {
+            sim.cmd_breaker_open();
+            advance(&mut sim, 5.0);
+            assert_eq!(sequence_of(&sim), step_index(Sequence::Synchronising));
+        } else {
+            sim.cmd_stop();
+            advance_until(&mut sim, 200.0, "cool-down", |s| {
+                s[snap::SEQUENCE_STEP] == step_index(Sequence::CoolDown)
+            });
+        }
+        sim.set_gas_gauge_kpa(0.0);
+        advance_until(&mut sim, 60.0, "stall", |s| s[snap::STATE_CODE] == 5.0);
+        assert_eq!(sim.snapshot()[snap::ALARM_BITS] as u32 & alarm::ENGINE_STALL, alarm::ENGINE_STALL);
+        advance_until(&mut sim, 5.0, "rest", |s| s[snap::SPEED_RPM] == 0.0);
+        stand(&mut sim, 600.0);
+    }
+}
+
+#[test]
+fn losing_all_three_phases_goes_through_the_cabinets_undervoltage_with_its_delay_and_event() {
+    let mut sim = on_load(85.0, 300.0);
+    let fell_at = sim.snapshot()[snap::TIME_S];
+    sim.set_grid_phase_voltages_pu(0.0, 0.0, 0.0);
+    advance(&mut sim, 0.10);
+    let during = sim.snapshot();
+    // The contacts are closed: the breaker has not been opened by anybody. The machine
+    // carries nothing, the bus being dead; the under-voltage function has picked up.
+    assert_eq!(during[snap::BREAKER_CLOSED], 1.0, "{}", grid_side_summary(&during));
+    assert_eq!(during[snap::ELECTRIC_POWER_KW], 0.0);
+    assert_eq!(during[snap::PROTECTION_PICKUP_BITS] as u32, 1 << protection::UNDERVOLTAGE);
+    assert_eq!(during[snap::SEQUENCE_STEP], step_index(Sequence::OnLoad));
+    advance(&mut sim, 0.10);
+    let after = sim.snapshot();
+    assert_eq!(after[snap::BREAKER_CLOSED], 0.0, "{}", grid_side_summary(&after));
+    let trips = events_of(&sim, event_kind::PROTECTION);
+    assert_eq!(trips.len(), 1, "{trips:?}");
+    assert_eq!(trips[0].1 / 10, protection::UNDERVOLTAGE);
+    assert_eq!(trips[0].2, 0.0, "tripped at {} V", trips[0].2);
+    assert!((trips[0].0 - fell_at - 0.15).abs() < 0.011, "after {} s", trips[0].0 - fell_at);
+    assert_eq!(after[snap::ALARM_BITS] as u32, alarm::GRID_UNDERVOLTAGE);
+    assert_eq!(after[snap::SEQUENCE_STEP], step_index(Sequence::GridWait));
+    assert_eq!(after[snap::PROTECTION_TRIPPED_BITS] as u32, 1 << protection::UNDERVOLTAGE);
+    // The breaker's opening is in the log once, after the trip.
+    let openings: Vec<_> =
+        events_of(&sim, event_kind::BREAKER).into_iter().filter(|e| e.1 == 0).collect();
+    assert_eq!(openings.len(), 1);
+    assert!((openings[0].0 - trips[0].0).abs() < 1.0e-9);
+    // The engine runs on, and the automatic return works from here as from any dip.
+    sim.set_restoration_mode(1);
+    sim.set_grid_voltage_pu(1.0);
+    let back = advance_until(&mut sim, 200.0, "back on the bus", |s| s[snap::BREAKER_CLOSED] == 1.0);
+    assert!(back > 60.0 && back < 85.0, "back after {back} s");
+}
+
+#[test]
+fn the_breaker_is_not_closed_onto_a_bus_with_a_phase_below_the_cabinets_setting() {
+    let mut sim = on_load(85.0, 300.0);
+    sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+    advance(&mut sim, 1.0);
+    sim.cmd_ack();
+    advance(&mut sim, 0.05);
+    assert_eq!(sequence_of(&sim), step_index(Sequence::Synchronising));
+    // The excitation is matched to the bus's positive sequence, so the old window is met
+    // whenever the phase comes round; the low phase is still there.
+    sim.set_excitation_pu(0.91);
+    advance(&mut sim, 3.0);
+    assert_eq!(sim.snapshot()[snap::BUS_FIT_TO_CLOSE], 0.0);
+    let refused = sim.cmd_breaker_close();
+    assert_ne!(refused & refusal::BUS_UNFIT, 0, "close refusal bits {refused}");
+    // The command to synchronise is refused for the same reason, at once and by name:
+    // the synchroniser cannot wait out a bus it must not close onto.
+    assert_eq!(sim.cmd_synchronise(), refusal::BUS_UNFIT);
+    advance(&mut sim, 25.0);
+    let waiting = sim.snapshot();
+    assert_eq!(waiting[snap::BREAKER_CLOSED], 0.0, "{}", grid_side_summary(&waiting));
+    assert_eq!(waiting[snap::SYNCHRONISER_ARMED_BY_OPERATOR], 0.0);
+    let closings =
+        |sim: &KguSim| events_of(sim, event_kind::BREAKER).into_iter().filter(|e| e.1 == 1).count();
+    assert_eq!(closings(&sim), 1, "only the first synchronisation");
+    assert_eq!(events_of(&sim, event_kind::PROTECTION).len(), 1, "no second trip");
+
+    // The bus is restored and the command given again, away from zero phase: armed. Before
+    // the phase comes round the phase voltage falls again: the permission is taken in the
+    // sub-step that would close, and that sub-step does not close.
+    sim.set_grid_voltage_pu(1.0);
+    sim.set_excitation_pu(1.0);
+    advance(&mut sim, 0.05);
+    advance_until(&mut sim, 30.0, "phase away", |s| s[snap::SYNC_PHASE_ANGLE_DEG].abs() > 60.0);
+    assert_eq!(sim.snapshot()[snap::BUS_FIT_TO_CLOSE], 1.0);
+    assert_eq!(sim.cmd_synchronise(), 0);
+    advance(&mut sim, 0.5);
+    sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+    sim.set_excitation_pu(0.91);
+    advance(&mut sim, 25.0);
+    let armed = sim.snapshot();
+    assert_eq!(armed[snap::BREAKER_CLOSED], 0.0, "{}", grid_side_summary(&armed));
+    assert_eq!(armed[snap::SYNCHRONISER_ARMED_BY_OPERATOR], 1.0);
+    assert_eq!(closings(&sim), 1);
+    // Fit again: now it closes, on the command already given.
+    sim.set_grid_voltage_pu(1.0);
+    sim.set_excitation_pu(1.0);
+    advance_until(&mut sim, 30.0, "closing", |s| s[snap::BREAKER_CLOSED] == 1.0);
+    assert_eq!(closings(&sim), 2);
+}
+
+#[test]
+fn a_synchronisation_that_cannot_be_made_is_stopped_at_its_time_limit() {
+    let limit = ControllerSetpoints::DEFAULT.synchronising_time_limit_s;
+    let mut sim = KguSim::new();
+    // The field too weak for the voltage window: the breaker can never be closed.
+    sim.set_excitation_pu(0.6);
+    sim.set_load_setpoint_pct(60.0);
+    sim.cmd_start();
+    advance_until(&mut sim, 200.0, "synchronising", |s| s[snap::STATE_CODE] == 2.0);
+    let gas_at = sim.snapshot()[snap::GAS_STD_M3];
+    advance(&mut sim, limit - 5.0);
+    let waiting = sim.snapshot();
+    assert_eq!(waiting[snap::SEQUENCE_STEP], step_index(Sequence::Synchronising));
+    assert!((waiting[snap::SYNCHRONISING_TIME_LEFT_S] - 5.0).abs() < 0.2);
+    advance(&mut sim, 6.0);
+    let stopped = sim.snapshot();
+    assert_eq!(stopped[snap::SEQUENCE_STEP], step_index(Sequence::CoolDown));
+    assert_eq!(stopped[snap::ALARM_BITS] as u32, alarm::SYNCHRONISING_TIMEOUT);
+    assert!(stopped[snap::SYNCHRONISING_TIME_LEFT_S].is_nan());
+    // The event says what kept the breaker out, and for how long.
+    let timeouts = events_of(&sim, event_kind::SYNCHRONISING_TIMEOUT);
+    assert_eq!(timeouts.len(), 1);
+    assert_ne!(timeouts[0].1 & refusal::VOLTAGE, 0, "reasons {}", timeouts[0].1);
+    assert!((timeouts[0].2 - limit).abs() < 0.02, "stood there {} s", timeouts[0].2);
+    // The gas burned at the synchroniser is bounded by the limit: 374 kW for 180 s.
+    let burned = stopped[snap::GAS_STD_M3] - gas_at;
+    assert!(burned > 1.8 && burned < 2.2, "{burned} m3 burned at the synchroniser");
+    advance_until(&mut sim, 400.0, "ready", |s| s[snap::STATE_CODE] == 0.0);
+    // The failed synchronisation is latched: a start is refused until it is acknowledged.
+    sim.clear_events();
+    sim.cmd_start();
+    advance(&mut sim, 1.0);
+    assert_eq!(sim.snapshot()[snap::STATE_CODE], 0.0);
+    assert_eq!(command_outcomes(&sim), [(command::START, refusal::TRIP_LATCHED)]);
+    sim.set_excitation_pu(1.0);
+    sim.cmd_ack();
+    start_and_load(&mut sim, 60.0);
+}
+
+#[test]
+fn a_stop_given_in_the_sub_step_of_a_protection_trip_is_carried_out() {
+    // The command falls on every sub-step around the 0.15 s of the under-voltage delay.
+    for sub_steps in 10..=20 {
+        let mut sim = on_load(60.0, 300.0);
+        sim.clear_events();
+        sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+        for _ in 0..sub_steps {
+            advance(&mut sim, 0.01);
+        }
+        sim.cmd_stop();
+        advance(&mut sim, 5.0);
+        let s = sim.snapshot();
+        // Stopping, by its unloading before the trip or by its cool-down after it;
+        // never left waiting for the grid.
+        assert_eq!(s[snap::STATE_CODE], 4.0, "stop {sub_steps} sub-steps in: {}", grid_side_summary(&s));
+        assert_eq!(command_outcomes(&sim), [(command::STOP, 0)], "stop {sub_steps} sub-steps in");
+        assert_eq!(s[snap::PENDING_COMMANDS], 0.0);
+    }
+}
+
+#[test]
+fn commands_given_between_two_steps_are_processed_in_order_each_with_its_outcome() {
+    // Acknowledge and start, with no step between.
+    let mut sim = on_load(60.0, 300.0);
+    sim.cmd_emergency_stop();
+    advance_until(&mut sim, 60.0, "rest", |s| s[snap::SPEED_RPM] == 0.0);
+    sim.clear_events();
+    sim.cmd_ack();
+    sim.cmd_start();
+    assert_eq!(sim.plant.pending_commands(), 2);
+    advance(&mut sim, 1.0);
+    assert_eq!(sequence_of(&sim), step_index(Sequence::PreLubrication));
+    assert_eq!(command_outcomes(&sim), [(command::ACKNOWLEDGE, 0), (command::START, 0)]);
+
+    // Start and stop: both carried out, in that order; the unit is ready again.
+    let mut sim = KguSim::new();
+    sim.cmd_start();
+    sim.cmd_stop();
+    advance(&mut sim, 1.0);
+    assert_eq!(sequence_of(&sim), step_index(Sequence::Ready));
+    assert_eq!(command_outcomes(&sim), [(command::START, 0), (command::STOP, 0)]);
+    assert_eq!(sim.snapshot()[snap::START_COUNT], 1.0);
+
+    // Synchronise and stop at the synchroniser: armed for a sub-step, then the stop.
+    let mut sim = on_load(60.0, 300.0);
+    sim.cmd_breaker_open();
+    advance(&mut sim, 5.0);
+    advance_until(&mut sim, 30.0, "phase away", |s| s[snap::SYNC_PHASE_ANGLE_DEG].abs() > 40.0);
+    sim.clear_events();
+    assert_eq!(sim.cmd_synchronise(), 0);
+    sim.cmd_stop();
+    advance(&mut sim, 0.01);
+    assert_eq!(sim.snapshot()[snap::SYNCHRONISER_ARMED_BY_OPERATOR], 1.0);
+    advance(&mut sim, 0.01);
+    assert_eq!(sequence_of(&sim), step_index(Sequence::CoolDown));
+    assert_eq!(command_outcomes(&sim), [(command::SYNCHRONISE, 0), (command::STOP, 0)]);
+
+    // A command with no meaning where it arrives is refused, in the log, not dropped.
+    let mut sim = on_load(60.0, 300.0);
+    sim.cmd_breaker_open();
+    advance(&mut sim, 5.0);
+    sim.clear_events();
+    sim.cmd_start();
+    sim.cmd_ack();
+    sim.cmd_breaker_open();
+    advance(&mut sim, 1.0);
+    let not_applicable = refusal::NOT_APPLICABLE;
+    assert_eq!(
+        command_outcomes(&sim),
+        [
+            (command::START, not_applicable),
+            (command::ACKNOWLEDGE, not_applicable),
+            (command::BREAKER_OPEN, not_applicable)
+        ]
+    );
+    // An emergency stop goes before anything that waits.
+    sim.clear_events();
+    sim.cmd_start();
+    sim.cmd_emergency_stop();
+    advance(&mut sim, 0.05);
+    assert_eq!(
+        command_outcomes(&sim),
+        [(command::EMERGENCY_STOP, 0), (command::START, refusal::TRIP_LATCHED)]
+    );
+}
+
+#[test]
+fn a_breaker_opening_in_the_sub_step_of_a_protection_trip_leaves_nothing_latched_unseen() {
+    // The operator's opening on every sub-step around the trip. Before the fix one of
+    // these left the cabinet tripped with no alarm at the controller, and no way back.
+    for sub_steps in 12..=17 {
+        let mut sim = on_load(60.0, 300.0);
+        sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+        for _ in 0..sub_steps {
+            advance(&mut sim, 0.01);
+        }
+        sim.cmd_breaker_open();
+        advance(&mut sim, 0.05);
+        let s = sim.snapshot();
+        let cabinet = s[snap::PROTECTION_TRIPPED_BITS] as u32;
+        let latched = s[snap::ALARM_BITS] as u32;
+        // What the cabinet holds, the controller shows.
+        assert_eq!(cabinet != 0, latched != 0, "open {sub_steps} sub-steps in: {}", grid_side_summary(&s));
+        sim.set_grid_voltage_pu(1.0);
+        advance(&mut sim, 1.0);
+        sim.cmd_ack();
+        advance(&mut sim, 1.0);
+        let s = sim.snapshot();
+        assert_eq!(s[snap::PROTECTION_TRIPPED_BITS], 0.0, "{}", grid_side_summary(&s));
+        assert_eq!(s[snap::ALARM_BITS], 0.0);
+        assert_eq!(sim.cmd_synchronise(), 0);
+        advance_until(&mut sim, 30.0, "closing", |s| s[snap::BREAKER_CLOSED] == 1.0);
+        advance(&mut sim, 5.0);
+        assert_eq!(sim.snapshot()[snap::BREAKER_CLOSED], 1.0, "stays in");
+    }
+}
+
+#[test]
+fn a_step_longer_than_an_hour_or_not_a_number_is_refused_whole() {
+    let mut sim = KguSim::new();
+    assert!(!sim.step(7_200.0));
+    assert!(sim.last_error().contains("3600"), "{}", sim.last_error());
+    assert_eq!(sim.snapshot()[snap::TIME_S], 0.0, "nothing was advanced");
+    for bad in [f64::NAN, f64::INFINITY, 0.0, -1.0] {
+        assert!(!sim.step(bad));
+        assert!(!sim.last_error().is_empty());
+    }
+    // The longest step is taken whole, and the same time in parts ends at the same state.
+    assert!(sim.step(sim.longest_step_s()), "{}", sim.last_error());
+    assert!((sim.snapshot()[snap::TIME_S] - 3_600.0).abs() < 1.0e-6);
+    let mut parts = KguSim::new();
+    for _ in 0..3_600 {
+        assert!(parts.step(1.0));
+    }
+    for (index, (whole, part)) in sim.snapshot().iter().zip(&parts.snapshot()).enumerate() {
+        assert_eq!(whole.to_bits(), part.to_bits(), "{}", crate::SNAPSHOT_FIELDS[index]);
+    }
+}
+
+#[test]
+fn switching_the_mode_gets_past_neither_the_lockout_nor_the_longest_wait() {
+    let restore = RestorationCard::DEFAULT;
+    let blink = |sim: &mut KguSim| {
+        sim.set_grid_phase_voltages_pu(0.73, 1.0, 1.0);
+        advance(sim, 1.0);
+        sim.set_grid_voltage_pu(1.0);
+    };
+    // Three automatic returns; the mode is manual while the fourth trip arrives, then
+    // automatic again. The count is still three.
+    let mut sim = on_load(30.0, 300.0);
+    sim.set_restoration_mode(1);
+    for _ in 0..restore.largest_attempts {
+        blink(&mut sim);
+        advance_until(&mut sim, 200.0, "back on the bus", |s| s[snap::BREAKER_CLOSED] == 1.0);
+        advance(&mut sim, 5.0);
+    }
+    sim.set_restoration_mode(0);
+    blink(&mut sim);
+    sim.set_restoration_mode(1);
+    advance(&mut sim, restore.healthy_delay_s + 120.0);
+    let s = sim.snapshot();
+    assert_eq!(s[snap::BREAKER_CLOSED], 0.0, "{}", grid_side_summary(&s));
+    assert_eq!(
+        s[snap::ALARM_BITS] as u32,
+        alarm::GRID_UNDERVOLTAGE | alarm::RESTORATION_LOCKOUT,
+        "{}",
+        grid_side_summary(&s)
+    );
+    assert_eq!(s[snap::RESTORATION_ATTEMPTS], f64::from(restore.largest_attempts));
+
+    // The longest wait counts from the grid event, in whichever mode the time was spent.
+    let mut sim = on_load(30.0, 300.0);
+    sim.set_grid_phase_voltages_pu(0.73, 1.0, 1.0);
+    advance(&mut sim, restore.longest_wait_s + 60.0);
+    assert_eq!(sequence_of(&sim), step_index(Sequence::GridWait), "manual: waits for the operator");
+    assert!(sim.snapshot()[snap::RETURN_TIME_LEFT_S].is_nan());
+    sim.set_restoration_mode(1);
+    advance(&mut sim, 1.0);
+    assert_eq!(sequence_of(&sim), step_index(Sequence::CoolDown), "the automation's time is up");
+}
+
+#[test]
+fn a_grid_that_turns_bad_again_sends_the_return_back_to_waiting() {
+    let restore = RestorationCard::DEFAULT;
+    let mut sim = on_load(90.0, 300.0);
+    sim.set_restoration_mode(1);
+    sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+    advance(&mut sim, 1.0);
+    sim.set_grid_voltage_pu(1.0);
+    advance_until(&mut sim, 100.0, "at the synchroniser", |s| {
+        s[snap::SEQUENCE_STEP] == step_index(Sequence::Synchronising)
+    });
+    // The bus goes out of the cabinet's unbalance setting (6.4 %) with its positive
+    // sequence almost whole: the old window would have let the breaker in.
+    sim.set_grid_phase_voltages_pu(1.1, 1.0, 0.88);
+    advance(&mut sim, 30.0);
+    let waiting = sim.snapshot();
+    assert_eq!(waiting[snap::BREAKER_CLOSED], 0.0, "{}", grid_side_summary(&waiting));
+    assert_eq!(waiting[snap::SEQUENCE_STEP], step_index(Sequence::GridWait));
+    assert_eq!(waiting[snap::ALARM_BITS] as u32, alarm::GRID_UNDERVOLTAGE, "the event's latch is kept");
+    assert_eq!(events_of(&sim, event_kind::PROTECTION).len(), 1, "no closing, no second trip");
+    // Healthy again: the whole healthy-grid delay is waited before the next attempt.
+    sim.set_grid_voltage_pu(1.0);
+    let back = advance_until(&mut sim, 200.0, "back on the bus", |s| s[snap::BREAKER_CLOSED] == 1.0);
+    assert!(back >= restore.healthy_delay_s, "back {back} s after the bus recovered");
+    assert_eq!(sim.snapshot()[snap::RESTORATION_ATTEMPTS], 2.0);
+    assert_eq!(sim.snapshot()[snap::ALARM_BITS], 0.0);
+}
+
+#[test]
+fn two_functions_that_trip_together_are_two_entries_of_the_log() {
+    let mut sim = on_load(60.0, 300.0);
+    // Over-frequency needs 0.5 s, phase under-voltage 0.15 s: the phase falls 0.35 s
+    // after the frequency rises, and both run out in the same sub-step.
+    sim.set_grid_freq_hz(51.6);
+    advance(&mut sim, 0.35);
+    sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+    advance(&mut sim, 0.30);
+    let s = sim.snapshot();
+    assert_eq!(
+        s[snap::PROTECTION_TRIPPED_BITS] as u32,
+        (1 << protection::UNDERVOLTAGE) | (1 << protection::OVERFREQUENCY)
+    );
+    let trips = events_of(&sim, event_kind::PROTECTION);
+    assert_eq!(trips.len(), 2, "{trips:?}");
+    assert_eq!(trips[0].0.to_bits(), trips[1].0.to_bits(), "the same sub-step");
+    assert_eq!(trips[0].1, 10 * protection::UNDERVOLTAGE + 2);
+    assert!((trips[0].2 - 0.73 * PHASE_VOLT).abs() < 1.0e-6);
+    assert_eq!(trips[1].1, 10 * protection::OVERFREQUENCY);
+    assert!((trips[1].2 - 51.6).abs() < 1.0e-9);
+    assert_eq!(s[snap::ALARM_BITS] as u32, alarm::GRID_UNDERVOLTAGE | alarm::FREQUENCY);
+}
+
+#[test]
+fn the_snapshot_shows_the_largest_phase_current_and_a_return_line_that_follows_the_heat_taken() {
+    let mut sim = on_load(100.0, 300.0);
+    advance(&mut sim, 600.0);
+    let pump = sim.plant.coolant_card.pump_capacity_rate_w_k;
+    // Unbalanced: the positive-sequence current is not the largest a phase carries.
+    sim.set_grid_phase_voltages_pu(1.0, 1.0, 0.94);
+    advance(&mut sim, 1.0);
+    let s = sim.snapshot();
+    let largest = s[snap::PHASE_A_CURRENT_A].max(s[snap::PHASE_B_CURRENT_A]).max(s[snap::PHASE_C_CURRENT_A]);
+    assert_eq!(s[snap::LARGEST_PHASE_CURRENT_A], largest);
+    assert!(largest > s[snap::STATOR_CURRENT_A] + 50.0, "{largest} A against {} A", s[snap::STATOR_CURRENT_A]);
+    sim.set_grid_voltage_pu(1.0);
+    advance(&mut sim, 30.0);
+
+    // An emergency stop: the engine's heat is gone at once, the network goes on taking
+    // heat out of the coolant. The return line is what the consumers leave of the supply.
+    sim.cmd_emergency_stop();
+    advance(&mut sim, 0.5);
+    let s = sim.snapshot();
+    let taken_kw = s[snap::HEAT_TO_NETWORK_KW] + s[snap::HEAT_DUMPED_KW];
+    assert!(taken_kw > 1_000.0, "the network still takes {taken_kw} kW");
+    let drop = s[snap::COOLANT_SUPPLY_C] - s[snap::COOLANT_RETURN_C];
+    assert!((drop - taken_kw * 1.0e3 / pump).abs() < 1.0e-6, "return {drop} K below supply");
+    assert!(drop > 15.0, "{}", heat_side_summary(&s));
+}
+
+#[test]
+fn the_analysers_record_counts_what_it_displaces() {
+    let mut sim = KguSim::new();
+    let capacity = sim.limits()
+        [crate::LIMIT_FIELDS.iter().position(|n| *n == "ANALYSER_RECORD_CAPACITY").expect("limit")];
+    assert_eq!(capacity, 256.0);
+    for _ in 0..257 {
+        sim.set_grid_phase_voltages_pu(1.0, 0.8, 1.0);
+        advance(&mut sim, 0.02);
+        sim.set_grid_voltage_pu(1.0);
+        advance(&mut sim, 0.02);
+    }
+    let s = sim.snapshot();
+    assert_eq!(quality_events(&sim).len(), 256);
+    assert_eq!(s[snap::ANALYSER_RECORDED_EVENTS], 257.0);
+    assert_eq!(s[snap::ANALYSER_DISPLACED_EVENTS], 1.0);
+}
+
+#[test]
+fn opening_the_breaker_while_unloading_goes_on_to_the_cool_down() {
+    let mut sim = on_load(60.0, 300.0);
+    sim.cmd_stop();
+    advance(&mut sim, 1.0);
+    assert_eq!(sequence_of(&sim), step_index(Sequence::Unloading));
+    sim.cmd_breaker_open();
+    advance(&mut sim, 1.0);
+    let s = sim.snapshot();
+    assert_eq!(s[snap::BREAKER_CLOSED], 0.0);
+    assert_eq!(s[snap::SEQUENCE_STEP], step_index(Sequence::CoolDown), "the stop goes on");
+    advance_until(&mut sim, 400.0, "ready", |s| s[snap::STATE_CODE] == 0.0);
+}
+
+#[test]
+fn a_manual_closing_near_the_edge_of_the_window_gives_the_jolt_of_its_side() {
+    // The generator ahead of the bus delivers power at the closing; behind it, it is
+    // driven. The size is the machine's: E V sin(delta) / X with X = 0.31 pu of 1.25 MVA,
+    // about 630 kW at 9 degrees.
+    for ahead in [true, false] {
+        let mut sim = KguSim::new();
+        sim.set_auto_sync(false);
+        sim.cmd_start();
+        advance_until(&mut sim, 200.0, "synchronising", |s| s[snap::STATE_CODE] == 2.0);
+        let mut waited = 0.0;
+        loop {
+            let angle = sim.snapshot()[snap::SYNC_PHASE_ANGLE_DEG];
+            let wanted = if ahead { angle > 8.5 && angle < 9.5 } else { angle < -8.5 && angle > -9.5 };
+            if wanted && sim.snapshot()[snap::SYNC_PERMITTED] == 1.0 {
+                break;
+            }
+            advance(&mut sim, 0.01);
+            waited += 0.01;
+            assert!(waited < 60.0, "the phase never came to the edge");
+        }
+        assert_eq!(sim.cmd_breaker_close(), 0);
+        let mut jolt = 0.0_f64;
+        for _ in 0..5 {
+            advance(&mut sim, 0.01);
+            let power = sim.snapshot()[snap::ELECTRIC_POWER_KW];
+            if power.abs() > jolt.abs() {
+                jolt = power;
+            }
+        }
+        assert_eq!(sim.snapshot()[snap::BREAKER_CLOSED], 1.0);
+        if ahead {
+            assert!(jolt > 400.0 && jolt < 800.0, "jolt {jolt} kW when ahead");
+        } else {
+            assert!(jolt < -400.0 && jolt > -800.0, "jolt {jolt} kW when behind");
+        }
+    }
+}
+
+/// A small deterministic generator for the random walk below (xorshift64*).
+struct Dice(u64);
+
+impl Dice {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// A number in `[0, 1)`.
+    fn unit(&mut self) -> f64 {
+        (self.next() >> 11) as f64 / (1_u64 << 53) as f64
+    }
+
+    fn between(&mut self, low: f64, high: f64) -> f64 {
+        low + (high - low) * self.unit()
+    }
+
+    fn pick<const N: usize>(&mut self, values: [f64; N]) -> f64 {
+        values[(self.next() % N as u64) as usize]
+    }
+}
+
+/// One random action on the package's own boundary: a setter with a value
+/// from inside or outside its range, or a command.
+fn random_action(sim: &mut KguSim, dice: &mut Dice) -> String {
+    let kind = dice.next() % 28;
+    match kind {
+        0 => {
+            let x = dice.between(-10.0, 120.0);
+            sim.set_load_setpoint_pct(x);
+            format!("load {x:.1}")
+        }
+        1 => {
+            let x = dice.between(0.3, 1.7);
+            sim.set_excitation_pu(x);
+            format!("excitation {x:.3}")
+        }
+        2 => {
+            let x = dice.pick([0.0, 0.3, 0.7, 1.0, 1.2]);
+            sim.set_heat_demand_frac(x);
+            format!("heat demand {x}")
+        }
+        3 => {
+            let x = dice.between(0.0, 100.0);
+            sim.set_network_return_temp_c(x);
+            format!("network return {x:.1}")
+        }
+        4 => {
+            let x = dice.pick([0.0, 0.0, 5.0, 20.0, 29.0, 31.0, 50.0, 50.0, 200.0, 600.0]);
+            sim.set_gas_gauge_kpa(x);
+            format!("gas gauge {x}")
+        }
+        5 => {
+            let x = dice.between(-40.0, 70.0);
+            sim.set_gas_temp_c(x);
+            format!("gas temperature {x:.1}")
+        }
+        6 => {
+            let x = dice.pick([0.0, 0.01, 0.3, 0.7, 0.86, 0.9, 1.0, 1.0, 1.0, 1.1, 1.3]);
+            sim.set_grid_voltage_pu(x);
+            format!("bus voltage {x}")
+        }
+        7 => {
+            let v = [dice.between(0.0, 1.3), dice.between(0.0, 1.3), dice.between(0.0, 1.3)];
+            sim.set_grid_phase_voltages_pu(v[0], v[1], v[2]);
+            format!("phases {v:.2?}")
+        }
+        8 => {
+            let v = [dice.pick([1.0, 1.0, 0.73, 0.88, 0.94, 0.0]), 1.0, dice.pick([1.0, 0.8, 1.15])];
+            sim.set_grid_phase_voltages_pu(v[0], v[1], v[2]);
+            format!("phases {v:?}")
+        }
+        9 => {
+            let a = [dice.between(-30.0, 30.0), dice.between(-30.0, 30.0), dice.between(-30.0, 30.0)];
+            sim.set_grid_phase_angles_deg(a[0], a[1], a[2]);
+            format!("angles {a:.1?}")
+        }
+        10 => {
+            let x = dice.pick([44.0, 47.4, 49.0, 50.0, 50.0, 50.0, 50.2, 51.6, 56.0]);
+            sim.set_grid_freq_hz(x);
+            format!("frequency {x}")
+        }
+        11 => {
+            let on = dice.next() % 2 == 0;
+            sim.set_fan_failed(on);
+            format!("fan failed {on}")
+        }
+        12 => {
+            let on = dice.next() % 4 == 0;
+            sim.set_oil_pressure_low(on);
+            format!("oil pressure low {on}")
+        }
+        13 => {
+            let on = dice.next() % 2 == 0;
+            sim.set_auto_sync(on);
+            format!("auto sync {on}")
+        }
+        14 => {
+            let mode = (dice.next() % 2) as u32;
+            sim.set_restoration_mode(mode);
+            format!("restoration mode {mode}")
+        }
+        15 => {
+            let x = dice.between(70.0, 120.0);
+            sim.set_atm_pressure_kpa(x);
+            format!("atmosphere {x:.1}")
+        }
+        16 => {
+            let x = dice.between(0.3, 1.2);
+            sim.set_condition_factor(x);
+            format!("condition {x:.3}")
+        }
+        17 => {
+            let x = dice.pick([0.0, 1.0, 10.0, 300.0, 1_000.0]);
+            sim.set_load_ramp_pct_per_min(x);
+            format!("ramp {x}")
+        }
+        18 => {
+            let x = dice.between(-5_000.0, 5_000.0);
+            sim.set_meter_clock_offset_s(x);
+            sim.set_meter_sample_phase_s(dice.between(-2.0, 2.0));
+            sim.set_analyser_clock_offset_s(-x);
+            format!("clocks {x:.1}")
+        }
+        19 | 20 | 21 => {
+            sim.cmd_start();
+            "start".to_owned()
+        }
+        22 => {
+            sim.cmd_stop();
+            "stop".to_owned()
+        }
+        23 => {
+            sim.cmd_emergency_stop();
+            "emergency stop".to_owned()
+        }
+        24 | 25 => {
+            sim.cmd_ack();
+            "ack".to_owned()
+        }
+        26 => {
+            let bits = if dice.next() % 2 == 0 { sim.cmd_breaker_close() } else { sim.cmd_synchronise() };
+            format!("close or synchronise -> {bits}")
+        }
+        _ => {
+            sim.cmd_breaker_open();
+            "breaker open".to_owned()
+        }
+    }
+}
+
+/// Slots that hold NaN when they have nothing to show; every other slot must
+/// be a finite number at all times.
+const MAY_BE_NAN: [usize; 10] = [
+    snap::POWER_FACTOR,
+    snap::BRAKE_EFFICIENCY_PCT,
+    snap::ELECTRIC_EFFICIENCY_PCT,
+    snap::THERMAL_EFFICIENCY_PCT,
+    snap::EXHAUST_TEMPERATURE_C,
+    snap::STACK_TEMPERATURE_C,
+    snap::NETWORK_SUPPLY_C,
+    snap::GRID_HEALTHY_COUNTDOWN_S,
+    snap::SYNCHRONISING_TIME_LEFT_S,
+    snap::RETURN_TIME_LEFT_S,
+];
+
+/// Put every input back to a healthy plant, acknowledge and start: the walk
+/// would otherwise never leave the unit alone for the minute and a half a
+/// start takes, and would test a unit that is always stopped.
+fn restore_and_start(sim: &mut KguSim) -> String {
+    sim.set_grid_voltage_pu(1.0);
+    sim.set_grid_phase_angles_deg(0.0, 0.0, 0.0);
+    sim.set_grid_freq_hz(50.0);
+    sim.set_gas_gauge_kpa(50.0);
+    sim.set_gas_temp_c(15.0);
+    sim.set_atm_pressure_kpa(101.325);
+    sim.set_excitation_pu(1.0);
+    sim.set_oil_pressure_low(false);
+    sim.set_auto_sync(true);
+    sim.set_heat_demand_frac(1.0);
+    sim.set_network_return_temp_c(65.0);
+    sim.set_load_ramp_pct_per_min(300.0);
+    sim.cmd_ack();
+    sim.cmd_start();
+    "restore and start".to_owned()
+}
+
+/// What a random walk went through.
+struct Walked {
+    model_time_s: f64,
+    steps_on_the_bus: usize,
+    protection_trips: usize,
+    starts: f64,
+}
+
+/// A random walk over the package's boundary: `actions` actions, each
+/// followed by a step of random length. The step must never be refused, no
+/// number may stop being a number, and the ledger must close throughout.
+/// Now and then the plant is put right and started and left alone until it
+/// is on the bus, so that the walk also goes through a running unit.
+fn random_walk(seed: u64, actions: usize) -> Walked {
+    let mut dice = Dice(seed);
+    let mut sim = KguSim::new();
+    let mut history: Vec<String> = Vec::new();
+    let mut walked = Walked {
+        model_time_s: 0.0,
+        steps_on_the_bus: 0,
+        protection_trips: 0,
+        starts: 0.0,
+    };
+    // Sub-steps of quiet still to come after a restore: one second each.
+    let mut quiet = 0_u32;
+    for action in 0..actions {
+        let (done, dt) = if quiet > 0 {
+            quiet -= 1;
+            if sim.snapshot()[snap::BREAKER_CLOSED] == 1.0 && quiet > 20 {
+                quiet = 20;
+            }
+            ("quiet".to_owned(), 1.0)
+        } else if dice.next() % 25 == 0 {
+            quiet = 140;
+            (restore_and_start(&mut sim), 0.05)
+        } else {
+            let done = random_action(&mut sim, &mut dice);
+            (done, dice.pick([0.01, 0.01, 0.05, 0.1, 0.5, 1.0, 1.0, 5.0, 20.0, 60.0]))
+        };
+        history.push(format!("{done}; step {dt}"));
+        let ok = sim.step(dt);
+        let s = sim.snapshot();
+        if s[snap::BREAKER_CLOSED] == 1.0 {
+            walked.steps_on_the_bus += 1;
+        }
+        let tail = || history[history.len().saturating_sub(12)..].join(" | ");
+        assert!(
+            ok,
+            "seed {seed}, action {action}, t {} s: step refused: {}\n{}\n{}",
+            s[snap::TIME_S],
+            sim.last_error(),
+            grid_side_summary(&s),
+            tail()
+        );
+        for (slot, value) in s.iter().enumerate() {
+            assert!(
+                value.is_finite() || (value.is_nan() && MAY_BE_NAN.contains(&slot)),
+                "seed {seed}, action {action}: {} is {value}\n{}",
+                crate::SNAPSHOT_FIELDS[slot],
+                tail()
+            );
+        }
+        if s[snap::LEDGER_BOUNDARY_ENERGY_MJ] > 1.0 {
+            assert!(
+                ledger_relative_residual(&s) < 1.0e-9,
+                "seed {seed}, action {action}: ledger residual {} J of {} MJ\n{}",
+                s[snap::LEDGER_RESIDUAL_J],
+                s[snap::LEDGER_BOUNDARY_ENERGY_MJ],
+                tail()
+            );
+        }
+        assert!(s[snap::SPEED_RPM] == 0.0 || s[snap::SPEED_RPM].abs() > 1.0e-6, "{}", tail());
+        if sim.events().len() > 3_000 {
+            walked.protection_trips += events_of(&sim, event_kind::PROTECTION).len();
+            sim.clear_events();
+        }
+    }
+    walked.protection_trips += events_of(&sim, event_kind::PROTECTION).len();
+    walked.model_time_s = sim.snapshot()[snap::TIME_S];
+    walked.starts = sim.snapshot()[snap::START_COUNT];
+    walked
+}
+
+/// The walk is worth what it went through: hours of model time, and a unit
+/// that started, ran on the bus and was tripped by its cabinet, not one that
+/// stood still throughout.
+fn assert_walked(walked: &Walked) {
+    assert!(walked.model_time_s > 3_600.0, "{} s of model time", walked.model_time_s);
+    assert!(walked.starts >= 5.0, "{} starts", walked.starts);
+    assert!(walked.steps_on_the_bus >= 50, "{} steps on the bus", walked.steps_on_the_bus);
+    assert!(walked.protection_trips >= 1, "{} protection trips", walked.protection_trips);
+}
+
+#[test]
+fn random_inputs_and_commands_never_stop_the_model_seed_1() {
+    assert_walked(&random_walk(0x9E37_79B9_7F4A_7C15, 3_000));
+}
+
+#[test]
+fn random_inputs_and_commands_never_stop_the_model_seed_2() {
+    assert_walked(&random_walk(0xD1B5_4A32_D192_ED03, 3_000));
+}
+
+#[test]
+fn random_inputs_and_commands_never_stop_the_model_seed_3() {
+    assert_walked(&random_walk(0x8CB9_2BA7_2F3D_8DD7, 3_000));
+}
+
+#[test]
+fn random_inputs_and_commands_never_stop_the_model_seed_4() {
+    assert_walked(&random_walk(0x0123_4567_89AB_CDEF, 3_000));
 }

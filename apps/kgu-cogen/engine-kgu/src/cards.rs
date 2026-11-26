@@ -594,8 +594,9 @@ pub struct GeneratorCard {
     pub transient_reactance_pu: f64,
     /// Transformer leakage reactance [pu on the generator base].
     pub transformer_reactance_pu: f64,
-    /// Lumped stator loss resistance [pu]: 16 kW of copper and stray loss at
-    /// rated current.
+    /// Lumped stator loss resistance [pu]: 25 kW of copper and stray loss at
+    /// rated current (1 250 kVA), 16 kW at the current of 1 000 kW at unity
+    /// power factor.
     pub loss_resistance_pu: f64,
     /// Core loss at rated voltage and frequency [W].
     pub rated_core_loss_w: f64,
@@ -741,9 +742,15 @@ pub struct ControllerSetpoints {
     pub starter_release_rad_s: f64,
     /// Rate of the speed reference while running up [rad/s2].
     pub run_up_rate_rad_s2: f64,
-    /// Longest time from the start command to rated speed [s] before the
-    /// start is declared failed (W-210).
+    /// Longest time of cranking and run-up together [s] before the start is
+    /// declared failed (W-210). The pre-lubrication before them is not
+    /// counted.
     pub start_time_limit_s: f64,
+    /// Longest time the unit stands at the synchroniser with its breaker
+    /// open [s]. After it the unit is stopped normally and the failed
+    /// synchronisation latched. **To be verified against the controller
+    /// documentation of a real machine.**
+    pub synchronising_time_limit_s: f64,
     /// Share of rated speed at which the unit counts as run up [-].
     pub at_speed_share: f64,
     /// Frequency the synchroniser holds above the bus while waiting for the
@@ -801,6 +808,7 @@ impl ControllerSetpoints {
         starter_release_rad_s: 300.0 * PI / 30.0,
         run_up_rate_rad_s2: 150.0 * PI / 30.0,
         start_time_limit_s: 30.0,
+        synchronising_time_limit_s: 180.0,
         at_speed_share: 0.98,
         synchronising_slip_hz: 0.05,
         auto_close_phase_rad: 1.0 * PI / 180.0,
@@ -979,6 +987,9 @@ pub struct PowerQualityCard {
     /// Margin by which the voltage must come back past a threshold before
     /// the event is closed [pu].
     pub hysteresis_pu: f64,
+    /// Closed events the record holds; a further one displaces the oldest,
+    /// and the analyser counts what it has displaced (**assumed**).
+    pub record_capacity: u32,
 }
 
 impl PowerQualityCard {
@@ -988,6 +999,7 @@ impl PowerQualityCard {
         swell_pu: 1.10,
         interruption_pu: 0.05,
         hysteresis_pu: 0.02,
+        record_capacity: 256,
     };
 }
 
@@ -1232,12 +1244,16 @@ impl DumpCoolerCard {
     };
 }
 
+/// Checks of the cards against themselves: a map inverts, a sizing or a fit
+/// returns the point it was made from. They guard the cards' arithmetic.
+/// They say nothing about the plant: what they compare is an input with
+/// itself, and they are named so.
 #[cfg(test)]
-mod tests {
+mod card_checks {
     use super::*;
 
     #[test]
-    fn passport_fuel_map_inverts_on_every_segment_and_below_the_first_point() {
+    fn card_check_the_passport_fuel_map_inverts_on_every_segment_and_below_the_first_point() {
         let passport = PassportCard::STATION;
         for step in -40..=320 {
             let electric = 5_000.0 * f64::from(step);
@@ -1257,7 +1273,7 @@ mod tests {
     }
 
     #[test]
-    fn willans_intercept_is_the_no_load_fuel_of_the_passport_line() {
+    fn card_check_the_willans_line_through_the_two_lowest_passport_points_by_hand() {
         let (slope, intercept) = PassportCard::STATION.willans_line();
         // (500/0.35 - 300/0.30) / 200 and 300/0.30 - slope * 300, in kW.
         assert!((slope - 2.142_857_142_857).abs() < 1.0e-9, "slope {slope}");
@@ -1265,7 +1281,11 @@ mod tests {
     }
 
     #[test]
-    fn gas_card_reproduces_the_volumetric_heating_value_and_the_valve_is_sized_for_rated_flow() {
+    fn card_check_the_gas_card_round_trips_and_the_valve_sizing_returns_its_rated_flow() {
+        // The first three compare a number with itself through the card's own formulas
+        // (heating value per kilogram times density; enthalpy and back; the area sized for a
+        // flow, times the flux it was sized at). The last two are properties of the orifice
+        // law that were not put in: no back-flow, and choked flow linear in pressure.
         let gas = FuelGasCard::STATION;
         let per_m3 = gas.lower_heating_value_j_kg() * gas.standard_density_kg_m3();
         assert!((per_m3 - 33.5e6).abs() < 1.0e-3);
@@ -1282,7 +1302,7 @@ mod tests {
     }
 
     #[test]
-    fn indicated_card_is_zero_without_fuel_and_returns_the_passport_at_the_reference_loss() {
+    fn card_check_the_indicated_card_returns_the_points_it_was_fitted_to() {
         let card = IndicatedWorkCard::fitted(PassportCard::STATION, |p| 14_000.0 + 16.0e-9 * p * p);
         assert_eq!(card.indicated_power_w(0.0), 0.0);
         // At the no-load fuel the indicated power is the friction plus the no-load loss.

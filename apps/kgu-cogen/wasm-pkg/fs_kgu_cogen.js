@@ -53,11 +53,16 @@ export class KguSim {
         wasm.kgusim_cmd_ack(this.__wbg_ptr);
     }
     /**
-     * Request to close the generator breaker. Returns zero when the request
-     * is accepted (the breaker closes in the next sub-step), otherwise the
-     * reasons as bits: 1 voltage difference, 2 frequency difference, 4 phase
-     * angle, 8 dead bus, 16 the unit is not synchronising, 32 a trip is
-     * latched. A refused request does nothing.
+     * Request to close the generator breaker. Returns zero when the breaker
+     * may be closed from the present state, otherwise the reasons as bits:
+     * 1 voltage difference, 2 frequency difference, 4 phase angle, 8 dead
+     * bus, 16 the unit is not synchronising, 32 a trip is latched, 64 the
+     * bus is not fit by the cabinet's settings (a phase, the unbalance or
+     * the frequency outside them). A refused request does nothing but leave
+     * its entry in the log. An accepted one is handed to the controller,
+     * which takes the same permission once more in the sub-step in which it
+     * closes: its answer differs only if an input was changed in between,
+     * and is then in the log.
      * @returns {number}
      */
     cmd_breaker_close() {
@@ -66,7 +71,8 @@ export class KguSim {
     }
     /**
      * Open the generator breaker by hand (a load rejection when on load).
-     * The synchroniser does not reclose by itself afterwards.
+     * The synchroniser does not reclose by itself afterwards. While the
+     * unit is unloading for a stop, the stop goes on to its cool-down.
      */
     cmd_breaker_open() {
         wasm.kgusim_cmd_breaker_open(this.__wbg_ptr);
@@ -96,8 +102,11 @@ export class KguSim {
      * synchronisation off, after a manual opening, after the acknowledgement
      * in manual restoration). Returns zero when accepted, otherwise the
      * reasons with the bits of [`Self::cmd_breaker_close`]: 16 the unit is
-     * not synchronising, 32 a trip is latched. A normal stop cancels the
-     * wait. Either way the command is in the event log.
+     * not synchronising, 32 a trip is latched, 8 the bus is dead, 64 the
+     * bus is not fit by the cabinet's settings. (The synchroniser waits by
+     * itself for the phase and for the voltage and frequency differences;
+     * it cannot wait out a bus it must not close onto.) A normal stop
+     * cancels the wait. Either way the command is in the event log.
      * @returns {number}
      */
     cmd_synchronise() {
@@ -108,7 +117,12 @@ export class KguSim {
      * The event log, oldest first, four values per event: time [s], kind
      * (1 state, 2 breaker, 3 alarm raised, 4 alarm cleared, 5 command
      * refused, 6 sequence step, 7 cabinet protection trip, 8 the operator's
-     * command to synchronise), code, value.
+     * command to synchronise, 9 outcome of a command, 10 synchronising time
+     * limit), code, value. For kind 9 the code is the command (1 start,
+     * 2 stop, 3 emergency stop, 4 acknowledge, 5 breaker close, 6 breaker
+     * open, 7 synchronise) and the value zero when it was carried out, else
+     * the refusal bits. For kind 10 the code is what kept the breaker out
+     * (refusal bits) and the value the time at the synchroniser [s].
      * For a protection trip the code is ten times the function's index plus
      * the phase (1 to 3, or 0), and the value is what it tripped at. For a
      * command to synchronise the code is zero when it was accepted, else the
@@ -163,6 +177,14 @@ export class KguSim {
         var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
         return v1;
+    }
+    /**
+     * The longest time one call of [`Self::step`] takes [s].
+     * @returns {number}
+     */
+    longest_step_s() {
+        const ret = wasm.kgusim_longest_step_s(this.__wbg_ptr);
+        return ret;
     }
     /**
      * Fixed facts of the machine: `[cylinders, pole pairs, shaft inertia
@@ -388,8 +410,11 @@ export class KguSim {
         }
     }
     /**
-     * Advance by `dt_s` in the plant's fixed 10 ms sub-steps. Returns false
-     * when the kernel refused a sub-step; see [`Self::last_error`].
+     * Advance by `dt_s` in the plant's fixed 10 ms sub-steps. Returns false,
+     * with the reason in [`Self::last_error`], when the kernel refused a
+     * sub-step, or when `dt_s` is not a positive number of at most
+     * [`Self::longest_step_s`]: a longer step is refused whole, never cut
+     * short.
      * @param {number} dt_s
      * @returns {boolean}
      */

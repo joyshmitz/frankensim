@@ -12,6 +12,7 @@ import initWasm, { KguSim } from "../wasm-pkg/fs_kgu_cogen.js";
 import {
   ALARM,
   CLOSE_REFUSAL,
+  COMMAND,
   EVENT_KIND,
   LIMIT,
   LIMIT_FIELDS,
@@ -457,7 +458,9 @@ test("a balanced grid reproduces the numbers recorded before the bus had three p
     ["ELECTRIC_EFFICIENCY_PCT", 38.2000000587074],
     ["THERMAL_EFFICIENCY_PCT", 42.75154668529072],
     ["COOLANT_SUPPLY_C", 88.3156340915915],
-    ["COOLANT_RETURN_C", 68.17457035344671],
+    // Changed on 2026-11-26 with its definition (it was 68.17457035344671): the supply less
+    // the heat the consumers take, not less the heat the engine puts in.
+    ["COOLANT_RETURN_C", 68.3308048726991],
     ["EXHAUST_TEMPERATURE_C", 484.76666993389915],
     ["STACK_TEMPERATURE_C", 214.8341702904337],
   ]) {
@@ -841,7 +844,8 @@ test("the share of sample phases that catch a 130 ms dip is its share of the sec
     assert.equal(decodeAnalyserEvents(sim.analyser_events()).length, 1, "the analyser sees every one");
     sim.free();
   }
-  assert.ok(Math.abs(caught / 100 - 0.13) < 0.011, `caught at ${caught} of 100 sample phases`);
+  // Thirteen sub-steps of the dip, a hundred places for the look: exactly thirteen catch it.
+  assert.equal(caught, 13, `caught at ${caught} of 100 sample phases`);
 });
 
 test("a 3 s dip is in both records, each by its own clock; the meter's time is one of its looks", () => {
@@ -930,6 +934,7 @@ test("the meter's registers follow the direction of active and reactive power", 
   let [r0, r1] = [registers(before), registers(after)];
   const engine = after[SNAP.ENERGY_ELECTRIC_KWH] - before[SNAP.ENERGY_ELECTRIC_KWH];
   const exported = r1[0] - r0[0];
+  // A check of the transfer, not of the physics: both take the kernel ledger's energy.
   assert.ok(Math.abs(exported - engine) < 1e-9 * engine, `meter ${exported} kWh, engine ${engine} kWh`);
   assert.ok(Math.abs(exported - 250) < 0.25, `1 000 kW for a quarter of an hour: ${exported} kWh`);
   assert.ok(Object.is(r1[1], r0[1]), "no active import while exporting");
@@ -945,7 +950,10 @@ test("the meter's registers follow the direction of active and reactive power", 
   advance(sim, 300);
   after = sim.snapshot();
   [r0, r1] = [registers(before), registers(after)];
-  assert.ok(r1[2] - r0[2] > 5, `reactive export ${r1[2] - r0[2]} kvarh`);
+  // The register against the reactive power the snapshot showed over those 300 s.
+  const delivered = r1[2] - r0[2];
+  const shown = (300 / 3600) * 0.5 * (before[SNAP.REACTIVE_POWER_KVAR] + after[SNAP.REACTIVE_POWER_KVAR]);
+  assert.ok(Math.abs(delivered - shown) < 0.02 * shown, `${delivered} kvarh against ${shown}`);
   assert.ok(Object.is(r1[3], r0[3]), "no reactive import while over-excited");
   assert.ok(Object.is(r1[1], r0[1]));
   const net = r1[0] - r1[1];
@@ -1158,4 +1166,476 @@ test("interrupted and failed starts leave a unit that stands and starts", () => 
   advance(sim, 0.05);
   startAndLoad(sim, 50);
   sim.free();
+});
+
+// ---------------------------------------------------------------------------
+// Round 3 of the review: each test here failed before its fix
+// ---------------------------------------------------------------------------
+
+const commandOutcomes = (sim) => eventsOf(sim, EVENT_KIND.COMMAND).map((e) => [e.code, e.value]);
+const sequenceOf = (sim) => sim.snapshot()[SNAP.SEQUENCE_STEP];
+
+test("ignition on and no gas: the engine stalls, is tripped with its own alarm, and stands", () => {
+  for (const where of ["grid wait", "cool-down", "synchroniser"]) {
+    const sim = onLoad(60);
+    if (where === "grid wait") {
+      sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+      advance(sim, 1);
+      assert.equal(sequenceOf(sim), SEQUENCE.GRID_WAIT);
+    } else if (where === "cool-down") {
+      sim.cmd_stop();
+      advanceUntil(sim, 200, "cool-down", (s) => s[SNAP.SEQUENCE_STEP] === SEQUENCE.COOL_DOWN);
+    } else {
+      sim.cmd_breaker_open();
+      advance(sim, 5);
+      assert.equal(sequenceOf(sim), SEQUENCE.SYNCHRONISING);
+    }
+    sim.set_gas_gauge_kpa(0);
+    const toTrip = advanceUntil(sim, 60, "stall", (s) => s[SNAP.STATE_CODE] === STATE.TRIP);
+    assert.ok(toTrip > 8 && toTrip < 13, `${where}: stalled ${toTrip} s after the gas went`);
+    assert.notEqual(sim.snapshot()[SNAP.ALARM_BITS] & ALARM.ENGINE_STALL, 0, where);
+    advanceUntil(sim, 5, "rest", (s) => s[SNAP.SPEED_RPM] === 0);
+    const hours = sim.snapshot()[SNAP.ENGINE_HOURS];
+    stand(sim, 900);
+    assert.ok(Object.is(sim.snapshot()[SNAP.ENGINE_HOURS], hours), "no engine hours at rest");
+    assert.ok(relativeResidual(sim.snapshot()) < 1e-9);
+    sim.free();
+  }
+});
+
+test("all three phases gone: the cabinet's under-voltage trips after its delay, with its event", () => {
+  const sim = onLoad(85);
+  const fellAt = sim.snapshot()[SNAP.TIME_S];
+  sim.set_grid_phase_voltages_pu(0, 0, 0);
+  advance(sim, 0.1);
+  const during = sim.snapshot();
+  assert.equal(during[SNAP.BREAKER_CLOSED], 1, "the contacts are closed until the protection opens them");
+  assert.equal(during[SNAP.PROTECTION_PICKUP_BITS], 1 << PROTECTION.UNDERVOLTAGE);
+  advance(sim, 0.1);
+  const after = sim.snapshot();
+  assert.equal(after[SNAP.BREAKER_CLOSED], 0, gridSide(after));
+  const trips = protectionTrips(sim);
+  assert.equal(trips.length, 1);
+  assert.equal(trips[0].protection, PROTECTION.UNDERVOLTAGE);
+  assert.equal(trips[0].value, 0);
+  assert.ok(Math.abs(trips[0].timeS - fellAt - 0.15) < 0.011, `after ${trips[0].timeS - fellAt} s`);
+  assert.equal(after[SNAP.ALARM_BITS], ALARM.GRID_UNDERVOLTAGE);
+  assert.equal(after[SNAP.SEQUENCE_STEP], SEQUENCE.GRID_WAIT);
+  sim.free();
+});
+
+test("the breaker is not closed onto a bus with a phase below the cabinet's setting", () => {
+  const sim = onLoad(85);
+  sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+  advance(sim, 1);
+  sim.cmd_ack();
+  advance(sim, 0.05);
+  sim.set_excitation_pu(0.91);
+  advance(sim, 3);
+  assert.equal(sim.snapshot()[SNAP.BUS_FIT_TO_CLOSE], 0);
+  assert.notEqual(sim.cmd_breaker_close() & CLOSE_REFUSAL.BUS_UNFIT, 0);
+  // The command to synchronise is refused for the same reason, at once and by name.
+  assert.equal(sim.cmd_synchronise(), CLOSE_REFUSAL.BUS_UNFIT);
+  advance(sim, 25);
+  const closings = () => eventsOf(sim, EVENT_KIND.BREAKER).filter((e) => e.code === 1).length;
+  assert.equal(sim.snapshot()[SNAP.BREAKER_CLOSED], 0, gridSide(sim.snapshot()));
+  assert.equal(sim.snapshot()[SNAP.SYNCHRONISER_ARMED_BY_OPERATOR], 0);
+  assert.equal(closings(), 1);
+  assert.equal(protectionTrips(sim).length, 1, "no second trip");
+  // Armed on a fit bus; the phase voltage falls again before the phase comes round: the
+  // permission is taken in the sub-step that would close, and it does not close.
+  sim.set_grid_voltage_pu(1.0);
+  sim.set_excitation_pu(1.0);
+  advanceUntil(sim, 30, "phase away", (s) => Math.abs(s[SNAP.SYNC_PHASE_ANGLE_DEG]) > 60);
+  assert.equal(sim.cmd_synchronise(), 0);
+  advance(sim, 0.5);
+  sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+  sim.set_excitation_pu(0.91);
+  advance(sim, 25);
+  assert.equal(sim.snapshot()[SNAP.BREAKER_CLOSED], 0, gridSide(sim.snapshot()));
+  assert.equal(sim.snapshot()[SNAP.SYNCHRONISER_ARMED_BY_OPERATOR], 1);
+  sim.set_grid_voltage_pu(1.0);
+  sim.set_excitation_pu(1.0);
+  advanceUntil(sim, 30, "closing", (s) => s[SNAP.BREAKER_CLOSED] === 1);
+  assert.equal(closings(), 2);
+  sim.free();
+});
+
+test("a synchronisation that cannot be made is stopped at its time limit, with the reason", () => {
+  const sim = new KguSim();
+  const limit = sim.limits()[LIMIT.SYNCHRONISING_TIME_LIMIT_S];
+  sim.set_excitation_pu(0.6);
+  sim.set_load_setpoint_pct(60);
+  sim.cmd_start();
+  advanceUntil(sim, 200, "synchronising", (s) => s[SNAP.STATE_CODE] === STATE.SYNCHRONIZING);
+  const gasAt = sim.snapshot()[SNAP.GAS_STD_M3];
+  advance(sim, limit - 5);
+  assert.equal(sequenceOf(sim), SEQUENCE.SYNCHRONISING);
+  advance(sim, 6);
+  const stopped = sim.snapshot();
+  assert.equal(stopped[SNAP.SEQUENCE_STEP], SEQUENCE.COOL_DOWN);
+  assert.equal(stopped[SNAP.ALARM_BITS], ALARM.SYNCHRONISING_TIMEOUT);
+  const timeouts = eventsOf(sim, EVENT_KIND.SYNCHRONISING_TIMEOUT);
+  assert.equal(timeouts.length, 1);
+  assert.notEqual(timeouts[0].code & CLOSE_REFUSAL.VOLTAGE, 0);
+  assert.ok(Math.abs(timeouts[0].value - limit) < 0.02);
+  const burned = stopped[SNAP.GAS_STD_M3] - gasAt;
+  assert.ok(burned > 1.8 && burned < 2.2, `${burned} m3 burned at the synchroniser`);
+  advanceUntil(sim, 400, "ready", (s) => s[SNAP.STATE_CODE] === STATE.READY);
+  sim.clear_events();
+  sim.cmd_start();
+  advance(sim, 1);
+  assert.deepEqual(commandOutcomes(sim), [[COMMAND.START, CLOSE_REFUSAL.TRIP_LATCHED]]);
+  sim.set_excitation_pu(1.0);
+  sim.cmd_ack();
+  startAndLoad(sim, 60);
+  sim.free();
+});
+
+test("a stop given in the sub-step of a protection trip is carried out", () => {
+  for (let subSteps = 10; subSteps <= 20; subSteps++) {
+    const sim = onLoad(60);
+    sim.clear_events();
+    sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+    for (let i = 0; i < subSteps; i++) advance(sim, 0.01);
+    sim.cmd_stop();
+    advance(sim, 5);
+    assert.equal(sim.snapshot()[SNAP.STATE_CODE], STATE.STOPPING, `stop ${subSteps} sub-steps in`);
+    assert.deepEqual(commandOutcomes(sim), [[COMMAND.STOP, 0]]);
+    sim.free();
+  }
+});
+
+test("commands given between two steps are processed in order, each with its outcome", () => {
+  let sim = onLoad(60);
+  sim.cmd_emergency_stop();
+  advanceUntil(sim, 60, "rest", (s) => s[SNAP.SPEED_RPM] === 0);
+  sim.clear_events();
+  sim.cmd_ack();
+  sim.cmd_start();
+  advance(sim, 1);
+  assert.equal(sequenceOf(sim), SEQUENCE.PRE_LUBRICATION);
+  assert.deepEqual(commandOutcomes(sim), [[COMMAND.ACKNOWLEDGE, 0], [COMMAND.START, 0]]);
+  sim.free();
+
+  sim = new KguSim();
+  sim.cmd_start();
+  sim.cmd_stop();
+  advance(sim, 1);
+  assert.equal(sequenceOf(sim), SEQUENCE.READY);
+  assert.deepEqual(commandOutcomes(sim), [[COMMAND.START, 0], [COMMAND.STOP, 0]]);
+  sim.free();
+
+  sim = onLoad(60);
+  sim.cmd_breaker_open();
+  advance(sim, 5);
+  sim.clear_events();
+  sim.cmd_start();
+  sim.cmd_ack();
+  sim.cmd_breaker_open();
+  advance(sim, 1);
+  const no = CLOSE_REFUSAL.NOT_APPLICABLE;
+  assert.deepEqual(commandOutcomes(sim), [[COMMAND.START, no], [COMMAND.ACKNOWLEDGE, no], [COMMAND.BREAKER_OPEN, no]]);
+  sim.clear_events();
+  sim.cmd_start();
+  sim.cmd_emergency_stop();
+  advance(sim, 0.05);
+  assert.deepEqual(commandOutcomes(sim), [[COMMAND.EMERGENCY_STOP, 0], [COMMAND.START, CLOSE_REFUSAL.TRIP_LATCHED]]);
+  sim.free();
+});
+
+test("a breaker opening in the sub-step of a protection trip leaves nothing latched unseen", () => {
+  for (let subSteps = 12; subSteps <= 17; subSteps++) {
+    const sim = onLoad(60);
+    sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+    for (let i = 0; i < subSteps; i++) advance(sim, 0.01);
+    sim.cmd_breaker_open();
+    advance(sim, 0.05);
+    let s = sim.snapshot();
+    assert.equal(s[SNAP.PROTECTION_TRIPPED_BITS] !== 0, s[SNAP.ALARM_BITS] !== 0, `open ${subSteps} sub-steps in: ${gridSide(s)}`);
+    sim.set_grid_voltage_pu(1.0);
+    advance(sim, 1);
+    sim.cmd_ack();
+    advance(sim, 1);
+    s = sim.snapshot();
+    assert.equal(s[SNAP.PROTECTION_TRIPPED_BITS], 0, gridSide(s));
+    assert.equal(sim.cmd_synchronise(), 0);
+    advanceUntil(sim, 30, "closing", (x) => x[SNAP.BREAKER_CLOSED] === 1);
+    advance(sim, 5);
+    assert.equal(sim.snapshot()[SNAP.BREAKER_CLOSED], 1, "stays in");
+    sim.free();
+  }
+});
+
+test("a step longer than an hour, or not a number, is refused whole", () => {
+  const sim = new KguSim();
+  assert.equal(sim.step(7200), false);
+  assert.match(sim.last_error(), /3600/);
+  assert.equal(sim.snapshot()[SNAP.TIME_S], 0);
+  for (const bad of [NaN, Infinity, 0, -1]) {
+    assert.equal(sim.step(bad), false);
+    assert.notEqual(sim.last_error(), "");
+  }
+  assert.equal(sim.step(sim.longest_step_s()), true);
+  assert.ok(Math.abs(sim.snapshot()[SNAP.TIME_S] - 3600) < 1e-6);
+  sim.free();
+});
+
+test("switching the mode gets past neither the lock-out nor the longest wait", () => {
+  let sim = onLoad(30);
+  const limits = sim.limits();
+  sim.set_restoration_mode(RESTORATION.AUTOMATIC);
+  const blink = () => {
+    sim.set_grid_phase_voltages_pu(0.73, 1.0, 1.0);
+    advance(sim, 1);
+    sim.set_grid_voltage_pu(1.0);
+  };
+  for (let i = 0; i < limits[LIMIT.LARGEST_AUTO_ATTEMPTS]; i++) {
+    blink();
+    advanceUntil(sim, 200, "back on the bus", (s) => s[SNAP.BREAKER_CLOSED] === 1);
+    advance(sim, 5);
+  }
+  sim.set_restoration_mode(RESTORATION.MANUAL);
+  blink();
+  sim.set_restoration_mode(RESTORATION.AUTOMATIC);
+  advance(sim, limits[LIMIT.HEALTHY_GRID_DELAY_S] + 120);
+  let s = sim.snapshot();
+  assert.equal(s[SNAP.BREAKER_CLOSED], 0, gridSide(s));
+  assert.equal(s[SNAP.ALARM_BITS], ALARM.GRID_UNDERVOLTAGE | ALARM.RESTORATION_LOCKOUT);
+  sim.free();
+
+  sim = onLoad(30);
+  sim.set_grid_phase_voltages_pu(0.73, 1.0, 1.0);
+  advance(sim, limits[LIMIT.LONGEST_GRID_WAIT_S] + 60);
+  assert.equal(sequenceOf(sim), SEQUENCE.GRID_WAIT, "manual: waits for the operator");
+  sim.set_restoration_mode(RESTORATION.AUTOMATIC);
+  advance(sim, 1);
+  assert.equal(sequenceOf(sim), SEQUENCE.COOL_DOWN, "the automation's time is up");
+  sim.free();
+});
+
+test("a grid that turns bad again sends the automatic return back to waiting", () => {
+  const sim = onLoad(90);
+  const delay = sim.limits()[LIMIT.HEALTHY_GRID_DELAY_S];
+  sim.set_restoration_mode(RESTORATION.AUTOMATIC);
+  sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+  advance(sim, 1);
+  sim.set_grid_voltage_pu(1.0);
+  advanceUntil(sim, 100, "at the synchroniser", (s) => s[SNAP.SEQUENCE_STEP] === SEQUENCE.SYNCHRONISING);
+  sim.set_grid_phase_voltages_pu(1.1, 1.0, 0.88);
+  advance(sim, 30);
+  const waiting = sim.snapshot();
+  assert.equal(waiting[SNAP.BREAKER_CLOSED], 0, gridSide(waiting));
+  assert.equal(waiting[SNAP.SEQUENCE_STEP], SEQUENCE.GRID_WAIT);
+  assert.equal(protectionTrips(sim).length, 1, "no closing, no second trip");
+  sim.set_grid_voltage_pu(1.0);
+  const back = advanceUntil(sim, 200, "back on the bus", (s) => s[SNAP.BREAKER_CLOSED] === 1);
+  assert.ok(back >= delay, `back ${back} s after the bus recovered`);
+  sim.free();
+});
+
+test("two functions that trip together are two entries of the log", () => {
+  const sim = onLoad(60);
+  sim.set_grid_freq_hz(51.6);
+  advance(sim, 0.35);
+  sim.set_grid_phase_voltages_pu(1.0, 0.73, 1.0);
+  advance(sim, 0.3);
+  const trips = protectionTrips(sim);
+  assert.equal(trips.length, 2);
+  assert.ok(Object.is(trips[0].timeS, trips[1].timeS), "the same sub-step");
+  assert.deepEqual(trips.map((t) => [t.protection, t.phase]), [[PROTECTION.UNDERVOLTAGE, 2], [PROTECTION.OVERFREQUENCY, 0]]);
+  assert.equal(sim.snapshot()[SNAP.ALARM_BITS], ALARM.GRID_UNDERVOLTAGE | ALARM.FREQUENCY);
+  sim.free();
+});
+
+test("negative sequence in Q; the largest phase current; a return line that follows the heat taken", () => {
+  const sim = onLoad(90);
+  const limits = sim.limits();
+  const q0 = sim.snapshot()[SNAP.REACTIVE_POWER_KVAR];
+  // The positive sequence held at 1.00 by raising the two other phases: only the negative
+  // sequence changes, so what Q loses is what that sequence absorbs, 3 X2 I2^2 with
+  // X2 = 0.26 pu of 0.128 ohm.
+  sim.set_grid_phase_voltages_pu(1.045, 0.91, 1.045);
+  advance(sim, 0.01);
+  const s = sim.snapshot();
+  const i2 = (s[SNAP.NEGATIVE_SEQUENCE_CURRENT_PCT] / 100) * limits[LIMIT.RATED_CURRENT_A];
+  const absorbedKvar = (3 * 0.26 * ((400 * 400) / 1.25e6) * i2 * i2) / 1e3;
+  assert.ok(absorbedKvar > 3, `${absorbedKvar} kvar`);
+  assert.ok(Math.abs(q0 - s[SNAP.REACTIVE_POWER_KVAR] - absorbedKvar) < 0.05 * absorbedKvar + 1,
+    `Q fell by ${q0 - s[SNAP.REACTIVE_POWER_KVAR]} kvar; 3 X2 I2^2 is ${absorbedKvar} kvar`);
+  const largest = Math.max(...phaseCurrents(s));
+  assert.equal(s[SNAP.LARGEST_PHASE_CURRENT_A], largest);
+  assert.ok(largest > s[SNAP.STATOR_CURRENT_A] + 50);
+  sim.set_grid_voltage_pu(1.0);
+  advance(sim, 300);
+  sim.cmd_emergency_stop();
+  advance(sim, 0.5);
+  const e = sim.snapshot();
+  assert.ok(e[SNAP.HEAT_TO_NETWORK_KW] > 800, `the network still takes ${e[SNAP.HEAT_TO_NETWORK_KW]} kW`);
+  assert.ok(e[SNAP.COOLANT_SUPPLY_C] - e[SNAP.COOLANT_RETURN_C] > 12, "the return line is what the network leaves");
+  sim.free();
+});
+
+test("the analyser's record counts what it displaces", () => {
+  const sim = new KguSim();
+  assert.equal(sim.limits()[LIMIT.ANALYSER_RECORD_CAPACITY], 256);
+  for (let i = 0; i < 257; i++) {
+    sim.set_grid_phase_voltages_pu(1.0, 0.8, 1.0);
+    advance(sim, 0.02);
+    sim.set_grid_voltage_pu(1.0);
+    advance(sim, 0.02);
+  }
+  const s = sim.snapshot();
+  assert.equal(decodeAnalyserEvents(sim.analyser_events()).length, 256);
+  assert.equal(s[SNAP.ANALYSER_RECORDED_EVENTS], 257);
+  assert.equal(s[SNAP.ANALYSER_DISPLACED_EVENTS], 1);
+  // A deep excursion is a dip and an interruption; in the meter, one low-voltage record
+  // and one loss record.
+  const deep = new KguSim();
+  deep.set_meter_sample_phase_s(0.5);
+  for (const v of [1, 0.8, 0, 0.8, 1, 1]) {
+    deep.set_grid_phase_voltages_pu(v, 1, 1);
+    advance(deep, 1);
+  }
+  const kinds = decodeAnalyserEvents(deep.analyser_events()).map((e) => [e.kind, Math.round(e.durationS * 100) / 100]);
+  assert.deepEqual(kinds, [[QUALITY_KIND.INTERRUPTION, 1], [QUALITY_KIND.DIP, 3]]);
+  const journals = decodeMeterEvents(deep.meter_events()).map((r) => [r.journal, r.seenS, r.clearedS]);
+  assert.deepEqual(journals, [[METER_JOURNAL.LOW_VOLTAGE, 1.5, 4.5], [METER_JOURNAL.LOSS_OF_VOLTAGE, 2.5, 3.5]]);
+  sim.free();
+  deep.free();
+});
+
+test("opening the breaker while unloading goes on to the cool-down", () => {
+  const sim = onLoad(60);
+  sim.cmd_stop();
+  advance(sim, 1);
+  assert.equal(sequenceOf(sim), SEQUENCE.UNLOADING);
+  sim.cmd_breaker_open();
+  advance(sim, 1);
+  assert.equal(sim.snapshot()[SNAP.BREAKER_CLOSED], 0);
+  assert.equal(sequenceOf(sim), SEQUENCE.COOL_DOWN);
+  sim.free();
+});
+
+// A small deterministic generator for the random walk (mulberry32).
+function dice(seed) {
+  let a = seed >>> 0;
+  const unit = () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  return {
+    unit,
+    between: (low, high) => low + (high - low) * unit(),
+    pick: (values) => values[Math.floor(unit() * values.length)],
+  };
+}
+
+function randomAction(sim, d) {
+  const kind = Math.floor(d.unit() * 28);
+  switch (kind) {
+    case 0: return sim.set_load_setpoint_pct(d.between(-10, 120)), "load";
+    case 1: return sim.set_excitation_pu(d.between(0.3, 1.7)), "excitation";
+    case 2: return sim.set_heat_demand_frac(d.pick([0, 0.3, 0.7, 1, 1.2])), "heat demand";
+    case 3: return sim.set_network_return_temp_c(d.between(0, 100)), "network return";
+    case 4: { const x = d.pick([0, 0, 5, 20, 29, 31, 50, 50, 200, 600]); sim.set_gas_gauge_kpa(x); return `gas ${x}`; }
+    case 5: return sim.set_gas_temp_c(d.between(-40, 70)), "gas temperature";
+    case 6: { const x = d.pick([0, 0.01, 0.3, 0.7, 0.86, 0.9, 1, 1, 1, 1.1, 1.3]); sim.set_grid_voltage_pu(x); return `bus ${x}`; }
+    case 7: { const v = [d.between(0, 1.3), d.between(0, 1.3), d.between(0, 1.3)]; sim.set_grid_phase_voltages_pu(...v); return `phases ${v.map((x) => x.toFixed(2))}`; }
+    case 8: { const v = [d.pick([1, 1, 0.73, 0.88, 0.94, 0]), 1, d.pick([1, 0.8, 1.15])]; sim.set_grid_phase_voltages_pu(...v); return `phases ${v}`; }
+    case 9: return sim.set_grid_phase_angles_deg(d.between(-30, 30), d.between(-30, 30), d.between(-30, 30)), "angles";
+    case 10: { const x = d.pick([44, 47.4, 49, 50, 50, 50, 50.2, 51.6, 56]); sim.set_grid_freq_hz(x); return `frequency ${x}`; }
+    case 11: return sim.set_fan_failed(d.unit() < 0.5), "fan";
+    case 12: return sim.set_oil_pressure_low(d.unit() < 0.25), "oil";
+    case 13: return sim.set_auto_sync(d.unit() < 0.5), "auto sync";
+    case 14: return sim.set_restoration_mode(d.unit() < 0.5 ? 1 : 0), "restoration mode";
+    case 15: return sim.set_atm_pressure_kpa(d.between(70, 120)), "atmosphere";
+    case 16: return sim.set_condition_factor(d.between(0.3, 1.2)), "condition";
+    case 17: return sim.set_load_ramp_pct_per_min(d.pick([0, 1, 10, 300, 1000])), "ramp";
+    case 18: { const x = d.between(-5000, 5000); sim.set_meter_clock_offset_s(x); sim.set_meter_sample_phase_s(d.between(-2, 2)); sim.set_analyser_clock_offset_s(-x); return "clocks"; }
+    case 19: case 20: case 21: return sim.cmd_start(), "start";
+    case 22: return sim.cmd_stop(), "stop";
+    case 23: return sim.cmd_emergency_stop(), "emergency stop";
+    case 24: case 25: return sim.cmd_ack(), "ack";
+    case 26: return d.unit() < 0.5 ? `close -> ${sim.cmd_breaker_close()}` : `synchronise -> ${sim.cmd_synchronise()}`;
+    default: return sim.cmd_breaker_open(), "open";
+  }
+}
+
+const MAY_BE_NAN = new Set([
+  "POWER_FACTOR", "BRAKE_EFFICIENCY_PCT", "ELECTRIC_EFFICIENCY_PCT", "THERMAL_EFFICIENCY_PCT",
+  "EXHAUST_TEMPERATURE_C", "STACK_TEMPERATURE_C", "NETWORK_SUPPLY_C", "GRID_HEALTHY_COUNTDOWN_S",
+  "SYNCHRONISING_TIME_LEFT_S", "RETURN_TIME_LEFT_S",
+]);
+
+test("random inputs and commands never stop the model: eight seeds, 4 000 actions each", () => {
+  let modelHours = 0;
+  const seen = { trips: 0, starts: 0, onLoad: 0 };
+  for (let seed = 1; seed <= 8; seed++) {
+    const d = dice(seed * 2654435761);
+    const sim = new KguSim();
+    const history = [];
+    // Now and then the plant is put right, acknowledged and started, and left alone until
+    // it is on the bus: otherwise the walk never gives a start its minute and a half and
+    // tests a unit that is always stopped.
+    let quiet = 0;
+    for (let action = 0; action < 4000; action++) {
+      let done;
+      let dt = 1;
+      if (quiet > 0) {
+        quiet -= 1;
+        if (sim.snapshot()[SNAP.BREAKER_CLOSED] === 1 && quiet > 20) quiet = 20;
+        done = "quiet";
+      } else if (d.unit() < 0.04) {
+        sim.set_grid_voltage_pu(1.0);
+        sim.set_grid_phase_angles_deg(0, 0, 0);
+        sim.set_grid_freq_hz(50);
+        sim.set_gas_gauge_kpa(50);
+        sim.set_gas_temp_c(15);
+        sim.set_atm_pressure_kpa(101.325);
+        sim.set_excitation_pu(1.0);
+        sim.set_oil_pressure_low(false);
+        sim.set_auto_sync(true);
+        sim.set_heat_demand_frac(1);
+        sim.set_network_return_temp_c(65);
+        sim.set_load_ramp_pct_per_min(300);
+        sim.cmd_ack();
+        sim.cmd_start();
+        quiet = 140;
+        done = "restore and start";
+        dt = 0.05;
+      } else {
+        done = randomAction(sim, d);
+        dt = d.pick([0.01, 0.01, 0.05, 0.1, 0.5, 1, 1, 5, 20, 60]);
+      }
+      history.push(`${done}; step ${dt}`);
+      const ok = sim.step(dt);
+      const s = sim.snapshot();
+      const tail = () => history.slice(-12).join(" | ");
+      assert.ok(ok, `seed ${seed}, action ${action}, t ${s[SNAP.TIME_S]}: step refused: ${sim.last_error()}\n${gridSide(s)}\n${tail()}`);
+      for (let slot = 0; slot < s.length; slot++) {
+        const fine = Number.isFinite(s[slot]) || (Number.isNaN(s[slot]) && MAY_BE_NAN.has(SNAPSHOT_FIELDS[slot]));
+        assert.ok(fine, `seed ${seed}, action ${action}: ${SNAPSHOT_FIELDS[slot]} is ${s[slot]}\n${tail()}`);
+      }
+      if (s[SNAP.LEDGER_BOUNDARY_ENERGY_MJ] > 1) {
+        assert.ok(relativeResidual(s) < 1e-9, `seed ${seed}, action ${action}: ledger residual ${s[SNAP.LEDGER_RESIDUAL_J]} J\n${tail()}`);
+      }
+      if (s[SNAP.BREAKER_CLOSED] === 1) seen.onLoad++;
+      if (sim.events().length > 3000) {
+        seen.trips += eventsOf(sim, EVENT_KIND.PROTECTION).length;
+        sim.clear_events();
+      }
+    }
+    seen.trips += eventsOf(sim, EVENT_KIND.PROTECTION).length;
+    seen.starts += sim.snapshot()[SNAP.START_COUNT];
+    modelHours += sim.snapshot()[SNAP.TIME_S] / 3600;
+    sim.free();
+  }
+  // The walk is not a walk around a unit at rest: it started, ran on the bus and tripped.
+  assert.ok(modelHours > 12, `${modelHours} h of model time`);
+  assert.ok(seen.starts > 40 && seen.onLoad > 400 && seen.trips > 8, JSON.stringify(seen));
+  console.log(`random walk: ${modelHours.toFixed(1)} h of model time, ${JSON.stringify(seen)}`);
 });

@@ -1,9 +1,15 @@
-//! The generator breaker cabinet: the breaker's close path and the
-//! protection device, as one `fs_ports` Component with signal ports only.
+//! The generator breaker cabinet: the breaker and the protection device, as
+//! one `fs_ports` Component with signal ports only.
 //!
-//! The genset controller asks for the breaker to be closed; the cabinet
-//! passes that request on unless one of its protection functions has
-//! tripped. Each function is a setting of the relay
+//! The position of the breaker's contacts is this component's state
+//! ([`CabinetState::closed`]) and nobody else's: the generator is told it,
+//! the controller reads it, the event log follows it. The genset controller
+//! asks for the breaker to be closed; the cabinet closes it unless one of its
+//! protection functions has tripped, and opens it when the request is
+//! withdrawn or a function trips. The functions watch closed contacts,
+//! whatever the electrical state behind them: a bus without voltage is seen
+//! by the under-voltage function like any other low voltage. Each function is
+//! a setting of the relay
 //! ([`BreakerCabinetCard`]): a level and a time, or for the negative-sequence
 //! current a thermal replica `(I2 / I_rated)^2 t` against a limit. The
 //! replica is the relay's estimate of the rotor's heating; the rotor's
@@ -29,8 +35,8 @@ use crate::components::{KguError, all_finite, check_cx, nz, sid};
 pub const COMMAND_WIDTH: usize = 2;
 /// Width of the `measure` input: three phase voltages [pu], their three
 /// angle offsets [rad], three phase currents [A], the negative-sequence
-/// current [A], the frequency [Hz], the power delivered [W], breaker closed.
-pub const MEASURE_WIDTH: usize = 13;
+/// current [A], the frequency [Hz], the power delivered [W].
+pub const MEASURE_WIDTH: usize = 12;
 
 /// Protection functions of the cabinet: an index each, and a bit `1 << index`.
 pub mod protection {
@@ -100,16 +106,23 @@ impl Sequences {
         self.positive[1].atan2(self.positive[0])
     }
 
-    /// Unbalance: negative over positive sequence; zero for a dead bus.
+    /// Unbalance: negative over positive sequence. Zero for a bus with no
+    /// voltage at all; never reported above [`Self::LARGEST_UNBALANCE`],
+    /// which stands for "the positive sequence is all but gone".
     #[must_use]
     pub fn unbalance(&self) -> f64 {
-        let positive = self.positive_magnitude();
+        let (positive, negative) = (self.positive_magnitude(), self.negative_magnitude());
         if positive > 0.0 {
-            self.negative_magnitude() / positive
+            (negative / positive).min(Self::LARGEST_UNBALANCE)
+        } else if negative > 0.0 {
+            Self::LARGEST_UNBALANCE
         } else {
             0.0
         }
     }
+
+    /// The largest unbalance reported: ten times the positive sequence.
+    pub const LARGEST_UNBALANCE: f64 = 10.0;
 
     /// The negative sequence as a phasor against the positive one (turned
     /// back by the positive sequence's angle).
@@ -172,10 +185,29 @@ pub fn grid_is_healthy(
         && frequency_hz <= card.healthy_frequency_high_hz
 }
 
-/// Accepted state of the cabinet's protection device.
+/// Whether the bus is fit to close the breaker onto, by the cabinet's own
+/// settings: no phase below the under-voltage or above the over-voltage
+/// level, the unbalance and the frequency inside theirs. A breaker closed
+/// onto a bus that fails this would have a protection function pick up at
+/// once.
+#[must_use]
+pub fn bus_is_fit(
+    card: &BreakerCabinetCard,
+    phase_voltage_pu: [f64; 3],
+    unbalance: f64,
+    frequency_hz: f64,
+) -> bool {
+    phase_voltage_pu.iter().all(|&voltage| {
+        voltage >= card.undervoltage.pickup && voltage <= card.overvoltage.pickup
+    }) && unbalance <= card.voltage_unbalance.pickup
+        && frequency_hz >= card.underfrequency.pickup
+        && frequency_hz <= card.overfrequency.pickup
+}
+
+/// Accepted state of the cabinet: the breaker and its protection device.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CabinetState {
-    /// The close request as the cabinet passes it to the breaker.
+    /// Position of the breaker's contacts.
     pub closed: bool,
     /// Functions that have tripped and hold the breaker open until a reset,
     /// one bit per function.
@@ -201,6 +233,12 @@ pub struct CabinetState {
     pub grid_healthy: bool,
     /// Voltage unbalance, negative over positive sequence [-].
     pub unbalance: f64,
+    /// The functions that tripped together in the last trip, one bit each.
+    pub trip_bits: u32,
+    /// For each function, the phase it last tripped on (as `last_phase`).
+    pub trip_phase: [u32; protection::COUNT],
+    /// For each function, the value it last tripped at (as `last_value`).
+    pub trip_value: [f64; protection::COUNT],
 }
 
 impl CabinetState {
@@ -219,6 +257,9 @@ impl CabinetState {
             last_value: 0.0,
             grid_healthy: false,
             unbalance: 0.0,
+            trip_bits: 0,
+            trip_phase: [0; protection::COUNT],
+            trip_value: [0.0; protection::COUNT],
         }
     }
 }
@@ -226,8 +267,8 @@ impl CabinetState {
 /// The generator breaker cabinet's protection device.
 ///
 /// Ports: `command` (signal in, [`COMMAND_WIDTH`]), `measure` (signal in,
-/// [`MEASURE_WIDTH`]), `breaker` (signal out: the close request the breaker
-/// receives).
+/// [`MEASURE_WIDTH`]), `breaker` (signal out: the position of the contacts,
+/// 1 closed).
 pub struct BreakerCabinetComponent {
     ports: [PortSpec; 3],
     card: BreakerCabinetCard,
@@ -324,7 +365,7 @@ impl Component for BreakerCabinetComponent {
     ) -> Result<Proposal, Self::Error> {
         check_cx(cx)?;
         all_finite(inputs, "cabinet inputs must be finite")?;
-        // Inputs: command [close, reset] (0..2), measure (2..15).
+        // Inputs: command [close, reset] (0..2), measure (2..14).
         let close_request = inputs[0] >= 0.5;
         let reset = inputs[1] >= 0.5;
         let measure = &inputs[COMMAND_WIDTH..COMMAND_WIDTH + MEASURE_WIDTH];
@@ -338,7 +379,6 @@ impl Component for BreakerCabinetComponent {
         let negative_pu = measure[9] / self.rated_current_a;
         let frequency = measure[10];
         let power = measure[11];
-        let breaker_closed = measure[12] >= 0.5;
         let card = &self.card;
 
         let mut next = *old;
@@ -351,8 +391,9 @@ impl Component for BreakerCabinetComponent {
             next.tripped = 0;
         }
 
-        // The functions watch a closed breaker: they measure the generator on the bus.
-        let armed = breaker_closed && old.closed;
+        // The functions watch closed contacts: the breaker's own position at the start of
+        // the step, not what the electrical calculation makes of the bus.
+        let armed = old.closed;
         let (low_phase, low) = extreme(voltage, false);
         let (high_phase, high) = extreme(voltage, true);
         let (current_phase, current) = extreme(current_pu, true);
@@ -418,6 +459,13 @@ impl Component for BreakerCabinetComponent {
         let mut pickup = 0_u32;
         let mut trip = 0_u32;
         let mut first: Option<Reading> = None;
+        // Every function that times out in this step is recorded with its own phase and
+        // value: two that trip together are two entries of the log.
+        let record = |next: &mut CabinetState, reading: Reading| {
+            let index = reading.function as usize;
+            next.trip_phase[index] = reading.phase;
+            next.trip_value[index] = reading.value;
+        };
         for reading in readings {
             let index = reading.function as usize;
             if armed && reading.holds {
@@ -427,6 +475,7 @@ impl Component for BreakerCabinetComponent {
                 // falling one rounding short of it.
                 if next.timer_s[index] >= reading.delay_s * (1.0 - 1.0e-9) {
                     trip |= 1 << reading.function;
+                    record(&mut next, reading);
                     first.get_or_insert(reading);
                 }
             } else {
@@ -443,13 +492,15 @@ impl Component for BreakerCabinetComponent {
             pickup |= 1 << protection::NEGATIVE_SEQUENCE;
             if next.rotor_heat_s >= card.negative_sequence_limit_s {
                 trip |= 1 << protection::NEGATIVE_SEQUENCE;
-                first.get_or_insert(Reading {
+                let reading = Reading {
                     function: protection::NEGATIVE_SEQUENCE,
                     holds: true,
                     phase: 0,
                     value: negative_pu,
                     delay_s: next.timer_s[thermal],
-                });
+                };
+                record(&mut next, reading);
+                first.get_or_insert(reading);
             }
         } else {
             next.rotor_heat_s =
@@ -460,6 +511,7 @@ impl Component for BreakerCabinetComponent {
 
         if let Some(reading) = first {
             next.tripped |= trip;
+            next.trip_bits = trip;
             next.trips = old.trips + 1;
             next.last_function = reading.function;
             next.last_phase = reading.phase;
@@ -467,6 +519,7 @@ impl Component for BreakerCabinetComponent {
             next.timer_s = [0.0; protection::COUNT];
             next.pickup = 0;
         }
+        // The contacts: closed on request, held open by a latched trip.
         next.closed = close_request && next.tripped == 0;
 
         outputs[0] = if next.closed { 1.0 } else { 0.0 };

@@ -17,6 +17,7 @@ export const kgusim_events: (a: number) => [number, number];
 export const kgusim_last_error: (a: number) => [number, number];
 export const kgusim_limit_field_names: (a: number) => [number, number];
 export const kgusim_limits: (a: number) => [number, number];
+export const kgusim_longest_step_s: (a: number) => number;
 export const kgusim_machine_facts: (a: number) => [number, number];
 export const kgusim_meter_events: (a: number) => [number, number];
 export const kgusim_new: () => number;

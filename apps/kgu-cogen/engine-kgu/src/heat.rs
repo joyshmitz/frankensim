@@ -307,8 +307,9 @@ impl Component for ExhaustHeatExchangerComponent {
 ///
 /// The network's capacity rate is the demand times its rated value; the
 /// coolant's is the pump's times the thermostat's opening. Counterflow
-/// effectiveness on a constant `UA`. No heat flows back from a network that
-/// returns hotter than the coolant.
+/// effectiveness on a constant `UA`. A network that returns hotter than the
+/// coolant gives heat to it through the open thermostat: the heat is then
+/// negative.
 pub struct NetworkHeatExchangerComponent {
     ports: [PortSpec; 3],
     card: NetworkExchangerCard,
@@ -385,7 +386,12 @@ impl Component for NetworkHeatExchangerComponent {
         let network_rate = self.card.network_capacity_rate_w_k * demand;
         let smaller = coolant_rate.min(network_rate);
         let larger = coolant_rate.max(network_rate);
-        let heat = if smaller > 0.0 && coolant_k > return_k {
+        // The exchanger moves heat whichever way the temperatures stand: return water
+        // hotter than the coolant gives heat to the coolant, and the heat is negative. A
+        // law cut off at equal temperatures would have a corner with one flat side there,
+        // which the block solve cannot step across (found by the random walk of the tests:
+        // a network return set above the coolant's temperature stopped the model).
+        let heat = if smaller > 0.0 {
             let effectiveness =
                 counterflow_effectiveness(self.card.ua_w_k / smaller, smaller / larger);
             effectiveness * smaller * (coolant_k - return_k)
@@ -409,7 +415,7 @@ impl Component for NetworkHeatExchangerComponent {
             dissipated_j: 0.0,
             numerical_loss_j: 0.0,
             entropy_generated_j_per_k: dt_s * entropy,
-            energy_tolerance_j: 1.0e-12 * dt_s * heat + 1.0e-9,
+            energy_tolerance_j: 1.0e-12 * dt_s * heat.abs() + 1.0e-9,
             residual: 0.0,
             tolerance: 0.0,
         }))

@@ -38,10 +38,11 @@ use crate::cards::{
 };
 use crate::components::{KguError, all_finite, check_cx, nz, sid, wrap_angle};
 
-/// Width of the `sense` input: `[omega, load angle, breaker closed, electric
-/// power, out of step, coolant temperature, cabinet trip count, cabinet
-/// tripped functions, grid healthy]`.
-pub const SENSE_WIDTH: usize = 9;
+/// Width of the `sense` input: `[omega, load angle, breaker contacts closed
+/// (the cabinet's state), electric power, out of step, coolant temperature,
+/// cabinet trip count, cabinet tripped functions, grid healthy (restoration
+/// card), bus fit to close onto (cabinet card)]`.
+pub const SENSE_WIDTH: usize = 10;
 /// Width of the `operator` input, see [`OperatorSignals`].
 pub const OPERATOR_WIDTH: usize = 17;
 /// Width of the `actuators` output: `[starter, gas shut-off open, ignition,
@@ -89,8 +90,18 @@ pub mod alarm {
     pub const REVERSE_POWER: u32 = 1 << 16;
     /// The automatic return is blocked after too many attempts (latched).
     pub const RESTORATION_LOCKOUT: u32 = 1 << 17;
+    /// The unit stood at the synchroniser for its time limit without the
+    /// breaker closing and was stopped normally (latched, blocks the next
+    /// start until acknowledged).
+    pub const SYNCHRONISING_TIMEOUT: u32 = 1 << 18;
+    /// The engine stalled: ignition on, speed below the firing speed (no
+    /// gas, flame-out). Trip.
+    pub const ENGINE_STALL: u32 = 1 << 19;
     /// Number of bits in use.
-    pub const COUNT: u32 = 18;
+    pub const COUNT: u32 = 20;
+    /// Latched bits that do not belong to a stopped engine's trip: an
+    /// acknowledgement clears them wherever the unit is off the bus.
+    pub const HELD_WITHOUT_TRIP: u32 = GRID_EVENTS | RESTORATION_LOCKOUT | SYNCHRONISING_TIMEOUT;
     /// Grid events: the cabinet opened the breaker, the engine runs on
     /// unloaded. `GRID_UNDERVOLTAGE` is the station controller's A-031.
     pub const GRID_EVENTS: u32 =
@@ -107,7 +118,9 @@ pub mod alarm {
         | OVERCURRENT
         | REVERSE_POWER
         | GRID_EVENTS
-        | RESTORATION_LOCKOUT;
+        | RESTORATION_LOCKOUT
+        | SYNCHRONISING_TIMEOUT
+        | ENGINE_STALL;
 
     /// The alarm bits for the cabinet's tripped protection functions
     /// (`cabinet::protection` bits).
@@ -153,8 +166,38 @@ pub mod refusal {
     pub const DEAD_BUS: u32 = 1 << 3;
     /// The unit is not in its synchronising step.
     pub const NOT_SYNCHRONISING: u32 = 1 << 4;
-    /// A trip is latched.
+    /// A trip is latched (in the controller or in the cabinet).
     pub const TRIP_LATCHED: u32 = 1 << 5;
+    /// The bus is not fit to close onto by the cabinet's settings: a phase
+    /// below the under-voltage or above the over-voltage level, the
+    /// unbalance or the frequency outside theirs.
+    pub const BUS_UNFIT: u32 = 1 << 6;
+    /// The command has no meaning in the present step of the sequence
+    /// (a start while running, a stop while stopped, an acknowledgement
+    /// with nothing to acknowledge).
+    pub const NOT_APPLICABLE: u32 = 1 << 7;
+    /// An acknowledgement did not clear a trip: its cause is still there.
+    pub const CAUSE_PRESENT: u32 = 1 << 8;
+    /// Too many commands waiting to be processed.
+    pub const QUEUE_FULL: u32 = 1 << 9;
+}
+
+/// The operator's commands, as the event log names them.
+pub mod command {
+    /// Start.
+    pub const START: u32 = 1;
+    /// Normal stop.
+    pub const STOP: u32 = 2;
+    /// Emergency stop.
+    pub const EMERGENCY_STOP: u32 = 3;
+    /// Acknowledge.
+    pub const ACKNOWLEDGE: u32 = 4;
+    /// Close the breaker (manual synchronisation).
+    pub const BREAKER_CLOSE: u32 = 5;
+    /// Open the breaker.
+    pub const BREAKER_OPEN: u32 = 6;
+    /// Synchronise (the automatic synchroniser closes, once).
+    pub const SYNCHRONISE: u32 = 7;
 }
 
 /// Step of the controller's sequence.
@@ -287,16 +330,23 @@ pub fn synchro_check(
     }
 }
 
-/// Reasons a close request would be refused now ([`refusal`] bits), zero when
-/// it is accepted. One law for the controller's own step and for the answer
-/// given to the operator at once.
+/// Reasons the breaker may not be closed now ([`refusal`] bits), zero when it
+/// may. The one permission to close: the manual request, the automatic
+/// synchroniser and the answer given to the operator at once all go through
+/// it. `check` holds the window and the fitness of the bus; `cabinet_latched`
+/// is whether a protection function of the cabinet holds the breaker open.
 #[must_use]
-pub fn close_refusal(sequence: Sequence, alarms: u32, check: &SynchroCheck) -> u32 {
+pub fn close_refusal(
+    sequence: Sequence,
+    alarms: u32,
+    check: &SynchroCheck,
+    cabinet_latched: bool,
+) -> u32 {
     let mut bits = check.outside;
     if sequence != Sequence::Synchronising {
         bits |= refusal::NOT_SYNCHRONISING;
     }
-    if alarms & alarm::TRIPS != 0 {
+    if alarms & alarm::TRIPS != 0 || cabinet_latched {
         bits |= refusal::TRIP_LATCHED;
     }
     bits
@@ -304,15 +354,23 @@ pub fn close_refusal(sequence: Sequence, alarms: u32, check: &SynchroCheck) -> u
 
 /// Reasons a command to synchronise would be refused now ([`refusal`] bits),
 /// zero when it is accepted. The command hands the closing to the automatic
-/// synchroniser, which waits for the window by itself, so only the step of
-/// the sequence and a latched trip can refuse it.
+/// synchroniser, which waits by itself for what comes by itself: the phase,
+/// and the voltage and frequency differences the operator may still be
+/// trimming. It is refused for what the synchroniser cannot wait out: the
+/// step of the sequence, a latched trip, a dead bus, a bus that is not fit
+/// by the cabinet's settings.
 #[must_use]
-pub fn synchronise_refusal(sequence: Sequence, alarms: u32) -> u32 {
-    let mut bits = 0;
+pub fn synchronise_refusal(
+    sequence: Sequence,
+    alarms: u32,
+    check: &SynchroCheck,
+    cabinet_latched: bool,
+) -> u32 {
+    let mut bits = check.outside & (refusal::DEAD_BUS | refusal::BUS_UNFIT);
     if sequence != Sequence::Synchronising {
         bits |= refusal::NOT_SYNCHRONISING;
     }
-    if alarms & alarm::TRIPS != 0 {
+    if alarms & alarm::TRIPS != 0 || cabinet_latched {
         bits |= refusal::TRIP_LATCHED;
     }
     bits
@@ -381,6 +439,29 @@ impl OperatorSignals {
         values[14] = self.load_ramp_per_s;
         values[15] = flag(self.restoration_auto);
         values[16] = flag(self.synchronise);
+    }
+
+    /// The command this step carries ([`command`]), if any. The plant hands
+    /// the controller one command per step, in the order they were given.
+    #[must_use]
+    pub fn command(&self) -> Option<u32> {
+        if self.emergency_stop {
+            Some(command::EMERGENCY_STOP)
+        } else if self.acknowledge {
+            Some(command::ACKNOWLEDGE)
+        } else if self.start {
+            Some(command::START)
+        } else if self.stop {
+            Some(command::STOP)
+        } else if self.breaker_close {
+            Some(command::BREAKER_CLOSE)
+        } else if self.breaker_open {
+            Some(command::BREAKER_OPEN)
+        } else if self.synchronise {
+            Some(command::SYNCHRONISE)
+        } else {
+            None
+        }
     }
 
     fn read(values: &[f64]) -> Self {
@@ -456,6 +537,22 @@ pub struct ControllerState {
     /// synchroniser closes the breaker for this one attempt, whatever holds
     /// it back otherwise. Cleared when the unit leaves the synchronising step.
     pub synchroniser_armed: bool,
+    /// A grid event has the unit off the bus and it has neither returned nor
+    /// been stopped or taken over by the operator yet.
+    pub in_episode: bool,
+    /// Time since that grid event opened the breaker [s]: the one clock of
+    /// the return, whatever steps it passes through and whichever mode is set.
+    pub episode_time_s: f64,
+    /// Commands processed since the model started.
+    pub commands_handled: u32,
+    /// The last command processed ([`command`]).
+    pub last_command: u32,
+    /// What became of it: zero when it was carried out, else the reasons it
+    /// was refused ([`refusal`] bits).
+    pub last_command_refusal: u32,
+    /// The conditions that were not met when the synchronising time ran out
+    /// ([`refusal`] bits).
+    pub synchronising_timeout_reasons: u32,
     /// Time the power has fallen short with the valve fully open [s].
     pub gas_shortfall_time_s: f64,
     /// Time the low-oil-pressure input has been on with the engine firing [s].
@@ -498,6 +595,12 @@ impl ControllerState {
             attempt_window_start_s: 0.0,
             returning: false,
             synchroniser_armed: false,
+            in_episode: false,
+            episode_time_s: 0.0,
+            commands_handled: 0,
+            last_command: 0,
+            last_command_refusal: 0,
+            synchronising_timeout_reasons: 0,
             gas_shortfall_time_s: 0.0,
             oil_pressure_time_s: 0.0,
             running_time_s: 0.0,
@@ -589,8 +692,9 @@ impl GensetControllerComponent {
         2.0 * PI * NOMINAL_FREQUENCY_HZ / self.pole_pairs
     }
 
-    /// The synchroniser's view for a shaft speed, an EMF angle and the
-    /// operator's excitation and bus readings.
+    /// The synchroniser's view for a shaft speed, an EMF angle, the
+    /// operator's excitation and bus readings, and whether the bus is fit to
+    /// close onto by the cabinet's settings (`cabinet::bus_is_fit`).
     #[must_use]
     pub fn check(
         &self,
@@ -599,11 +703,17 @@ impl GensetControllerComponent {
         excitation_pu: f64,
         bus_pu: f64,
         bus_hz: f64,
+        bus_fit: bool,
     ) -> SynchroCheck {
         let (low, high) = self.excitation_range_pu;
         let generator_hz = self.pole_pairs * omega_rad_s / (2.0 * PI);
         let emf_pu = excitation_pu.clamp(low, high) * generator_hz / NOMINAL_FREQUENCY_HZ;
-        synchro_check(&self.window, emf_pu, generator_hz, load_angle_rad, bus_pu, bus_hz)
+        let mut check =
+            synchro_check(&self.window, emf_pu, generator_hz, load_angle_rad, bus_pu, bus_hz);
+        if !bus_fit {
+            check.outside |= refusal::BUS_UNFIT;
+        }
+        check
     }
 
     fn trip(next: &mut ControllerState) {
@@ -673,6 +783,8 @@ impl Component for GensetControllerComponent {
         let cabinet_trips = inputs[6] as u32;
         let cabinet_functions = inputs[7] as u32;
         let grid_healthy = inputs[8] >= 0.5;
+        let bus_fit = inputs[9] >= 0.5;
+        let cabinet_latched = cabinet_functions != 0;
         let operator = OperatorSignals::read(&inputs[SENSE_WIDTH..SENSE_WIDTH + OPERATOR_WIDTH]);
         let nominal_omega = self.nominal_omega();
         let restore = &self.restoration;
@@ -686,8 +798,14 @@ impl Component for GensetControllerComponent {
             operator.excitation_pu,
             operator.grid_voltage_pu,
             operator.grid_frequency_hz,
+            bus_fit,
         );
         next.synchronism = check;
+
+        // The one command of this step, and what becomes of it: `Some(0)` carried out,
+        // `Some(bits)` refused. Every command leaves this step with an outcome.
+        let command = operator.command();
+        let mut outcome: Option<u32> = None;
 
         // --- Acknowledgement: clears the latches whose cause is gone. -------------------
         if operator.acknowledge && old.sequence == Sequence::Tripped {
@@ -701,6 +819,7 @@ impl Component for GensetControllerComponent {
             next.alarms = old.alarms & still;
             next.cabinet_reset = true;
             if next.alarms == 0 {
+                outcome = Some(0);
                 Self::enter(
                     &mut next,
                     if omega > set.standstill_rad_s {
@@ -709,20 +828,24 @@ impl Component for GensetControllerComponent {
                         Sequence::Ready
                     },
                 );
+            } else {
+                outcome = Some(refusal::CAUSE_PRESENT);
             }
         }
         // Away from the bus and not waiting for the grid, an acknowledgement also clears
-        // what a grid event left latched (after the automation gave up and stopped the unit).
+        // what a grid event or a failed synchronisation left latched (after the unit was
+        // stopped normally).
         if operator.acknowledge
             && matches!(
                 old.sequence,
                 Sequence::Ready | Sequence::CoolDown | Sequence::CoastDown
             )
-            && old.alarms & (alarm::GRID_EVENTS | alarm::RESTORATION_LOCKOUT) != 0
+            && old.alarms & alarm::HELD_WITHOUT_TRIP != 0
         {
-            next.alarms = old.alarms & !(alarm::GRID_EVENTS | alarm::RESTORATION_LOCKOUT);
+            next.alarms = old.alarms & !alarm::HELD_WITHOUT_TRIP;
             next.restoration_attempts = 0;
             next.cabinet_reset = true;
+            outcome = Some(0);
         }
 
         // --- Protection. -----------------------------------------------------------------
@@ -730,6 +853,23 @@ impl Component for GensetControllerComponent {
         let mut tripped = 0;
         if operator.emergency_stop {
             tripped |= alarm::EMERGENCY_STOP;
+            outcome = Some(0);
+        }
+        // The engine has its ignition on and does not hold the speed combustion needs:
+        // out of gas, or put out. It is stopped, with its own cause.
+        if old.ignition
+            && omega < set.firing_speed_rad_s
+            && matches!(
+                old.sequence,
+                Sequence::WarmUp
+                    | Sequence::Synchronising
+                    | Sequence::GridWait
+                    | Sequence::OnLoad
+                    | Sequence::Unloading
+                    | Sequence::CoolDown
+            )
+        {
+            tripped |= alarm::ENGINE_STALL;
         }
         if omega >= set.overspeed_trip_rad_s {
             tripped |= alarm::OVERSPEED;
@@ -776,30 +916,50 @@ impl Component for GensetControllerComponent {
         if starting && next.start_time_s >= set.start_time_limit_s {
             tripped |= alarm::FAILED_START;
         }
+        // A command that arrives in the step of a trip or of a grid event: a stop or an
+        // opening has what it asked for; a start, a closing or a synchronisation is
+        // refused by the latch; an acknowledgement keeps the outcome it already has.
+        let overtaken = |command: Option<u32>, outcome: Option<u32>| match command {
+            Some(command::STOP | command::BREAKER_OPEN) => Some(0),
+            Some(command::START | command::BREAKER_CLOSE | command::SYNCHRONISE) => {
+                Some(refusal::TRIP_LATCHED)
+            }
+            _ => outcome,
+        };
         if tripped != 0 {
             next.alarms |= tripped;
+            next.in_episode = false;
             Self::trip(&mut next);
-        } else if grid_event != 0 && on_bus {
-            // The breaker is open; the engine stays at rated speed, unloaded, burning its
-            // no-load gas. A stop that was already under way goes on to its cool-down.
+            outcome = overtaken(command, outcome);
+        } else if grid_event != 0 {
+            // The cabinet has opened the breaker; the engine stays at rated speed, unloaded,
+            // burning its no-load gas. This holds wherever the trip finds the controller:
+            // on the bus, or in the step in which it had itself just asked for the breaker
+            // to be opened. A stop that was already under way, or is asked for in this very
+            // step, goes on to its cool-down.
             next.alarms |= grid_event;
             next.breaker_command = false;
             next.load_reference = 0.0;
             next.grid_healthy_time_s = 0.0;
             next.returning = false;
-            if old.sequence == Sequence::Unloading {
-                Self::enter(&mut next, Sequence::CoolDown);
-            } else {
-                Self::enter(&mut next, Sequence::GridWait);
-                if old.running_time_s - old.attempt_window_start_s > restore.attempt_window_s {
-                    next.restoration_attempts = 0;
+            match old.sequence {
+                Sequence::OnLoad | Sequence::Synchronising if !operator.stop => {
+                    Self::enter(&mut next, Sequence::GridWait);
+                    next.in_episode = true;
+                    next.episode_time_s = 0.0;
+                    if old.running_time_s - old.attempt_window_start_s > restore.attempt_window_s {
+                        next.restoration_attempts = 0;
+                    }
                 }
-                if operator.restoration_auto
-                    && next.restoration_attempts >= restore.largest_attempts
-                {
-                    next.alarms |= alarm::RESTORATION_LOCKOUT;
+                Sequence::OnLoad | Sequence::Synchronising | Sequence::Unloading => {
+                    Self::enter(&mut next, Sequence::CoolDown);
                 }
+                _ => {}
             }
+            outcome = overtaken(command, outcome);
+        }
+        if next.in_episode && old.in_episode {
+            next.episode_time_s = old.episode_time_s + dt_s;
         }
 
         let mut warnings = 0;
@@ -820,16 +980,19 @@ impl Component for GensetControllerComponent {
             match old.sequence {
                 Sequence::Ready => {
                     Self::everything_off(&mut next);
+                    next.in_episode = false;
                     if operator.start {
-                        if old.alarms == 0 {
+                        if next.alarms == 0 {
                             Self::enter(&mut next, Sequence::PreLubrication);
                             next.starts = old.starts + 1;
                             next.resynchronise_inhibited = false;
                             next.returning = false;
                             next.restoration_attempts = 0;
                             next.cabinet_reset = true;
+                            outcome = Some(0);
                         } else {
                             next.refusals = old.refusals + 1;
+                            outcome = Some(refusal::TRIP_LATCHED);
                         }
                     }
                 }
@@ -838,6 +1001,7 @@ impl Component for GensetControllerComponent {
                     Self::everything_off(&mut next);
                     if operator.stop {
                         Self::enter(&mut next, Sequence::Ready);
+                        outcome = Some(0);
                     } else if next.step_time_s >= set.pre_lubrication_time_s {
                         Self::enter(&mut next, Sequence::Cranking);
                         next.starter = true;
@@ -849,6 +1013,7 @@ impl Component for GensetControllerComponent {
                     if operator.stop {
                         Self::enter(&mut next, Sequence::CoastDown);
                         Self::everything_off(&mut next);
+                        outcome = Some(0);
                     } else if omega >= set.firing_speed_rad_s
                         && next.step_time_s >= set.purge_time_s
                     {
@@ -869,6 +1034,7 @@ impl Component for GensetControllerComponent {
                     if operator.stop {
                         Self::enter(&mut next, Sequence::CoastDown);
                         Self::everything_off(&mut next);
+                        outcome = Some(0);
                     } else if omega >= set.at_speed_share * nominal_omega {
                         Self::enter(&mut next, Sequence::WarmUp);
                         next.starter = false;
@@ -883,6 +1049,7 @@ impl Component for GensetControllerComponent {
                     );
                     if operator.stop {
                         Self::enter(&mut next, Sequence::CoolDown);
+                        outcome = Some(0);
                     } else if next.step_time_s >= set.warm_up_time_s {
                         Self::enter(&mut next, Sequence::Synchronising);
                     }
@@ -898,20 +1065,58 @@ impl Component for GensetControllerComponent {
                         target,
                         set.run_up_rate_rad_s2 * dt_s,
                     );
-                    let refused = close_refusal(old.sequence, old.alarms, &check);
+                    // The one permission to close, taken in the very step that would close.
+                    // An automatic return carries the grid event's latch with it until the
+                    // breaker is in; that latch is the return's own and does not refuse it.
+                    let alarms = if old.returning {
+                        next.alarms & !alarm::GRID_EVENTS
+                    } else {
+                        next.alarms
+                    };
+                    let refused = close_refusal(old.sequence, alarms, &check, cabinet_latched);
                     // Who lets the automatic synchroniser close: the start's own setting
                     // or the automatic return, unless a manual opening or a manual return
                     // holds it back; or the operator's command, for this attempt.
-                    next.synchroniser_armed = old.synchroniser_armed || operator.synchronise;
+                    // A command to synchronise arms the synchroniser unless something holds
+                    // that it cannot wait out (the same law as the answer given at once).
+                    let not_armed = synchronise_refusal(old.sequence, alarms, &check, cabinet_latched);
+                    if operator.synchronise {
+                        outcome = Some(not_armed);
+                    }
+                    next.synchroniser_armed =
+                        old.synchroniser_armed || (operator.synchronise && not_armed == 0);
                     let automatic = ((operator.auto_synchronise || old.returning)
                         && !old.resynchronise_inhibited)
                         || next.synchroniser_armed;
                     if operator.stop {
                         Self::enter(&mut next, Sequence::CoolDown);
                         next.returning = false;
+                        outcome = Some(0);
+                    } else if old.returning
+                        && operator.restoration_auto
+                        && next.episode_time_s >= restore.longest_wait_s
+                    {
+                        // The return has used up its time, wherever it spent it: a normal
+                        // stop. What the grid event latched stays latched.
+                        Self::enter(&mut next, Sequence::CoolDown);
+                        next.returning = false;
+                    } else if old.returning && !grid_healthy {
+                        // The grid went bad again before the breaker was in: back to
+                        // waiting, and the healthy-grid delay starts over.
+                        Self::enter(&mut next, Sequence::GridWait);
+                        next.returning = false;
+                        next.grid_healthy_time_s = 0.0;
+                    } else if next.step_time_s >= set.synchronising_time_limit_s {
+                        // Stood at the synchroniser for the whole time limit: a normal stop,
+                        // with what held the breaker out.
+                        next.alarms |= alarm::SYNCHRONISING_TIMEOUT;
+                        next.synchronising_timeout_reasons = refused;
+                        Self::enter(&mut next, Sequence::CoolDown);
+                        next.returning = false;
                     } else if operator.breaker_close && refused != 0 {
                         next.last_close_refusal = refused;
                         next.refusals = old.refusals + 1;
+                        outcome = Some(refused);
                     } else if refused == 0
                         && (operator.breaker_close
                             || (automatic
@@ -920,9 +1125,17 @@ impl Component for GensetControllerComponent {
                         Self::enter(&mut next, Sequence::OnLoad);
                         next.breaker_command = true;
                         next.resynchronise_inhibited = false;
+                        if old.returning {
+                            // Back on the bus: the automation clears the grid event's latch.
+                            next.alarms &= !alarm::GRID_EVENTS;
+                        }
                         next.returning = false;
+                        next.in_episode = false;
                         next.load_reference = 0.0;
                         next.last_close_refusal = 0;
+                        if operator.breaker_close {
+                            outcome = Some(0);
+                        }
                     }
                 }
                 Sequence::GridWait => {
@@ -943,31 +1156,42 @@ impl Component for GensetControllerComponent {
                     if operator.stop {
                         // The operator decides to stop: the normal cool-down.
                         Self::enter(&mut next, Sequence::CoolDown);
+                        outcome = Some(0);
                     } else if operator.restoration_auto {
                         if operator.acknowledge {
-                            // An acknowledgement releases a blocked automation.
-                            next.alarms = old.alarms & !alarm::RESTORATION_LOCKOUT;
-                            next.restoration_attempts = 0;
+                            // An acknowledgement releases a blocked automation; with
+                            // nothing blocked there is nothing for it to do, the automation
+                            // holds the grid event's latch until it is back on the bus.
+                            if old.alarms & alarm::RESTORATION_LOCKOUT != 0 {
+                                next.alarms = old.alarms & !alarm::RESTORATION_LOCKOUT;
+                                next.restoration_attempts = 0;
+                                outcome = Some(0);
+                            }
+                        } else if next.restoration_attempts >= restore.largest_attempts {
+                            // The count is looked at for as long as the unit waits, not only
+                            // when the trip arrives: switching the mode does not get past it.
+                            next.alarms |= alarm::RESTORATION_LOCKOUT;
                         }
                         let blocked = next.alarms & alarm::RESTORATION_LOCKOUT != 0;
-                        if !blocked
+                        if next.episode_time_s >= restore.longest_wait_s {
+                            // Waited long enough at no load, counted from the grid event:
+                            // a normal stop. What the grid event latched stays latched
+                            // until it is acknowledged.
+                            Self::enter(&mut next, Sequence::CoolDown);
+                        } else if !blocked
                             && next.grid_healthy_time_s >= restore.healthy_delay_s * (1.0 - 1.0e-9)
                         {
                             // The grid has been healthy for the whole delay: back to the
-                            // synchroniser, which closes by itself.
+                            // synchroniser, which closes by itself. The grid event's latch
+                            // goes with it and is cleared when the breaker is in.
                             if next.restoration_attempts == 0 {
                                 next.attempt_window_start_s = old.running_time_s;
                             }
                             next.restoration_attempts += 1;
-                            next.alarms &= !waiting_bits;
                             next.cabinet_reset = true;
                             next.returning = true;
                             next.resynchronise_inhibited = false;
                             Self::enter(&mut next, Sequence::Synchronising);
-                        } else if next.step_time_s >= restore.longest_wait_s {
-                            // Waited long enough at no load: a normal stop. What the grid
-                            // event latched stays latched until it is acknowledged.
-                            Self::enter(&mut next, Sequence::CoolDown);
                         }
                     } else if operator.acknowledge {
                         // Manual return: the operator has seen the cause. The unit goes back
@@ -976,8 +1200,10 @@ impl Component for GensetControllerComponent {
                         next.restoration_attempts = 0;
                         next.cabinet_reset = true;
                         next.returning = false;
+                        next.in_episode = false;
                         next.resynchronise_inhibited = true;
                         Self::enter(&mut next, Sequence::Synchronising);
+                        outcome = Some(0);
                     }
                 }
                 Sequence::OnLoad | Sequence::Unloading => {
@@ -990,15 +1216,25 @@ impl Component for GensetControllerComponent {
                         next.resynchronise_inhibited = true;
                         next.load_reference = 0.0;
                     } else if operator.breaker_open {
-                        Self::enter(&mut next, Sequence::Synchronising);
+                        // Opened by hand. A stop under way goes on to its cool-down; from
+                        // load the unit stands at the synchroniser, which does not close by
+                        // itself after that.
+                        if unloading {
+                            Self::enter(&mut next, Sequence::CoolDown);
+                        } else {
+                            Self::enter(&mut next, Sequence::Synchronising);
+                            next.resynchronise_inhibited = true;
+                        }
                         next.breaker_command = false;
-                        next.resynchronise_inhibited = true;
                         next.load_reference = 0.0;
+                        outcome = Some(0);
                     } else if unloading {
                         next.load_reference =
                             approach(old.load_reference, 0.0, set.unload_ramp_per_s * dt_s);
                         if operator.start {
+                            // A start during the unloading takes the stop back.
                             Self::enter(&mut next, Sequence::OnLoad);
+                            outcome = Some(0);
                         } else if next.load_reference <= 0.0
                             && electric_power < set.breaker_open_power_w
                         {
@@ -1013,6 +1249,7 @@ impl Component for GensetControllerComponent {
                         );
                         if operator.stop {
                             Self::enter(&mut next, Sequence::Unloading);
+                            outcome = Some(0);
                         }
                     }
                 }
@@ -1031,16 +1268,19 @@ impl Component for GensetControllerComponent {
                 }
                 Sequence::CoastDown => {
                     Self::everything_off(&mut next);
+                    if operator.start {
+                        next.refusals = old.refusals + 1;
+                        outcome = Some(refusal::NOT_APPLICABLE);
+                    }
                     if omega < set.standstill_rad_s {
                         Self::enter(&mut next, Sequence::Ready);
-                    } else if operator.start {
-                        next.refusals = old.refusals + 1;
                     }
                 }
                 Sequence::Tripped => {
                     Self::everything_off(&mut next);
                     if operator.start {
                         next.refusals = old.refusals + 1;
+                        outcome = Some(refusal::TRIP_LATCHED);
                     }
                 }
             }
@@ -1050,6 +1290,23 @@ impl Component for GensetControllerComponent {
         // the synchronising step, however that step is left.
         if next.sequence != Sequence::Synchronising {
             next.synchroniser_armed = false;
+        }
+        // An episode ends when the unit is no longer waiting to return: stopped, tripped.
+        if matches!(
+            next.sequence,
+            Sequence::CoolDown | Sequence::CoastDown | Sequence::Tripped | Sequence::Ready
+        ) {
+            next.in_episode = false;
+        }
+        if !next.in_episode {
+            next.episode_time_s = 0.0;
+        }
+        // Every command has its outcome: what no step of the sequence took up is refused
+        // as having no meaning there.
+        if let Some(id) = command {
+            next.commands_handled = old.commands_handled + 1;
+            next.last_command = id;
+            next.last_command_refusal = outcome.unwrap_or(refusal::NOT_APPLICABLE);
         }
 
         // --- Governor. -------------------------------------------------------------------
@@ -1093,7 +1350,11 @@ impl Component for GensetControllerComponent {
                 .map_err(|_| KguError::Invalid("fs-control refused the torque request"))?;
             next.governor = proposal.next_state;
             next.valve_demand = (request / set.torque_per_valve_demand_nm).clamp(0.0, 1.0);
-            next.running_time_s = old.running_time_s + dt_s;
+            // Engine hours count an engine that turns at a speed it can fire at, not an
+            // ignition that is merely switched on.
+            if omega >= set.firing_speed_rad_s {
+                next.running_time_s = old.running_time_s + dt_s;
+            }
         } else {
             next.governor = SpeedControllerState::default();
             next.valve_demand = 0.0;

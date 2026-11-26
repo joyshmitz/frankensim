@@ -36,6 +36,7 @@ use wasm_bindgen::prelude::*;
 use crate::cards::{
     BUS_VOLTAGE_V, CYLINDERS, RATED_ELECTRIC_W, RATED_SPEED_RPM, SHAFT_INERTIA_KG_M2,
 };
+use crate::controller::command;
 use crate::plant::{KguPlant, SUB_STEP_S};
 
 /// Version of the snapshot layout. It changes when a slot changes meaning or
@@ -172,10 +173,24 @@ snapshot_layout!(
     METER_OVERFLOW_BITS,
     // 1 while the automatic synchroniser is armed by the operator's command to synchronise.
     SYNCHRONISER_ARMED_BY_OPERATOR,
+    // The largest of the three phase currents [A]. STATOR_CURRENT_A is the current of the
+    // positive sequence alone; on an unbalanced bus a phase carries more.
+    LARGEST_PHASE_CURRENT_A,
+    // Closed events the analyser's record has displaced since the model started.
+    ANALYSER_DISPLACED_EVENTS,
+    // Time left at the synchroniser before the unit is stopped [s]; NaN when not there.
+    SYNCHRONISING_TIME_LEFT_S,
+    // Time left to the automatic return before the unit is stopped [s], counted from the
+    // grid event; NaN when no return is under way or the mode is manual.
+    RETURN_TIME_LEFT_S,
+    // Commands of the operator waiting to be processed.
+    PENDING_COMMANDS,
+    // 1 when the bus is fit to close onto by the cabinet's settings.
+    BUS_FIT_TO_CLOSE,
 );
 
 /// Names of the entries of [`KguSim::limits`], in order.
-pub const LIMIT_FIELDS: [&str; 64] = [
+pub const LIMIT_FIELDS: [&str; 66] = [
     "RATED_ELECTRIC_KW",
     "RATED_SPEED_RPM",
     "OVERSPEED_TRIP_RPM",
@@ -247,10 +262,16 @@ pub const LIMIT_FIELDS: [&str; 64] = [
     // undriven shaft within one sub-step.
     "SHAFT_STATIC_FRICTION_NM",
     "SHAFT_REST_SPEED_RPM",
+    // Longest stand at the synchroniser, and the size of the analyser's record.
+    "SYNCHRONISING_TIME_LIMIT_S",
+    "ANALYSER_RECORD_CAPACITY",
 ];
 
 /// Number of values per entry of [`KguSim::events`].
 pub const EVENT_STRIDE: usize = 4;
+
+/// The longest time one call of [`KguSim::step`] takes [s]: one hour.
+pub const LONGEST_STEP_S: f64 = 3_600.0;
 
 /// Run a closure with a deterministic, clock-free execution context that is
 /// safe on native targets and on `wasm32-unknown-unknown`.
@@ -469,37 +490,48 @@ impl KguSim {
 
     // --- Commands ---------------------------------------------------------------------
 
+    // Commands wait in a queue and the controller takes one per sub-step, in the order
+    // they were given (an emergency stop first). Each is either carried out or refused,
+    // and either way the event log gets an entry of kind 9 with the command and the
+    // reasons: nothing given between two steps is lost or merged.
+
     /// Start command. Refused by the controller unless the unit is ready.
     pub fn cmd_start(&mut self) {
-        self.plant.set_operator(|o| o.start = true);
+        self.plant.command(command::START);
     }
 
     /// Normal stop: unload, open the breaker, cool down, shut the gas.
     pub fn cmd_stop(&mut self) {
-        self.plant.set_operator(|o| o.stop = true);
+        self.plant.command(command::STOP);
     }
 
     /// Emergency stop: gas shut and breaker open at once; latches.
     pub fn cmd_emergency_stop(&mut self) {
-        self.plant.set_operator(|o| o.emergency_stop = true);
+        self.plant.command(command::EMERGENCY_STOP);
     }
 
     /// Acknowledge alarms; a latched trip whose cause is gone is cleared.
     pub fn cmd_ack(&mut self) {
-        self.plant.set_operator(|o| o.acknowledge = true);
+        self.plant.command(command::ACKNOWLEDGE);
     }
 
-    /// Request to close the generator breaker. Returns zero when the request
-    /// is accepted (the breaker closes in the next sub-step), otherwise the
-    /// reasons as bits: 1 voltage difference, 2 frequency difference, 4 phase
-    /// angle, 8 dead bus, 16 the unit is not synchronising, 32 a trip is
-    /// latched. A refused request does nothing.
+    /// Request to close the generator breaker. Returns zero when the breaker
+    /// may be closed from the present state, otherwise the reasons as bits:
+    /// 1 voltage difference, 2 frequency difference, 4 phase angle, 8 dead
+    /// bus, 16 the unit is not synchronising, 32 a trip is latched, 64 the
+    /// bus is not fit by the cabinet's settings (a phase, the unbalance or
+    /// the frequency outside them). A refused request does nothing but leave
+    /// its entry in the log. An accepted one is handed to the controller,
+    /// which takes the same permission once more in the sub-step in which it
+    /// closes: its answer differs only if an input was changed in between,
+    /// and is then in the log.
     pub fn cmd_breaker_close(&mut self) -> u32 {
         let bits = self.plant.close_refusal();
         if bits == 0 {
-            self.plant.set_operator(|o| o.breaker_close = true);
+            self.plant.command(command::BREAKER_CLOSE);
         } else {
             self.plant.log_refused_close(bits);
+            self.plant.log_refused_command(command::BREAKER_CLOSE, bits);
         }
         bits
     }
@@ -510,32 +542,45 @@ impl KguSim {
     /// synchronisation off, after a manual opening, after the acknowledgement
     /// in manual restoration). Returns zero when accepted, otherwise the
     /// reasons with the bits of [`Self::cmd_breaker_close`]: 16 the unit is
-    /// not synchronising, 32 a trip is latched. A normal stop cancels the
-    /// wait. Either way the command is in the event log.
+    /// not synchronising, 32 a trip is latched, 8 the bus is dead, 64 the
+    /// bus is not fit by the cabinet's settings. (The synchroniser waits by
+    /// itself for the phase and for the voltage and frequency differences;
+    /// it cannot wait out a bus it must not close onto.) A normal stop
+    /// cancels the wait. Either way the command is in the event log.
     pub fn cmd_synchronise(&mut self) -> u32 {
         let bits = self.plant.synchronise_refusal();
         if bits == 0 {
-            self.plant.set_operator(|o| o.synchronise = true);
+            self.plant.command(command::SYNCHRONISE);
+        } else {
+            self.plant.log_refused_command(command::SYNCHRONISE, bits);
         }
         self.plant.log_synchronise_command(bits);
         bits
     }
 
     /// Open the generator breaker by hand (a load rejection when on load).
-    /// The synchroniser does not reclose by itself afterwards.
+    /// The synchroniser does not reclose by itself afterwards. While the
+    /// unit is unloading for a stop, the stop goes on to its cool-down.
     pub fn cmd_breaker_open(&mut self) {
-        self.plant.set_operator(|o| o.breaker_open = true);
+        self.plant.command(command::BREAKER_OPEN);
     }
 
     // --- Time -------------------------------------------------------------------------
 
-    /// Advance by `dt_s` in the plant's fixed 10 ms sub-steps. Returns false
-    /// when the kernel refused a sub-step; see [`Self::last_error`].
+    /// Advance by `dt_s` in the plant's fixed 10 ms sub-steps. Returns false,
+    /// with the reason in [`Self::last_error`], when the kernel refused a
+    /// sub-step, or when `dt_s` is not a positive number of at most
+    /// [`Self::longest_step_s`]: a longer step is refused whole, never cut
+    /// short.
     pub fn step(&mut self, dt_s: f64) -> bool {
-        if !(dt_s.is_finite() && dt_s > 0.0) {
+        if !(dt_s.is_finite() && dt_s > 0.0 && dt_s <= LONGEST_STEP_S) {
+            self.last_error = format!(
+                "step({dt_s}) refused: the step must be a positive number of at most \
+                 {LONGEST_STEP_S} s; nothing was advanced"
+            );
             return false;
         }
-        let dt = dt_s.min(3_600.0);
+        let dt = dt_s;
         match with_clock_free_cx(|cx| self.plant.step(dt, cx)) {
             Ok(()) => {
                 self.last_error.clear();
@@ -554,6 +599,12 @@ impl KguSim {
     #[must_use]
     pub fn sub_step_s(&self) -> f64 {
         SUB_STEP_S
+    }
+
+    /// The longest time one call of [`Self::step`] takes [s].
+    #[must_use]
+    pub fn longest_step_s(&self) -> f64 {
+        LONGEST_STEP_S
     }
 
     /// The last solver refusal, empty when healthy.
@@ -661,6 +712,8 @@ impl KguSim {
                 .standstill_card
                 .rest_speed_rad_s(SHAFT_INERTIA_KG_M2, SUB_STEP_S)
                 * rpm,
+            set.synchronising_time_limit_s,
+            f64::from(quality.record_capacity),
         ]
     }
 
@@ -673,7 +726,12 @@ impl KguSim {
     /// The event log, oldest first, four values per event: time [s], kind
     /// (1 state, 2 breaker, 3 alarm raised, 4 alarm cleared, 5 command
     /// refused, 6 sequence step, 7 cabinet protection trip, 8 the operator's
-    /// command to synchronise), code, value.
+    /// command to synchronise, 9 outcome of a command, 10 synchronising time
+    /// limit), code, value. For kind 9 the code is the command (1 start,
+    /// 2 stop, 3 emergency stop, 4 acknowledge, 5 breaker close, 6 breaker
+    /// open, 7 synchronise) and the value zero when it was carried out, else
+    /// the refusal bits. For kind 10 the code is what kept the breaker out
+    /// (refusal bits) and the value the time at the synchroniser [s].
     /// For a protection trip the code is ten times the function's index plus
     /// the phase (1 to 3, or 0), and the value is what it tripped at. For a
     /// command to synchronise the code is zero when it was accepted, else the
@@ -814,7 +872,8 @@ impl KguSim {
         s[snap::TIME_S] = plant.system.time_s();
         s[snap::STATE_CODE] = f64::from(controller.sequence.state_code());
         s[snap::SEQUENCE_STEP] = f64::from(controller.sequence.index());
-        s[snap::BREAKER_CLOSED] = if generator.breaker_closed { 1.0 } else { 0.0 };
+        // The breaker's position is the cabinet's state.
+        s[snap::BREAKER_CLOSED] = if plant.cabinet_state().closed { 1.0 } else { 0.0 };
         s[snap::ALARM_BITS] = f64::from(controller.alarms | controller.warnings);
         s[snap::SPEED_RPM] = omega * 30.0 / PI;
         s[snap::TORQUE_INDICATED_NM] = engine.indicated_torque_nm;
@@ -864,12 +923,13 @@ impl KguSim {
         s[snap::FRICTION_POWER_KW] = engine.friction_power_w * 1.0e-3;
         s[snap::GENERATOR_LOSS_KW] = generator.total_loss_w() * 1.0e-3;
         s[snap::JACKET_HEAT_KW] = engine.jacket_heat_w * 1.0e-3;
-        // Supply is the coolant node's temperature (engine outlet). Return is what the pump
-        // sends back into the engine: the supply less the rise across jacket and exhaust
-        // exchanger at the pump's flow (a steady relation, shown for the page).
+        // Supply is the coolant node's temperature (engine outlet). Return is what comes
+        // back from the consumers: the supply less what the network exchanger and the dump
+        // cooler take out of the pump's flow. (The heat the engine then puts in differs
+        // from it while the coolant warms or cools.)
         s[snap::COOLANT_SUPPLY_C] = coolant_k - 273.15;
         s[snap::COOLANT_RETURN_C] = coolant_k
-            - (engine.jacket_heat_w + exhaust.recovered_w) / plant.coolant_card.pump_capacity_rate_w_k
+            - (network.heat_w + dump.heat_w) / plant.coolant_card.pump_capacity_rate_w_k
             - 273.15;
         s[snap::EXHAUST_TEMPERATURE_C] = kelvin_to_c(exhaust.exhaust_k);
         s[snap::LOAD_REFERENCE_PCT] = 100.0 * controller.load_reference;
@@ -945,5 +1005,23 @@ impl KguSim {
 
         s[snap::SYNCHRONISER_ARMED_BY_OPERATOR] =
             if controller.synchroniser_armed { 1.0 } else { 0.0 };
+
+        s[snap::LARGEST_PHASE_CURRENT_A] =
+            generator.phase_current_a.iter().copied().fold(0.0, f64::max);
+        s[snap::ANALYSER_DISPLACED_EVENTS] = f64::from(plant.analyser.displaced_events());
+        let synchronising = controller.sequence == crate::controller::Sequence::Synchronising;
+        s[snap::SYNCHRONISING_TIME_LEFT_S] = if synchronising {
+            (plant.setpoints.synchronising_time_limit_s - controller.step_time_s).max(0.0)
+        } else {
+            f64::NAN
+        };
+        s[snap::RETURN_TIME_LEFT_S] = if controller.in_episode && operator.restoration_auto {
+            (plant.restoration_card.longest_wait_s - controller.episode_time_s).max(0.0)
+        } else {
+            f64::NAN
+        };
+        s[snap::PENDING_COMMANDS] = plant.pending_commands() as f64;
+        s[snap::BUS_FIT_TO_CLOSE] =
+            if check.outside & crate::controller::refusal::BUS_UNFIT == 0 { 1.0 } else { 0.0 };
     }
 }

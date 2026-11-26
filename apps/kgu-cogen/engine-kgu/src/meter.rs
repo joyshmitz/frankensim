@@ -17,7 +17,8 @@
 //! meter looks at the three phase voltages as they are at that instant, and
 //! at nothing in between. A phase below the low level, above the high level
 //! or below the loss level at such an instant opens a record in the journal
-//! of that kind; the record is closed by the first later instant at which no
+//! of that kind (a phase below the loss level is below the low level too, and
+//! is in both); the record is closed by the first later instant at which no
 //! phase is in that condition. So a record holds two readings of the meter's
 //! clock and the phases seen: no depth, no highest value, and no duration
 //! finer than the period. A disturbance that begins and ends between two
@@ -200,11 +201,16 @@ impl RevenueMeter {
         let mut seen = [0_u32; journal::COUNT];
         for (phase, voltage) in phase_voltage_pu.into_iter().enumerate() {
             let bit = 1 << phase;
+            // Each journal has its own condition. A phase without voltage is also a phase
+            // with low voltage: both journals hold it, and the low-voltage record of a
+            // deep disturbance is not broken in two by its deepest part.
             if voltage < card.loss_of_voltage_pu {
                 seen[2] |= bit;
-            } else if voltage < card.low_voltage_pu {
+            }
+            if voltage < card.low_voltage_pu {
                 seen[0] |= bit;
-            } else if voltage > card.high_voltage_pu {
+            }
+            if voltage > card.high_voltage_pu {
                 seen[1] |= bit;
             }
         }
@@ -369,17 +375,21 @@ mod tests {
         run(&mut meter, &mut step, 200, [1.0, 1.2, 0.0]);
         run(&mut meter, &mut step, 200, [1.0; 3]);
         let records: Vec<MeterRecord> = meter.records().copied().collect();
-        assert_eq!(records.len(), 3);
+        assert_eq!(records.len(), 4);
         let low = records[0];
         assert_eq!((low.journal, low.phase_bits), (journal::LOW_VOLTAGE, 0b101));
         // Model instants 2.25 and 5.25 (the disturbance ran from 2.00 to 5.10).
         assert_eq!((low.seen_s, low.cleared_s), (1_002.25, 1_005.25));
-        let high = records[1];
+        // The lost phase is in the low-voltage journal as well as in its own.
+        let also_low = records[1];
+        assert_eq!((also_low.journal, also_low.phase_bits), (journal::LOW_VOLTAGE, 0b100));
+        let high = records[2];
         assert_eq!((high.journal, high.phase_bits), (journal::HIGH_VOLTAGE, 0b010));
         assert_eq!((high.seen_s, high.cleared_s), (1_006.25, 1_008.25));
-        let lost = records[2];
+        let lost = records[3];
         assert_eq!((lost.journal, lost.phase_bits), (journal::LOSS_OF_VOLTAGE, 0b100));
-        assert_eq!(meter.record_count(journal::LOW_VOLTAGE), 1);
+        assert_eq!((lost.seen_s, lost.cleared_s), (also_low.seen_s, also_low.cleared_s));
+        assert_eq!(meter.record_count(journal::LOW_VOLTAGE), 2);
         assert_eq!(meter.overflow_bits(), 0);
         meter.clear_records();
         assert_eq!(meter.records().count(), 0);
@@ -403,7 +413,11 @@ mod tests {
                 let expected = if event < 3 { 0 } else { 1 << (journal::LOSS_OF_VOLTAGE - 1) };
                 assert_eq!(meter.overflow_bits(), expected, "after event {event}");
             }
-            let seen: Vec<f64> = meter.records().map(|record| record.seen_s).collect();
+            let seen: Vec<f64> = meter
+                .records()
+                .filter(|record| record.journal == journal::LOSS_OF_VOLTAGE)
+                .map(|record| record.seen_s)
+                .collect();
             match overflow {
                 JournalOverflow::OverwriteOldest => assert_eq!(seen, [10.0, 14.0, 18.0]),
                 JournalOverflow::KeepOldest => assert_eq!(seen, [2.0, 6.0, 10.0]),
@@ -412,8 +426,26 @@ mod tests {
             for record in meter.records() {
                 assert_eq!(record.cleared_s, record.seen_s + 2.0);
             }
-            assert_eq!(meter.record_count(journal::LOW_VOLTAGE), 0);
+            // The low-voltage journal, with room for a hundred, holds all five.
+            assert_eq!(meter.record_count(journal::LOW_VOLTAGE), 5);
         }
+    }
+
+    #[test]
+    fn a_deep_disturbance_is_one_low_voltage_record_and_one_loss_record() {
+        // 1.0, 0.8, 0.0, 0.8, 1.0, a second each, looked at half-way through each second.
+        let mut meter = RevenueMeter::new(MeterCard::ASSUMED);
+        meter.set_sample_phase_s(0.5);
+        let mut step = 0;
+        for voltage in [1.0, 0.8, 0.0, 0.8, 1.0, 1.0] {
+            run(&mut meter, &mut step, 100, [voltage, 1.0, 1.0]);
+        }
+        let records: Vec<MeterRecord> = meter.records().copied().collect();
+        assert_eq!(records.len(), 2, "{records:?}");
+        assert_eq!(records[0].journal, journal::LOW_VOLTAGE);
+        assert_eq!((records[0].seen_s, records[0].cleared_s), (1.5, 4.5));
+        assert_eq!(records[1].journal, journal::LOSS_OF_VOLTAGE);
+        assert_eq!((records[1].seen_s, records[1].cleared_s), (2.5, 3.5));
     }
 
     #[test]

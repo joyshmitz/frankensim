@@ -110,6 +110,13 @@ export const SNAPSHOT_FIELDS = Object.freeze([
   "METER_LOSS_OF_VOLTAGE_RECORDS",
   "METER_OVERFLOW_BITS",
   "SYNCHRONISER_ARMED_BY_OPERATOR",
+  // Slice 1f.
+  "LARGEST_PHASE_CURRENT_A", // STATOR_CURRENT_A is the positive sequence alone
+  "ANALYSER_DISPLACED_EVENTS", // closed events the analyser's record no longer holds
+  "SYNCHRONISING_TIME_LEFT_S", // NaN when not at the synchroniser
+  "RETURN_TIME_LEFT_S", // NaN when no automatic return is under way
+  "PENDING_COMMANDS",
+  "BUS_FIT_TO_CLOSE", // 1: no phase, unbalance or frequency outside the cabinet's settings
 ]);
 
 /** Index of every snapshot slot by name: `snapshot[SNAP.SPEED_RPM]`. */
@@ -171,6 +178,10 @@ export const ALARM = Object.freeze({
   FREQUENCY: 1 << 15, // grid event
   REVERSE_POWER: 1 << 16, // unit fault, trip
   RESTORATION_LOCKOUT: 1 << 17, // too many automatic returns; latched until cmd_ack()
+  // Stood at the synchroniser for its time limit; stopped normally; latched, blocks a start.
+  SYNCHRONISING_TIMEOUT: 1 << 18,
+  // Ignition on and the engine not holding its firing speed (no gas, flame-out): trip.
+  ENGINE_STALL: 1 << 19,
 });
 
 /**
@@ -213,7 +224,24 @@ export const CLOSE_REFUSAL = Object.freeze({
   PHASE: 1 << 2,
   DEAD_BUS: 1 << 3,
   NOT_SYNCHRONISING: 1 << 4,
-  TRIP_LATCHED: 1 << 5,
+  TRIP_LATCHED: 1 << 5, // in the controller or in the cabinet
+  BUS_UNFIT: 1 << 6, // a phase, the unbalance or the frequency outside the cabinet's settings
+  // The next three are reasons a command was refused (event kind COMMAND), never returned
+  // by cmd_breaker_close().
+  NOT_APPLICABLE: 1 << 7, // no meaning in the present step of the sequence
+  CAUSE_PRESENT: 1 << 8, // an acknowledgement: the cause of the trip is still there
+  QUEUE_FULL: 1 << 9, // too many commands waiting
+});
+
+/** Commands of the operator, the `code` of an event of kind COMMAND. */
+export const COMMAND = Object.freeze({
+  START: 1,
+  STOP: 2,
+  EMERGENCY_STOP: 3,
+  ACKNOWLEDGE: 4,
+  BREAKER_CLOSE: 5,
+  BREAKER_OPEN: 6,
+  SYNCHRONISE: 7,
 });
 
 export const LIMIT_FIELDS = Object.freeze([
@@ -287,6 +315,8 @@ export const LIMIT_FIELDS = Object.freeze([
   // undriven shaft within one sub-step. At rest SPEED_RPM is exactly 0.
   "SHAFT_STATIC_FRICTION_NM",
   "SHAFT_REST_SPEED_RPM",
+  "SYNCHRONISING_TIME_LIMIT_S",
+  "ANALYSER_RECORD_CAPACITY",
 ]);
 
 /** Index of every entry of `limits()` by name. */
@@ -309,6 +339,12 @@ export const EVENT_KIND = Object.freeze({
   // value: phase angle at the command, degrees. A closing with no such event before it
   // was the automation's own, or a manual close request.
   SYNCHRONISE_COMMAND: 8,
+  // The controller processed a command: code is the COMMAND, value 0 when it was carried
+  // out, else CLOSE_REFUSAL bits. Every command given gets exactly one, in the order given.
+  COMMAND: 9,
+  // Stopped after the time limit at the synchroniser. code: CLOSE_REFUSAL bits of what kept
+  // the breaker out; value: the time it stood there, s.
+  SYNCHRONISING_TIMEOUT: 10,
 });
 
 /**
@@ -319,7 +355,8 @@ export const EVENT_KIND = Object.freeze({
  * the look that first saw the condition and the first later look that saw it
  * gone (NaN until then). The meter looks once per supervision period, so a
  * record has no depth and no duration, and a disturbance between two looks has
- * no record at all.
+ * no record at all. A phase without voltage is in the loss journal and in the
+ * low-voltage journal both.
  */
 export const METER_EVENT_STRIDE = 4;
 
@@ -350,13 +387,18 @@ export function decodeMeterEvents(flat) {
  * `analyser_events()` is a flat array of `[kind, phase, start_s, duration_s,
  * extreme_v]` per closed event. `start_s` is by the analyser's OWN clock
  * (`set_analyser_clock_offset_s`), not model time; `events()` is in model time.
+ * Each kind is followed against its own level: an excursion to no voltage that
+ * recovers in stages is a dip for the whole of it and an interruption for the part
+ * spent without voltage, two records. The record holds a limited number of closed
+ * events (`LIMIT.ANALYSER_RECORD_CAPACITY`); `SNAP.ANALYSER_DISPLACED_EVENTS`
+ * counts those it no longer holds.
  */
 export const QUALITY_EVENT_STRIDE = 5;
 
 export const QUALITY_KIND = Object.freeze({
-  DIP: 1, // extreme_v: residual (lowest) voltage
-  SWELL: 2, // extreme_v: highest voltage
-  INTERRUPTION: 3, // extreme_v: residual voltage
+  DIP: 1, // below 90 % until back above 92 %; extreme_v: residual (lowest) voltage
+  SWELL: 2, // above 110 % until back below 108 %; extreme_v: highest voltage
+  INTERRUPTION: 3, // below 5 % until back above 7 %; extreme_v: residual voltage
 });
 
 /** Decode `analyser_events()` into objects. */
